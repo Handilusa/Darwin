@@ -107,7 +107,23 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      DreamDEX is fitness function #1, not the definition of the arena.
     address public venue;
 
-    uint256[18] private __gap;
+    // --- the living population, as distinct from the lineage ---
+    /**
+     *  Prophet ids of organisms that are still alive, in no particular order.
+     *
+     *  `prophets` is append-only and must stay that way: ids ARE array positions
+     *  (`prophetAt` returns `prophets[prophetId - 1]`), and the ancestry graph is
+     *  the one asset this design refuses to be able to rebuild. So the lineage
+     *  cannot be compacted — which is exactly why the cap and the per-window loops
+     *  must not read it. They read this instead.
+     */
+    uint256[] public living;
+
+    /// @dev prophetId -> its 1-BASED position in `living`. Zero means "not living",
+    ///      which is what makes `_removeLiving` idempotent.
+    mapping(uint256 => uint256) public livingIndex;
+
+    uint256[16] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -324,17 +340,25 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function _spawn(uint256 parentId, uint32 generation, string memory genome) internal returns (address p) {
-        if (prophets.length >= maxPopulation) revert PopulationFull();
+        // `living.length`, NOT `prophets.length`. `prophets` is append-only, so
+        // capping on it makes `maxPopulation` a LIFETIME BIRTH CAP rather than the
+        // gas bound it is documented to be: after that many births ever, the
+        // generation counter freezes permanently and attrition empties an arena
+        // nobody can join. See STORAGE.md and the Task 2A commit.
+        if (living.length >= maxPopulation) revert PopulationFull();
 
         // `id` IS NOT A LOCAL ON PURPOSE. The Yul optimizer inlines this function
         // into `spawnGenesis`'s loop, and the inlined body sits exactly one stack
         // slot over the limit; holding the id in a local is what pushes it over.
         // Ids are 1-based (0 means "no parent"), so it is `prophets.length + 1`
         // before the push and `prophets.length` after — the same number, read twice
-        // for a warm SLOAD each. Do not reintroduce the local.
+        // for a warm SLOAD each. Do not reintroduce the local. The two index writes
+        // below re-read it for the same reason.
         p = address(new BeaconProxy(prophetBeacon, ""));
         Prophet(payable(p)).initialize(address(this), prophets.length + 1, parentId, generation, windowCount, genome);
         prophets.push(p);
+        living.push(prophets.length);
+        livingIndex[prophets.length] = living.length;
         aliveCount += 1;
 
         // Operator rights on the ERC-6909 singleton and a collateral allowance, so
@@ -412,9 +436,9 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         string[] memory allowed = Genome.allowedBeliefs();
         uint256 dep = requestDeposit();
 
-        uint256 n = prophets.length;
+        uint256 n = living.length;
         for (uint256 i; i < n; ++i) {
-            Prophet p = Prophet(payable(prophets[i]));
+            Prophet p = Prophet(payable(prophets[living[i] - 1]));
             if (p.dead()) continue;
 
             bytes memory payload =
@@ -432,7 +456,10 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             ) returns (uint256 requestId) {
                 p.noteThinking(requestId, marketId);
             } catch {
-                emit ThinkFailed(i + 1);
+                // `living[i]`, NOT `i + 1`. `i` is a position in `living` now, not an
+                // id, so emitting `i + 1` would blame a different organism and
+                // `monitor.ts` would chase the wrong one.
+                emit ThinkFailed(living[i]);
             }
         }
 
@@ -472,14 +499,14 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  excuse from metabolism.
      */
     function commitAll() external onlyDriver inPhase(1) {
-        uint256 n = prophets.length;
+        uint256 n = living.length;
         address[] memory ups = new address[](n);
         address[] memory downs = new address[](n);
         uint256 nu;
         uint256 nd;
 
         for (uint256 i; i < n; ++i) {
-            Prophet p = Prophet(payable(prophets[i]));
+            Prophet p = Prophet(payable(prophets[living[i] - 1]));
             if (p.dead()) continue;
             Belief b = p.belief();
             if (b == Belief.Up) {
@@ -600,10 +627,15 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      */
     function settleAll() external onlyDriver inPhase(2) {
         address v = venue;
-        uint256 n = prophets.length;
 
-        for (uint256 i; i < n; ++i) {
-            Prophet p = Prophet(payable(prophets[i]));
+        // BACKWARDS ON PURPOSE. This is the one loop that removes elements while
+        // walking, and `_removeLiving` swap-removes: the hole is filled from the
+        // END. Forwards, that element is one this loop has not reached yet and
+        // would now skip — an organism silently unsettled, its position left open,
+        // never graded, and no event to say so. Backwards, the element moved in has
+        // already been processed. Do not "tidy" this into a forward loop.
+        for (uint256 i = living.length; i > 0; --i) {
+            Prophet p = Prophet(payable(prophets[living[i - 1] - 1]));
             if (p.dead() || !p.positionOpen()) continue;
 
             try p.settleWindow(v, collateral, metabolicCost) returns (uint256, bool starved) {
@@ -613,6 +645,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                 if (starved || p.treasury() < metabolicCost) {
                     p.die(windowCount);
                     aliveCount -= 1;
+                    _removeLiving(p.prophetId());
                     emit Reaped(p.prophetId(), windowCount, aliveCount);
                 } else if (p.streak() >= breedStreak && p.treasury() >= _breedThreshold()) {
                     _requestMutation(p);
@@ -624,6 +657,26 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
         phase = 0;
         emit WindowClosed(windowCount, aliveCount);
+    }
+
+    /**
+     *  Swap-remove an id from `living`.
+     *
+     *  Idempotent by construction: an id whose `livingIndex` is zero is simply not
+     *  there, so a second reap — or a `retire` racing a starvation — cannot corrupt
+     *  the array or underflow the pop.
+     */
+    function _removeLiving(uint256 prophetId) internal {
+        uint256 pos = livingIndex[prophetId];
+        if (pos == 0) return;
+        uint256 last = living.length;
+        if (pos != last) {
+            uint256 movedId = living[last - 1];
+            living[pos - 1] = movedId;
+            livingIndex[movedId] = pos;
+        }
+        living.pop();
+        livingIndex[prophetId] = 0;
     }
 
     function _breedThreshold() internal view returns (uint256) {
@@ -676,12 +729,15 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      settleAll so a slow inference never delays a settlement, and so the
     ///      gas of a birth is never charged to the settlement callback.
     function hatchAll() external onlyDriver {
-        uint256 n = prophets.length;
+        // Forwards is correct here: `_spawn` APPENDS to `living`, and `n` is
+        // captured before the loop, so newborns are not iterated in the call that
+        // bore them.
+        uint256 n = living.length;
         for (uint256 i; i < n; ++i) {
-            Prophet p = Prophet(payable(prophets[i]));
+            Prophet p = Prophet(payable(prophets[living[i] - 1]));
             if (p.dead()) continue;
             if (bytes(p.pendingChildPrompt()).length == 0) continue;
-            if (prophets.length >= maxPopulation) break;
+            if (living.length >= maxPopulation) break;
             _hatch(p);
         }
     }
@@ -735,6 +791,14 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     function prophetCount() external view returns (uint256) {
         return prophets.length;
+    }
+
+    /// @dev The concurrent population. `prophetCount()` is the LINEAGE — every
+    ///      organism that ever lived, and the number the generation metric is read
+    ///      from. This is how many are alive right now, and it is what
+    ///      `maxPopulation` bounds and what each window's gas is proportional to.
+    function livingCount() external view returns (uint256) {
+        return living.length;
     }
 
     function prophetAt(uint256 prophetId) public view returns (address) {

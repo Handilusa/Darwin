@@ -268,6 +268,151 @@ contract DarwinTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                 THE LIVING POPULATION vs. THE LINEAGE
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  `maxPopulation` is documented as a gas bound. It read `prophets.length`,
+     *  which is append-only, so it was a LIFETIME BIRTH CAP: past that many births
+     *  ever, the generation counter — the headline metric — freezes permanently and
+     *  attrition empties an arena nobody can rejoin.
+     */
+    function test_population_capIsConcurrentNotLifetime() public {
+        Econ memory e = _econ();
+        e.maxPopulation = 2;
+        _setEconomics(e);
+
+        _seed(2);
+        assertEq(population.livingCount(), 2, "two organisms should be alive");
+
+        // A third birth is refused while both are alive. That part was always right.
+        string[] memory one = new string[](1);
+        one[0] = "third";
+        vm.prank(owner);
+        vm.expectRevert(Population.PopulationFull.selector);
+        population.spawnGenesis(one);
+
+        // Kill them, and the slots must come back.
+        _makeThinkingFatal();
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        assertLt(population.livingCount(), 2, "nothing died");
+
+        vm.prank(owner);
+        population.spawnGenesis(one); // must NOT revert
+
+        assertGt(population.prophetCount(), 2, "lineage did not grow");
+        assertEq(population.livingCount(), 1, "the newborn is the only living organism");
+    }
+
+    /**
+     *  A PARTIAL kill, which is the case that matters.
+     *
+     *  With every organism dying, `livingCount()` reaching zero proves almost
+     *  nothing — and a forward `settleAll` loop would fail that case by running off
+     *  the end of a shrinking array, which reads as an unrelated panic. The bug
+     *  worth catching is quieter: `_removeLiving` swap-removes, so the hole is
+     *  filled from the END of `living`. A forward loop hands itself an element it
+     *  has not visited yet and then walks past it — an organism silently unsettled,
+     *  its position left open, never graded, no event to say so.
+     *
+     *  So: four organisms, two survive, and the survivors must still be graded in
+     *  the FOLLOWING window. `_settle` running without reverting is not the
+     *  assertion; being settled is.
+     */
+    function test_population_livingIndexSurvivesAPartialReap() public {
+        // 10 tUSDC each, 1 risked. Loser ends on 9, winner on 11; a 5 tUSDC
+        // metabolism kills the first (4 < 5) and spares the second (6 >= 5).
+        Econ memory e = _econ();
+        e.metabolicCost = 5 * ONE;
+        _setEconomics(e);
+
+        _seed(4);
+        assertEq(population.livingCount(), population.aliveCount(), "index and counter disagree at genesis");
+
+        _upWins();
+        _think();
+        for (uint256 id = 1; id <= 4; ++id) {
+            _answer(id, id % 2 == 0 ? "UP_MOMENTUM" : "DOWN_REVERSION");
+        }
+        _commit();
+        _settle();
+
+        // Ids 2 and 4 went Up and Up won; 1 and 3 are gone.
+        assertEq(population.livingCount(), 2, "expected exactly two survivors");
+        assertEq(population.livingCount(), population.aliveCount(), "index drifted from aliveCount");
+        assertEq(population.prophetCount(), 4, "the lineage must not shrink");
+
+        // Every id in the index is alive, and every living id is in the index.
+        for (uint256 id = 1; id <= 4; ++id) {
+            assertEq(population.livingIndex(id) != 0, !_p(id).dead(), "livingIndex disagrees with dead()");
+        }
+
+        // `living` must be a permutation of the survivors with no duplicates: a
+        // swap-remove that wrote the wrong slot would leave one id twice and drop
+        // the other, which every count above still passes.
+        uint256 a = population.living(0);
+        uint256 b = population.living(1);
+        assertTrue(a != b, "living holds the same id twice");
+        assertTrue((a == 2 && b == 4) || (a == 4 && b == 2), "living holds ids that did not survive");
+        assertEq(population.livingIndex(a), 1, "livingIndex does not point back at living[0]");
+        assertEq(population.livingIndex(b), 2, "livingIndex does not point back at living[1]");
+
+        // THE REAL ASSERTION: both survivors are still being graded a window later.
+        uint32 graded2 = _p(2).correctCount() + _p(2).wrongCount();
+        uint32 graded4 = _p(4).correctCount() + _p(4).wrongCount();
+
+        _pushWindow();
+        _think();
+        _answer(2, "UP_MOMENTUM");
+        _answer(4, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        assertEq(_p(2).correctCount() + _p(2).wrongCount(), graded2 + 1, "organism 2 was skipped by settleAll");
+        assertEq(_p(4).correctCount() + _p(4).wrongCount(), graded4 + 1, "organism 4 was skipped by settleAll");
+        assertFalse(_p(2).positionOpen(), "organism 2 left a position open");
+        assertFalse(_p(4).positionOpen(), "organism 4 left a position open");
+    }
+
+    /**
+     *  Per-window work must be bounded by the living set, not by history — that is
+     *  the whole point. `settleAll`'s gas grew with cumulative DEATHS against a
+     *  `gasLimit` that is fixed when the reactivity subscription is created, so the
+     *  same-block settlement claim would have broken before the cap did.
+     */
+    function test_population_deadOrganismsCostNothingToIterate() public {
+        _seed(2);
+        _makeThinkingFatal();
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        assertEq(population.livingCount(), 0, "both should have starved");
+        assertEq(population.prophetCount(), 2, "lineage must not shrink");
+        assertEq(population.livingIndex(1), 0, "a dead organism is still indexed");
+        assertEq(population.livingIndex(2), 0, "a dead organism is still indexed");
+
+        // A window over an empty living set must still advance the machine rather
+        // than revert: the cadence has to survive an extinction it did not expect.
+        _pushWindow();
+        _think();
+        assertEq(population.phase(), 1, "think() did not advance the phase");
+        _commit();
+        assertEq(population.phase(), 2, "commitAll() did not advance the phase");
+        _settle();
+        assertEq(population.phase(), 0, "settleAll() did not close the window");
+    }
+
+    /*//////////////////////////////////////////////////////////////
                      COGNITION — ALL FIVE STATUS BRANCHES
     //////////////////////////////////////////////////////////////*/
 
