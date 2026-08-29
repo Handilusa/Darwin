@@ -23,7 +23,7 @@
 - **`Prophet.settleWindow` must stay callable inside the reactive callback**, in the same block the market resolves. This is the project's central technical claim. After Task 1, `npm run prove` must pass against Shannon before `SelectionEngine.disableFallback()` is ever called, and until it does only the weaker claim is licensed: *"selection is on-chain and atomic with redemption."*
 - **6 decimals.** Shannon tUSDC is 6dp; the test suite's `ONE` is `1e6`. Never hardcode 18.
 - **Commit discipline: every gate runs BEFORE its commit, never after.** Each task ends with a verification step and then a commit step, in that order. A commit is the record that the gates passed, so a commit made ahead of a green suite is a lie in the history. If a gate fails, fix it and re-run — do not commit "work in progress" and repair afterwards. The repo is at `C:/Users/Handi/Desktop/somnia_predict/darwin` on branch `master`.
-- **The four phases map to five commits.** Phase 1 = Task 1, Phase 2 = Tasks 2 and 3 (ownership and self-paid cognition are separately testable, so they get separate commits), Phase 3 = Task 4, Phase 4 = Task 5. Every phase therefore ends on a commit whose gates ran first.
+- **The four phases map to six commits.** Phase 1 = Task 1, Phase 2 = Tasks 2A, 2 and 3 (the concurrent-population fix, ownership, and self-paid cognition are separately testable, so they get separate commits), Phase 3 = Task 4, Phase 4 = Task 5. Every phase therefore ends on a commit whose gates ran first. Task 2A was added on 2026-08-29 by the business-model compatibility review below; it is numbered "2A" rather than renumbering, so that every "Task N" cross-reference already written into Tasks 3, 4 and 5 keeps pointing at what it meant.
 - **`npm run prove` cannot gate a commit in this plan.** It needs a live deployment that does not exist yet, so it gates `SelectionEngine.disableFallback()` after the Season 0 deploy, not any commit here. Tasks 1 and 5 note this at the point where it would otherwise be tempting to claim it passed.
 
 ---
@@ -573,6 +573,422 @@ selection is on-chain and atomic with redemption."
 
 ---
 
+## Business-model compatibility review — 2026-08-29, written after Task 1 and before any Phase 2 code
+
+Tasks 2–5 were drafted against the spec. `docs/BUSINESS_PLAN.md` came afterwards, so before
+writing a line of Phase 2 every load-bearing assumption in Tasks 2, 3 and 4 was re-checked
+against it **and against the contracts as they actually stand**. Eight findings. Every one was
+established by reading code, not inferred from the spec, and each names what establishes it.
+
+| # | Finding | Established by | Resolved in |
+|---|---|---|---|
+| F1 | **`maxPopulation` is a lifetime birth cap, not a concurrent-population cap.** With 8 founders and `maxPopulation = 24`, only 16 further organisms can EVER exist. After that the generation counter freezes and `enter` reverts permanently while attrition empties the arena. | `Population.sol:327` gates on `prophets.length`; `:337` only pushes; `:742` makes ids array indices so `prophets` can never be compacted; `Prophet.die` (`:430`) only sets a flag | **new Task 2A**, below |
+| F2 | **An entrant has no way to get capital back.** `stakeOut` is the only collateral exit and is `onlyPopulation alive`; `endSeason` pays the top three only. A 4th-place survivor is confiscated in full, which contradicts "zero entry fee". | `Prophet.sol:270`; Task 4's `endSeason`; no withdrawal exists among `Prophet`'s externals | Task 2, new Step 7 (`retire`) |
+| F3 | **Breeding inference is still house-paid**, so §7's "the protocol's only recurring cost is cadence gas" stays false and the STT bill still grows with evolutionary success — the exact dynamic §2 says the redesign removes. | Task 3 Step 4 leaves `_requestMutation` (`Population.sol:645`) paying from Population's balance | Task 3, Step 4 (rewritten) |
+| F4 | **The prize pool is fed only by deaths.** Task 4 books 100% of rent as `rakeAccrued`, but §8 promises a pool fed by residues **and a share of the rake** — so in a healthy season the pot is near-empty exactly when the payout event matters. | Task 4 Step 5: `rakeAccrued += charged`, no split | Task 4, Steps 3 and 5 (`prizeShareBps`) |
+| F5 | **The entry floor is not ante-aware.** `minEndowment = 10 tUSDC` while the ante doubles past 16 tUSDC by level 6, so the contract would take money from an entrant who cannot post the current ante. | Task 2 Step 6 checks only `minEndowment`; Task 4's `ante()` schedule | Task 4, Step 6 (`enter` hardened) |
+| F6 | **The default season outlives its population.** `seasonWindows = 576` with `levelWindows = 24` puts the ante above a 10 tUSDC treasury by window ~200–344; the last ~300 windows would be an empty arena with a leaderboard. | Task 4 Step 3 defaults, against `endowment = 10_000_000` and `metabolicCost = 50_000` (`Population.initialize`) | Task 4, Step 3 (`levelWindows = 72`) |
+| F7 | **The failed-request leak is now an entrant's STT**, not house money moved between its own pockets — so the disclosure must change even though the mechanism does not. | Task 3 Step 4's note; `Prophet.sol:526` shows the *successful*-request rebate already lands on the organism | Task 3, Step 4 (`CognitionUnspent`) |
+| F8 | **`rakeBps` is dead storage.** It is initialized, settable and publicly readable, and never read by any logic — so the rake on winnings that §6 lists as revenue line #2 does not exist. Same fingerprint as F2's unused `NotEntrant`. | grep of this plan: `rakeBps` appears at Steps 3 and 6 and in no expression | Task 4, Step 5 (skim on profit) |
+
+Three of these — F1, F2, F8 — are capabilities the business plan asserts and the code does not
+have. F1 is the one that matters most, because it is not a missing feature but an active
+countdown: it degrades the headline metric (generation count) during the judging window.
+
+**F1 in detail, since it justifies its own task.** Ids are array positions (`prophetAt` returns
+`prophets[prophetId - 1]`), and lineage is the one asset the whole design refuses to rebuild, so
+`prophets` is correctly append-only and must stay that way. The bug is that the *cap* and the
+*per-window loops* both read that same append-only array. Consequences, in order of severity:
+
+1. **The arena closes permanently.** Total organisms ever = `maxPopulation`. `enter` reverts
+   `PopulationFull` forever once 24 have been born, with no death able to free a slot. "Entrants
+   entering" (§9, *Demonstrable*) stops being demonstrable at exactly the moment the arena is
+   worth entering.
+2. **The generation counter freezes**, which is the headline metric (`CLAUDE.md`: *"The headline
+   metric is generation, not PnL"*). §5's moat — *"every window deepens it"* — inverts: after the
+   cap every window makes the population emptier and the number no larger.
+3. **Per-window gas grows with cumulative deaths, against a fixed budget.** `settleAll` runs
+   inside the reactivity callback, whose `gasLimit` is fixed when the subscription is created
+   (`SPIKE.md:126-129`: default 10M, ceiling 200M). A loop over the ever-born set spends gas on
+   every corpse forever. The moat is wall-clock time, so an unbounded per-window cost is
+   disqualifying on its own — and it is the same-block claim (`npm run prove`) that breaks first.
+
+Raising `maxPopulation` via `setEconomics` is not a fix: it buys entries by making (3) worse
+linearly, and it needs a live owner transaction on the day. The fix is to separate the two roles
+— `prophets` stays the append-only lineage, and a compactable `living` index becomes what the cap
+and the loops read.
+
+**Where this review did NOT find a problem**, recorded so it is not re-litigated:
+
+- `_hatch` charges the **parent** for the child's endowment (`Population.sol:696`:
+  `parent.stakeOut(address(this), endowment, collateral)`, with a refund path when the parent
+  cannot afford it). Collateral is conserved, and Task 4's `rakeAccrued` therefore does not
+  silently fund births. An earlier draft of this review claimed it did; that claim is withdrawn.
+- `topUpCognition` and `fundProphet` being permissionless is not a capture vector: both can only
+  move value *into* an organism, and neither confers any influence over what it concludes.
+- Zero entry fee is compatible with revenue: rent + rake are charged for time in the arena, and
+  F2/F5 are what make that a game rather than a confiscation.
+
+---
+
+### Task 2A: Separate the lineage from the living population
+
+**Why this comes before Task 2:** Task 2 makes entry permissionless, and F1 makes it
+permanently closable. Shipping `enter` on top of a lifetime birth cap ships a front door that
+locks itself. This task changes no economics and adds no external behaviour except that the
+population cap starts meaning what its name says.
+
+**Files:**
+- Modify: `contracts/src/Population.sol` — storage, `_spawn` (`:326-351`), `think` (`:415-417`),
+  `commitAll` (`:474-493`), `settleAll` (`:601-623`), `hatchAll` (`:678-687`), new `livingCount`
+- Test: `contracts/test/Darwin.t.sol`
+
+**Interfaces:**
+- Consumes: nothing from Task 1.
+- Produces:
+  - `Population.living(uint256 index) returns (uint256 prophetId)` — the auto-getter
+  - `Population.livingIndex(uint256 prophetId) returns (uint256)` — 1-based position, 0 = not living
+  - `Population.livingCount() returns (uint256)`
+  - `Population._removeLiving(uint256 prophetId)` — internal, idempotent
+
+- [ ] **Step 1: Write the failing tests**
+
+```solidity
+function test_population_capIsConcurrentNotLifetime() public {
+    Econ memory e = _econ();
+    e.maxPopulation = 2;
+    _setEconomics(e);
+
+    _seed(2);
+    assertEq(population.livingCount(), 2, "two organisms should be alive");
+
+    // A third birth is refused while both are alive.
+    string[] memory one = new string[](1);
+    one[0] = "third";
+    vm.prank(owner);
+    vm.expectRevert(Population.PopulationFull.selector);
+    population.spawnGenesis(one);
+
+    // Kill one, and the slot must come back.
+    _makeThinkingFatal();
+    _upWins();
+    _think();
+    _answer(1, "UP | MOMENTUM | rising");
+    _answer(2, "DOWN | MEANREVERSION | falling");
+    _commit();
+    _settle();
+
+    assertLt(population.livingCount(), 2, "nothing died");
+    vm.prank(owner);
+    population.spawnGenesis(one); // must NOT revert
+    assertGt(population.prophetCount(), 2, "lineage did not grow");
+}
+
+function test_population_livingIndexTracksAliveCount() public {
+    _seed(4);
+    assertEq(population.livingCount(), population.aliveCount(), "index and counter disagree");
+
+    _makeThinkingFatal();
+    _upWins();
+    _think();
+    for (uint256 id = 1; id <= 4; ++id) {
+        _answer(id, id % 2 == 0 ? "UP | MOMENTUM | rising" : "DOWN | MEANREVERSION | falling");
+    }
+    _commit();
+    _settle();
+
+    assertEq(population.livingCount(), population.aliveCount(), "index drifted from aliveCount");
+    // Every id still in the index must actually be alive, and vice versa.
+    uint256 n = population.prophetCount();
+    for (uint256 id = 1; id <= n; ++id) {
+        bool indexed_ = population.livingIndex(id) != 0;
+        assertEq(indexed_, !_p(id).dead(), "livingIndex disagrees with dead()");
+    }
+}
+
+function test_population_deadOrganismsCostNothingToIterate() public {
+    // The lineage keeps growing while the living set stays small, which is the
+    // whole point: per-window work is bounded by aliveCount, not by history.
+    _seed(2);
+    _makeThinkingFatal();
+    _upWins();
+    _think();
+    _answer(1, "UP | MOMENTUM | rising");
+    _answer(2, "DOWN | MEANREVERSION | falling");
+    _commit();
+    _settle();
+
+    assertEq(population.livingCount(), 0, "both should have starved");
+    assertEq(population.prophetCount(), 2, "lineage must not shrink");
+
+    // A window over an empty living set must still advance the machine.
+    _think();
+    assertEq(population.phase(), 1, "think() did not advance the phase");
+}
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+```bash
+npx --yes forge test --root contracts --match-test "test_population_" -vv
+```
+
+Expected: compile error — `livingCount` and `livingIndex` do not exist. Note
+`test_population_capIsConcurrentNotLifetime` would fail even if they did: `spawnGenesis` reverts
+today on the *lifetime* count.
+
+- [ ] **Step 3: Add the storage**
+
+Immediately before `__gap` — which Task 1 left at `uint256[18]` — add:
+
+```solidity
+    // --- the living population, as distinct from the lineage ---
+    /**
+     *  Prophet ids of organisms that are still alive, in no particular order.
+     *
+     *  `prophets` is append-only and must stay that way: ids ARE array positions
+     *  (`prophetAt` returns `prophets[prophetId - 1]`), and the ancestry graph is
+     *  the one asset this design refuses to be able to rebuild. So the lineage
+     *  cannot be compacted — which is exactly why the cap and the per-window loops
+     *  must not read it. They read this instead.
+     */
+    uint256[] public living;
+    /// @dev prophetId -> its 1-BASED position in `living`. Zero means "not living",
+    ///      which is what makes `_removeLiving` idempotent.
+    mapping(uint256 => uint256) public livingIndex;
+```
+
+and shrink the gap to `uint256[16]`.
+
+Add the view, next to `prophetCount` (`:736`):
+
+```solidity
+    /// @dev The concurrent population. `prophetCount()` is the lineage; this is how
+    ///      many are alive right now, and it is what `maxPopulation` bounds.
+    function livingCount() external view returns (uint256) {
+        return living.length;
+    }
+```
+
+- [ ] **Step 4: Add the removal helper**
+
+Next to `_breedThreshold` (`:629`):
+
+```solidity
+    /**
+     *  Swap-remove an id from `living`.
+     *
+     *  Idempotent by construction: an id whose `livingIndex` is zero is simply not
+     *  there, so a second reap — or a `retire` racing a starvation — cannot corrupt
+     *  the array or underflow the pop.
+     */
+    function _removeLiving(uint256 prophetId) internal {
+        uint256 pos = livingIndex[prophetId];
+        if (pos == 0) return;
+        uint256 last = living.length;
+        if (pos != last) {
+            uint256 movedId = living[last - 1];
+            living[pos - 1] = movedId;
+            livingIndex[movedId] = pos;
+        }
+        living.pop();
+        livingIndex[prophetId] = 0;
+    }
+```
+
+- [ ] **Step 5: Cap on the living set, and index every birth**
+
+In `_spawn` (`:326-338`), change the cap and add the two index writes:
+
+```solidity
+    function _spawn(uint256 parentId, uint32 generation, string memory genome) internal returns (address p) {
+        if (living.length >= maxPopulation) revert PopulationFull();
+
+        // `id` IS NOT A LOCAL ON PURPOSE — the Yul optimizer inlines this into
+        // spawnGenesis's loop and a local pushes it one stack slot over the limit,
+        // under --via-ir too. `prophets.length` after the push IS the new id, so the
+        // index writes below re-read it rather than caching it: SLOADs are cheap and
+        // stack slots are what this function has run out of.
+        p = address(new BeaconProxy(prophetBeacon, ""));
+        Prophet(payable(p)).initialize(address(this), prophets.length + 1, parentId, generation, windowCount, genome);
+        prophets.push(p);
+        living.push(prophets.length);
+        livingIndex[prophets.length] = living.length;
+        aliveCount += 1;
+```
+
+Leave the rest of `_spawn` alone.
+
+In `hatchAll` (`:684`), the same substitution:
+
+```solidity
+            if (living.length >= maxPopulation) break;
+```
+
+- [ ] **Step 6: Iterate the living set in the three window functions**
+
+**Read this before editing:** in every one of these loops, `i` is a position in `living`, not an
+id. The old code could use `i + 1` as an id because it walked `prophets` directly. There is
+exactly one such site (`Population.sol:435`, inside `think`'s `ThinkFailed` emit) and it must
+become `living[i]`. Emitting `i + 1` after this change reports a *different organism's* failure,
+and `monitor.ts` would blame the wrong one. `prophets[living[i] - 1]` is used rather than
+`prophetAt(living[i])` in all three: the bounds check `prophetAt` adds cannot fail here, and its
+failure mode would be a reverting window.
+
+`think` (`:415-417`):
+
+```solidity
+        uint256 n = living.length;
+        for (uint256 i; i < n; ++i) {
+            Prophet p = Prophet(payable(prophets[living[i] - 1]));
+```
+
+and the `catch` emit at `:435` (there are two `ThinkFailed(i + 1)` sites once Task 3 adds the
+affordability skip — change both):
+
+```solidity
+                emit ThinkFailed(living[i]);
+```
+
+`commitAll` (`:475-482`) — note the `dead()` guard becomes unreachable rather than wrong, and
+stays as a belt-and-braces check:
+
+```solidity
+        uint256 n = living.length;
+        address[] memory ups = new address[](n);
+        address[] memory downs = new address[](n);
+        uint256 nu;
+        uint256 nd;
+
+        for (uint256 i; i < n; ++i) {
+            Prophet p = Prophet(payable(prophets[living[i] - 1]));
+```
+
+`settleAll` (`:603-623`) — **iterate BACKWARDS.** This is the one loop that removes elements
+while walking, and swap-remove moves the *last* element into the hole. Going forwards, that
+element is one the loop has not reached yet and would now skip: an organism would silently miss
+settlement, keep its position open, and never be graded. Going backwards, the element moved in
+has already been processed:
+
+```solidity
+        address v = venue;
+
+        // Backwards, because a reap swap-removes from `living` and the element that
+        // fills the hole comes from the end — already processed here, skipped
+        // entirely if this loop ran forwards. Do not "tidy" this into a forward
+        // loop.
+        for (uint256 i = living.length; i > 0; --i) {
+            Prophet p = Prophet(payable(prophets[living[i - 1] - 1]));
+            if (p.dead() || !p.positionOpen()) continue;
+
+            try p.settleWindow(v, collateral, metabolicCost) returns (uint256, bool starved) {
+                if (starved || p.treasury() < metabolicCost) {
+                    p.die(windowCount);
+                    aliveCount -= 1;
+                    _removeLiving(p.prophetId());
+                    emit Reaped(p.prophetId(), windowCount, aliveCount);
+                } else if (p.streak() >= breedStreak && p.treasury() >= _breedThreshold()) {
+                    _requestMutation(p);
+                }
+            } catch {
+                emit SettleFailed(p.prophetId());
+            }
+        }
+```
+
+`hatchAll` (`:679-681`) — forwards is correct here, because `_spawn` **appends** to `living` and
+`n` is captured before the loop, so newborns are not iterated in the call that bore them:
+
+```solidity
+        uint256 n = living.length;
+        for (uint256 i; i < n; ++i) {
+            Prophet p = Prophet(payable(prophets[living[i] - 1]));
+```
+
+**Leave `snapshot` (`:767-771`) iterating `prophets`.** It is a view over the *lineage*, and the
+dead are the interesting half of an evolutionary record. Task 4's `endSeason` also keeps walking
+`prophets` — it must only pay survivors, but a season-end read is not a per-window cost.
+
+**Stack-limit warning:** `prophets[living[i] - 1]` is one expression where `prophets[i]` was, so
+it adds no live locals, and `think`'s scoped-block workaround (`:337-343`) is untouched. If
+`forge build` nevertheless reports a stack error, hoist `living[i]` into the existing scoped
+block rather than restructuring the loop, and report which function needed it.
+
+- [ ] **Step 7: Run the new tests**
+
+```bash
+npx --yes forge test --root contracts --match-test "test_population_" -vv
+```
+
+Expected: all three PASS.
+
+- [ ] **Step 8: Run the full suite and repair the fallout**
+
+```bash
+npm test
+```
+
+The suite should be green with no edits: every existing test drives whole windows through
+`think`/`commitAll`/`settleAll` and asserts on organisms by id, and ids are unchanged. If
+something fails, suspect the `i + 1` → `living[i]` substitution first — a test asserting on a
+`ThinkFailed` id is the likely tripwire, and it is catching a real bug if it fires.
+
+- [ ] **Step 9: Measure what this bought**
+
+Not a gate, but record it in the commit: the point of the task is that per-window gas stops
+tracking history.
+
+```bash
+npx --yes forge test --root contracts --match-test test_lifecycle --gas-report -vv | head -40
+```
+
+Note `settleAll`'s gas next to the pre-change figure if it is at hand. What matters is the
+*shape*: it must now be a function of `livingCount()`, not of `prophetCount()`.
+
+- [ ] **Step 10: Gate, then commit**
+
+```bash
+npm test && npm run build
+```
+
+Both must pass before the commit.
+
+```bash
+git add contracts/src/Population.sol contracts/test/Darwin.t.sol
+git commit -m "fix(arena): maxPopulation bounds the living population, not the lineage
+
+The cap read prophets.length, which is append-only because ids ARE array
+positions and the ancestry graph must never be renumbered. So it was a
+LIFETIME BIRTH CAP: 8 founders plus 16 more organisms, ever. After that
+the generation counter — the headline metric — freezes permanently,
+enter() reverts forever, and attrition empties an arena nobody can join.
+
+Three consequences, all landing during the judging window:
+- generation stops advancing while every window still costs gas
+- 'entrants entering' stops being demonstrable exactly when the arena is
+  worth entering
+- settleAll's cost grew with cumulative DEATHS, against a gas limit that
+  is fixed when the reactivity subscription is created (SPIKE.md: 10M
+  default). The same-block settlement claim breaks before the cap does
+
+Raising maxPopulation is not a fix: it buys entries by making the gas
+problem worse, linearly, and needs a live owner tx on the day.
+
+- living[] + livingIndex{} : the compactable view of prophets[]
+- _spawn and hatchAll cap on living.length; _removeLiving on death
+- think/commitAll/settleAll/hatchAll iterate living; snapshot and
+  endSeason keep walking the lineage, where the dead are the point
+- settleAll iterates BACKWARDS: swap-remove fills the hole from the end,
+  which a forward loop would skip — an organism silently unsettled with
+  its position left open
+- ThinkFailed(i + 1) became ThinkFailed(living[i]). i is no longer an id,
+  and emitting it would have blamed a different organism
+- living.length == aliveCount is asserted; aliveCount stays because it is
+  in the event stream and storage is append-only"
+```
+
+---
+
 ### Task 2: Organism ownership and permissionless entry
 
 **Files:**
@@ -581,13 +997,14 @@ selection is on-chain and atomic with redemption."
 - Test: `contracts/test/Darwin.t.sol`
 
 **Interfaces:**
-- Consumes: `Population.venue` from Task 1. **Not `Prophet.grantOperators`** — see Task 1's correction banner; the grant path was never needed and `grantPopulation` is unchanged.
+- Consumes: `Population.venue` from Task 1. `Population.living` / `livingIndex` / `_removeLiving` from Task 2A — `_spawn`'s Step 5 rewrite below is stated against **Task 2A's version of the function**, not the version currently in `Population.sol`. **Not `Prophet.grantOperators`** — see Task 1's correction banner; the grant path was never needed and `grantPopulation` is unchanged.
 - Produces:
   - `Prophet.entrant() returns (address)`
   - `Prophet.initialize(address population_, uint256 prophetId_, uint256 parentId_, uint32 generation_, uint64 birthWindow_, address entrant_, string calldata systemPrompt_)` — **`entrant_` inserted before `systemPrompt_`**
-  - `Population.enter(string calldata genome, uint256 endowmentAmount) returns (uint256 prophetId)`
+  - `Population.enter(string calldata genome, uint256 endowmentAmount) returns (uint256 prophetId)` — Task 4 hardens the endowment check
+  - `Population.retire(uint256 prophetId)`
   - `Population.minEndowment() returns (uint256)`
-  - `Population.setSeason(uint256 minEndowment_, uint256 cognitionEndowment_)` — Task 4 extends this signature
+  - `Population.setSeason(uint256 minEndowment_, uint256 cognitionEndowment_)` — **Task 4 REPLACES this signature** with a single `SeasonParams` struct and rewrites both call sites. Write the two-argument form here anyway: it is what this task's tests need, and a struct with six fields this task cannot yet populate would be dead weight.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -661,15 +1078,91 @@ function test_entry_genesisOrganismsBelongToTheHouse() public {
     _seed(1);
     assertEq(_p(1).entrant(), owner, "genesis organism should belong to the owner");
 }
+
+function test_retire_returnsTheEntrantsRemainingCapital() public {
+    address alice = address(0xA11CE);
+    collateral.mint(alice, 100 * ONE);
+
+    vm.startPrank(alice);
+    collateral.approve(address(population), 100 * ONE);
+    uint256 id = population.enter("momentum", 10 * ONE);
+    vm.stopPrank();
+
+    uint256 before = collateral.balanceOf(alice);
+    uint256 held = _p(id).treasury();
+    uint256 livingBefore = population.livingCount();
+
+    vm.prank(alice);
+    population.retire(id);
+
+    assertEq(collateral.balanceOf(alice) - before, held, "capital was not returned in full");
+    assertEq(_p(id).treasury(), 0, "the organism kept collateral");
+    assertTrue(_p(id).dead(), "retiring must kill the organism");
+    assertEq(population.livingIndex(id), 0, "still in the living index");
+    assertEq(population.livingCount(), livingBefore - 1, "living count did not fall");
+}
+
+function test_retire_isEntrantOnly() public {
+    address alice = address(0xA11CE);
+    collateral.mint(alice, 100 * ONE);
+    vm.startPrank(alice);
+    collateral.approve(address(population), 100 * ONE);
+    uint256 id = population.enter("momentum", 10 * ONE);
+    vm.stopPrank();
+
+    // Not even the owner can retire someone else's organism: this is the entrant's
+    // capital, and an owner-callable exit would be an admin drain path.
+    vm.prank(owner);
+    vm.expectRevert(Population.NotEntrant.selector);
+    population.retire(id);
+
+    // And an entrant cannot retire a house organism. `house` is hoisted out of the
+    // call because a view read AFTER vm.prank consumes the prank — Darwin.t.sol:172.
+    _seed(1);
+    uint256 house = population.prophetCount();
+    vm.prank(alice);
+    vm.expectRevert(Population.NotEntrant.selector);
+    population.retire(house);
+}
+
+function test_retire_refusesWhileAPositionIsOpen() public {
+    address alice = address(0xA11CE);
+    collateral.mint(alice, 100 * ONE);
+    vm.startPrank(alice);
+    collateral.approve(address(population), 100 * ONE);
+    uint256 id = population.enter("momentum", 50 * ONE);
+    vm.stopPrank();
+
+    _seed(1);
+    uint256 foil = population.prophetCount();
+
+    _upWins();
+    _think();
+    _answer(id, "UP | MOMENTUM | rising");
+    _answer(foil, "DOWN | MEANREVERSION | falling");
+    _commit();
+
+    assertTrue(_p(id).positionOpen(), "the test needs an open position to be meaningful");
+    vm.prank(alice);
+    vm.expectRevert(Population.PositionStillOpen.selector);
+    population.retire(id);
+
+    // Once the window closes, the exit opens again.
+    _settle();
+    assertFalse(_p(id).dead(), "a 50 tUSDC organism must not have starved in one window");
+    vm.prank(alice);
+    population.retire(id);
+    assertTrue(_p(id).dead(), "retire should succeed with no position open");
+}
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_entry_" -vv
+npx --yes forge test --root contracts --match-test "test_entry_" --match-test "test_retire_" -vv
 ```
 
-Expected: compile error — `enter`, `setSeason`, `entrant`, `EndowmentTooSmall` do not exist.
+Expected: compile error — `enter`, `retire`, `setSeason`, `entrant`, `EndowmentTooSmall`, `PositionStillOpen` do not exist. (`forge` takes the last `--match-test`; run the two patterns as two invocations, or use `--match-test "test_(entry|retire)_"`.)
 
 - [ ] **Step 3: Add `entrant` to `Prophet`**
 
@@ -700,7 +1193,7 @@ In `contracts/src/Prophet.sol`, **do not touch the slot-15 block.** `CLAUDE.md` 
     uint256[18] private __gap;
 ```
 
-Verify it with the compiler rather than with this comment — `forge inspect Prophet storage-layout` must report `entrant` at slot 17 offset 0, and `positionOpen` alone in slot 15. Step 13's storage gate is where that happens.
+Verify it with the compiler rather than with this comment — `forge inspect Prophet storage-layout` must report `entrant` at slot 17 offset 0, and `positionOpen` alone in slot 15. Step 10's storage gate is where that happens.
 
 Add `entrant_` to `initialize`:
 
@@ -729,7 +1222,7 @@ Add `entrant_` to `initialize`:
 
 - [ ] **Step 4: Add the new `Population` storage**
 
-Immediately before `__gap` — which Task 1 left at `uint256[18]` — add:
+Immediately before `__gap` — which Task 2A left at `uint256[16]` — add:
 
 ```solidity
     // --- open arena ---
@@ -737,7 +1230,7 @@ Immediately before `__gap` — which Task 1 left at `uint256[18]` — add:
     uint256 public cognitionEndowment; // native STT handed to a newborn to think with
 ```
 
-and shrink the gap to `uint256[16]`. No padding is needed here, unlike `venue` and `Prophet.entrant`: a `uint256` occupies a whole slot by definition, so two of them cannot pack into `venue`'s trailing bytes.
+and shrink the gap to `uint256[14]`. No padding is needed here, unlike `venue` and `Prophet.entrant`: a `uint256` occupies a whole slot by definition, so two of them cannot pack into the trailing bytes of anything before them.
 
 In `initialize`, after `maxPopulation = 24;`:
 
@@ -746,23 +1239,32 @@ In `initialize`, after `maxPopulation = 24;`:
         cognitionEndowment = 0; // set per-deploy; Task 3 makes it load-bearing
 ```
 
-Add the error next to the others (`:111-119`):
+Add the errors next to the others (`:132-139`) — `ProphetIsDead` and `NoSuchProphet` already exist and `retire` reuses both:
 
 ```solidity
     error EndowmentTooSmall();
     error NotEntrant();
+    error PositionStillOpen();
+```
+
+and the event next to `Reaped` (`:120`):
+
+```solidity
+    /// @dev An entrant left voluntarily and took what the organism still held.
+    ///      Distinct from `Reaped`, which is death by starvation and forfeits.
+    event Retired(uint256 indexed prophetId, address indexed entrant, uint256 returned);
 ```
 
 - [ ] **Step 5: Thread the entrant through `_spawn`**
 
-`_spawn` currently endows from Population's own collateral balance. Keep that: `enter` pulls the entrant's collateral into Population *first*, so `_spawn` stays a single code path for genesis, entry and hatching. Change the signature and the two lines that use it:
+`_spawn` currently endows from Population's own collateral balance. Keep that: `enter` pulls the entrant's collateral into Population *first*, so `_spawn` stays a single code path for genesis, entry and hatching. Change the signature and the lines that use it — **this is stated against Task 2A's version**, so the `living` cap and the two index writes are already present and must survive:
 
 ```solidity
     function _spawn(uint256 parentId, uint32 generation, string memory genome, address entrant, uint256 endow)
         internal
         returns (address p)
     {
-        if (prophets.length >= maxPopulation) revert PopulationFull();
+        if (living.length >= maxPopulation) revert PopulationFull();
 
         // `id` IS NOT A LOCAL ON PURPOSE — see the note below; the Yul optimizer
         // inlines this into spawnGenesis's loop and a local pushes it one stack
@@ -772,6 +1274,8 @@ Add the error next to the others (`:111-119`):
             address(this), prophets.length + 1, parentId, generation, windowCount, entrant, genome
         );
         prophets.push(p);
+        living.push(prophets.length);
+        livingIndex[prophets.length] = living.length;
         aliveCount += 1;
 
         Prophet(payable(p)).grantPopulation(outcomeToken, collateral);
@@ -832,15 +1336,71 @@ Add to the GENESIS section of `contracts/src/Population.sol`, after `spawnGenesi
     }
 ```
 
-- [ ] **Step 7: Run the new tests**
+- [ ] **Step 7: Write `retire`, the entrant's exit**
 
-```bash
-npx --yes forge test --root contracts --match-test "test_entry_" -vv
+Add immediately after `enter`. **Why this exists:** without it, collateral could enter an organism
+and leave only through starvation or a top-three season finish (Task 4's `endSeason`). A
+fourth-placed *survivor* would be confiscated in full — that is not a zero-entry-fee tournament,
+it is a toll moved from the door to the exit, and it is the kind of detail that turns "anyone can
+enter" into a claim nobody should act on. The unused `NotEntrant` error declared in Step 4 is the
+fingerprint of this capability having been designed and then dropped.
+
+```solidity
+    /**
+     *  Leave the arena and take what the organism still holds.
+     *
+     *  Rent already charged and antes already lost stay lost — this is an exit,
+     *  not a refund. What it guarantees is that the *remaining* stake belongs to
+     *  whoever put it in, which is what makes entering a wager rather than a
+     *  donation.
+     *
+     *  `positionOpen` is the entire anti-rage-quit gate, and it needs no new
+     *  state: it is true from `commitAll` until `settleAll`, so an entrant cannot
+     *  watch a market move against their organism and pull the stake out from
+     *  under the counterparty it is already paired 1:1 with. Between windows,
+     *  leaving is free — an organism nobody wants to keep funding should stop
+     *  costing its entrant money.
+     */
+    function retire(uint256 prophetId) external {
+        Prophet p = Prophet(payable(prophetAt(prophetId)));
+        if (msg.sender != p.entrant()) revert NotEntrant();
+        if (p.dead()) revert ProphetIsDead();
+        if (p.positionOpen()) revert PositionStillOpen();
+
+        // `stakeOut` carries the `alive` modifier (Prophet.sol:266-269), so the
+        // drain MUST come before die(). Reversing these two lines silently
+        // confiscates the entrant's capital, and the tests above would catch it.
+        uint256 remaining = p.treasury();
+        if (remaining > 0) p.stakeOut(msg.sender, remaining, collateral);
+
+        p.die(windowCount);
+        aliveCount -= 1;
+        _removeLiving(prophetId);
+        emit Retired(prophetId, msg.sender, remaining);
+    }
 ```
 
-Expected: all four PASS.
+Three things to notice, because each is a decision rather than an implementation detail:
 
-- [ ] **Step 8: Run the full suite and repair the fallout**
+- **The organism dies; it is not un-spawned.** `prophets` stays append-only and the lineage keeps
+  the record, which is the whole point of Task 2A's split. A retired organism's descendants and
+  its generation number remain part of the run's history.
+- **`p.dead()` is checked explicitly** even though `die` is idempotent (`Prophet.sol:431`:
+  `if (dead) return;`). Without the check, a second `retire` would underflow `aliveCount`, and
+  `stakeOut`'s `alive` modifier would revert with an error that says nothing about why.
+- **A reaped organism's residue is NOT returned here.** `settleAll` kills starvers, and
+  BUSINESS_PLAN §8 forfeits their residue to the prize pool — Task 4 books that. `retire` is the
+  voluntary path only, which is exactly why it is gated on the organism still being alive.
+
+- [ ] **Step 8: Run the new tests**
+
+```bash
+npx --yes forge test --root contracts --match-test "test_(entry|retire)_" -vv
+```
+
+Expected: all seven PASS.
+
+- [ ] **Step 9: Run the full suite and repair the fallout**
 
 ```bash
 npm test
@@ -848,7 +1408,34 @@ npm test
 
 Expected failures, all mechanical: `test_access_prophetCannotBeReinitialized` (`:1106`) and `test_upgrade_preservesEveryOrganismField` (`:897`) call `Prophet.initialize` directly and need the `entrant_` argument. The upgrade test should additionally assert `entrant` survives the upgrade — add it to the field list it checks, since a new field that is not in that test is a field the freeze does not protect.
 
-- [ ] **Step 9: Gate, then commit**
+- [ ] **Step 10: Re-derive both storage layouts from the compiler**
+
+This task is the first to touch `Prophet`'s layout, and `CLAUDE.md` makes the check mandatory
+after any change to `contracts/src/*.sol`. The layout is **not** in the default artifact output,
+so `--extra-output` is required and `forge clean` alone does not fix its absence:
+
+```bash
+forge clean --root contracts
+forge build --root contracts --extra-output storageLayout
+forge inspect Prophet    storage-layout --root contracts
+forge inspect Population storage-layout --root contracts
+```
+
+Assert, against the output and not against this document:
+
+1. `positionOpen` is **alone** in `Prophet` slot 15 — no `entrant` packed at offset 1.
+2. `Prophet.entrant` is at slot **17**, offset 0.
+3. `Prophet.__gap` begins at slot **18** with **18** entries.
+4. `Population.minEndowment` is at slot **31** and `cognitionEndowment` at **32**, following
+   Task 2A's `living` (29) and `livingIndex` (30).
+5. Every pre-existing declaration in both contracts is at the slot `STORAGE.md` records for it —
+   in particular `Population.phase` still at 26 with its spare bytes still spare.
+
+If (1) fails, the `uint256 private __slotAlign;` pad is missing or in the wrong place. Then add a
+dated changelog entry to `STORAGE.md` for both contracts, listing every new variable with its slot
+as the compiler reports it.
+
+- [ ] **Step 11: Gate, then commit**
 
 ```bash
 npm test && npm run build
@@ -857,29 +1444,37 @@ npm test && npm run build
 Both must pass before the commit.
 
 ```bash
-git add contracts/src/Population.sol contracts/src/Prophet.sol contracts/test/Darwin.t.sol
-git commit -m "feat(arena): organisms have owners and entry is permissionless
+git add contracts/src/Population.sol contracts/src/Prophet.sol contracts/test/Darwin.t.sol STORAGE.md
+git commit -m "feat(arena): organisms have owners, entry is open, and exit exists
 
-Prophet gains \`entrant\`, and Population.enter() lets anyone stake an
-organism into the arena. A tournament with no players could not charge
-for anything; this is the change that makes the arena a game rather
-than an exhibition.
+Prophet gains \`entrant\`, Population.enter() lets anyone stake an
+organism into the arena, and retire() lets them leave with what is
+left. A tournament with no players could not charge for anything; this
+is the change that makes the arena a game rather than an exhibition.
 
 - Prophet.entrant on a slot of its own, reached by declaring a uint256
   pad first: an address after slot 15's lone bool would have PACKED into
   slot 15, which CLAUDE.md forbids. Prophet.__gap 20 -> 18
-- Population.minEndowment / cognitionEndowment; Population.__gap 18 -> 16
+- Population.minEndowment / cognitionEndowment; Population.__gap 16 -> 14
 - Prophet.initialize takes entrant_ before systemPrompt_
 - Population.enter(genome, endowmentAmount): zero entry fee, mandatory
   minEndowment. Entrants are the scarce input, so revenue comes from
   time in the arena rather than a toll at the door
+- Population.retire(prophetId): the entrant's exit. Without it the only
+  ways collateral could leave an organism were starvation and a
+  top-three season finish, so a fourth-placed SURVIVOR was confiscated
+  in full — a toll moved from the door to the exit. Gated on
+  !positionOpen, which is true only between windows and is therefore
+  the whole anti-rage-quit rule with no new state. Drains BEFORE die(),
+  because stakeOut carries the alive modifier
 - Children inherit the parent's entrant, so a good genome reproducing
   means the entrant owns more organisms
 - spawnGenesis attributes house organisms to the owner
 - _spawn takes (entrant, endowment); callers ensure Population holds
   the collateral first, which unifies genesis, entry and hatching
 - setSeason added rather than extending setEconomics, whose seven
-  positional args plus vm.prank's one-call scope is a known footgun"
+  positional args plus vm.prank's one-call scope is a known footgun
+- both storage layouts re-derived from the compiler; STORAGE.md updated"
 ```
 
 ---
@@ -894,11 +1489,12 @@ This is the change that removes the cost centre. `Prophet` already has `receive(
 - Test: `contracts/test/Darwin.t.sol`
 
 **Interfaces:**
-- Consumes: `Population.cognitionEndowment` from Task 2.
+- Consumes: `Population.cognitionEndowment` from Task 2; `living` / `livingIndex` from Task 2A — `think`'s loop below is stated against Task 2A's version.
 - Produces:
   - `Prophet.drawCognition(uint256 amount) returns (uint256 sent)` — `onlyPopulation`, sends native to Population, returns what it could actually afford
   - `Population.topUpCognition(uint256 prophetId)` — `payable`, permissionless
   - `Population.spawnGenesis(string[] calldata genomes)` becomes `payable`
+  - Events `CognitionUnspent(uint256 prophetId, uint256 amount)` and `BreedingUnaffordable(uint256 prophetId)`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -987,12 +1583,14 @@ Add to the HOUSEKEEPING section of `contracts/src/Prophet.sol`, after `fund`:
 
 - [ ] **Step 4: Draw from the organism in `think`**
 
-In `Population.think`, replace the request loop body (`:384-405`):
+In `Population.think`, replace the request loop body (`:384-405`). **Stated against Task 2A's
+version of the loop** — `i` indexes `living`, so `i + 1` is not an id and every `ThinkFailed` emit
+takes `living[i]`:
 
 ```solidity
-        uint256 n = prophets.length;
+        uint256 n = living.length;
         for (uint256 i; i < n; ++i) {
-            Prophet p = Prophet(payable(prophets[i]));
+            Prophet p = Prophet(payable(prophets[living[i] - 1]));
             if (p.dead()) continue;
 
             // The organism funds its own thought. One that cannot is skipped: it
@@ -1000,7 +1598,7 @@ In `Population.think`, replace the request loop body (`:384-405`):
             // metabolism anyway. Starving because you could not afford to think is
             // the intended selection pressure, not a failure mode.
             if (p.drawCognition(dep) < dep) {
-                emit ThinkFailed(i + 1);
+                emit ThinkFailed(living[i]);
                 continue;
             }
 
@@ -1019,14 +1617,121 @@ In `Population.think`, replace the request loop body (`:384-405`):
             ) returns (uint256 requestId) {
                 p.noteThinking(requestId, marketId);
             } catch {
-                emit ThinkFailed(i + 1);
+                emit ThinkFailed(living[i]);
             }
         }
 ```
 
-**Note on the refund path:** if `createAdvancedRequest` reverts after the draw, the drawn native stays in Population rather than returning to the organism. That is a real leak of up to one deposit per failed request. Accept it for now and record it — `ThinkFailed` already makes it observable, and the amount is bounded by `dep`. Do **not** add a refund inside the catch: `think` is already at the `--via-ir` stack limit (`:337-343`), and this loop is the exact scope that overflows.
+**The failed-request leak, and why the disclosure changes even though the mechanism does not.** If
+`createAdvancedRequest` reverts after the draw, the drawn native stays in Population instead of
+returning to the organism. Before this task that was house money moving between its own pockets;
+after it, **it is an entrant's STT**, bounded by one deposit per failed request. Do **not** add a
+refund inside the `catch`: `think` is already at the `--via-ir` stack limit (`:337-343`) and this
+loop is the exact scope that overflows. Make it accountable instead — emit alongside
+`ThinkFailed`, which needs no new stack slot because both arguments are already live:
 
-`_requestMutation` (`:608`) keeps paying from Population's balance. Breeding is a house-subsidised event and there are far fewer of them than thoughts; changing it would also mean draining a parent mid-settlement. Leave it, and note it in the doc comment.
+```solidity
+    /// @dev A drawn cognition deposit that bought no inference. The native stays in
+    ///      Population and belongs, morally, to the organism. Reconciled by the
+    ///      operator, not on chain: refunding inside think()'s loop would push it
+    ///      over the --via-ir stack limit.
+    event CognitionUnspent(uint256 indexed prophetId, uint256 amount);
+```
+
+`ThinkFailed`'s own signature is deliberately left alone: `monitor.ts` filters on its topic0, and
+changing the event would silently stop the monitor matching the failure it exists to catch.
+
+- [ ] **Step 4b: Charge the parent for breeding inference too**
+
+`_requestMutation` (`:608`) still pays from Population's balance. **Leaving it there would make
+this task's headline claim false**: §7 of `docs/BUSINESS_PLAN.md` rests on *"once organisms pay for
+their own cognition, the protocol's only recurring cost is cadence gas"*, and breeding is an
+inference. Worse, the residual bill is proportional to *evolutionary success* — exactly the
+dynamic the redesign exists to remove — against a documented 1 STT/day faucet limit.
+
+An earlier draft of this plan kept it house-paid on the grounds that "draining a parent
+mid-settlement" was the worse trade. That objection confuses two balances: `settleWindow` moves
+**collateral**, `drawCognition` moves **native**, and they do not interact. Nothing about the
+settlement is at risk.
+
+Rewrite the deposit line so the parent pays, and make unaffordability a skip rather than a revert:
+
+```solidity
+    function _requestMutation(Prophet p) internal {
+        uint256 dep = requestDeposit();
+
+        // The parent pays to reproduce. An organism that cannot afford the
+        // inference simply does not breed this window — it keeps its streak and
+        // its surplus, and may try again next window. Reverting here would abort
+        // the whole settlement over one organism's empty pocket.
+        if (p.drawCognition(dep) < dep) {
+            emit BreedingUnaffordable(p.prophetId());
+            return;
+        }
+
+        bytes memory payload =
+            abi.encodeCall(ILLMAgent.inferString, (Genome.mutationPrompt(p.systemPrompt()), MUTATION_SYSTEM, true, new string[](0)));
+
+        try IAgentRequester(agentRequester).createAdvancedRequest{value: dep}(
+            llmAgentId,
+            address(p),
+            Prophet.handleMutation.selector,
+            payload,
+            subcommitteeSize,
+            threshold,
+            ConsensusType.Majority,
+            requestTimeout
+        ) returns (uint256 requestId) {
+            p.noteMutating(requestId);
+            emit BreedingRequested(p.prophetId(), requestId);
+        } catch {
+            emit CognitionUnspent(p.prophetId(), dep);
+        }
+    }
+```
+
+with the new event next to the others:
+
+```solidity
+    /// @dev Bred on merit, could not afford the thought. Not a failure — an
+    ///      organism keeps its streak and may breed in a later window.
+    event BreedingUnaffordable(uint256 indexed prophetId);
+```
+
+**Match the real function when you edit it.** The body above shows the shape, not a verbatim
+replacement: read `_requestMutation` at `Population.sol:645` first and change only the deposit
+source, the affordability guard and the `catch`. In particular do not alter how the mutation prompt
+or `MUTATION_SYSTEM` is built — that is existing, working code, and `Genome.beliefPrompt`'s sibling
+is another of the stack-limit-fragile sites `CLAUDE.md` lists.
+
+A test for it, added to Step 1's block:
+
+```solidity
+function test_cognition_breedingIsPaidByTheParent() public {
+    _seed(2);
+    Prophet winner = _p(1);
+
+    Econ memory e = _econ();
+    e.breedStreak = 1;
+    _setEconomics(e);
+
+    _upWins();
+    _think();
+    _answer(1, "UP | MOMENTUM | rising");
+    _answer(2, "DOWN | MEANREVERSION | falling");
+    _commit();
+
+    uint256 popBefore = address(population).balance;
+    uint256 orgBefore = address(winner).balance;
+    uint256 dep = population.requestDeposit();
+
+    _settle();
+
+    assertGt(winner.pendingMutationRequestId(), 0, "the winner should be breeding");
+    assertEq(orgBefore - address(winner).balance, dep, "the parent did not pay for the mutation");
+    assertEq(address(population).balance, popBefore, "population subsidised the breeding");
+}
+```
 
 - [ ] **Step 5: Fund newborns with cognition and add the top-up**
 
@@ -1101,7 +1806,7 @@ Newly hatched children are funded by `cognitionEndowment`, which is 0 by default
 npx --yes forge test --root contracts --match-test "test_cognition_" -vv
 ```
 
-Expected: all three PASS. Note `test_cognition_failedRequestsDoNotHaltPopulation` (`:373`) already exists and must also still pass — it uses `_makeThinkingFatal`, which is about metabolism rather than native balance, so it should be unaffected.
+Expected: all four PASS. Note `test_cognition_failedRequestsDoNotHaltPopulation` (`:373`) already exists and must also still pass — it uses `_makeThinkingFatal`, which is about metabolism rather than native balance, so it should be unaffected.
 
 - [ ] **Step 8: Run the full suite and repair the fallout**
 
@@ -1139,15 +1844,24 @@ think is the intended selection pressure, not a failure mode.
   move value INTO an organism, and buying someone's cognition confers
   no control over what they conclude
 - spawnGenesis is payable; newborns get cognitionEndowment
-- _requestMutation still pays from Population: breeding is rare next to
-  thinking, and draining a parent mid-settlement is the worse trade
+- _requestMutation ALSO draws from the parent. Breeding is an inference,
+  so leaving it house-paid would have left the recurring bill growing
+  with evolutionary success — the exact dynamic this removes. An
+  organism that cannot afford to reproduce keeps its streak and its
+  surplus and may breed in a later window (BreedingUnaffordable).
+  The earlier objection, that this drains a parent mid-settlement,
+  confused two balances: settleWindow moves collateral, drawCognition
+  moves native, and they do not interact
 - Zero new storage. A native balance is address(this).balance, and
   Prophet already had receive() external payable
 
 Known leak, bounded and observable: if createAdvancedRequest reverts
-after the draw, up to one deposit stays in Population and ThinkFailed
-fires. Not refunded inside the loop because think()'s scoped block is
-already at the --via-ir stack limit.
+after the draw, up to one deposit stays in Population. It is now an
+ENTRANT's STT rather than the house's own, so it is emitted as
+CognitionUnspent(prophetId, amount) and reconciled by the operator. Not
+refunded inside think()'s loop because that scope is already at the
+--via-ir stack limit. ThinkFailed's signature is unchanged on purpose:
+monitor.ts filters on its topic0.
 
 The protocol's only recurring cost is now cadence gas, so
 sustainability reduces to metabolicCost * aliveCount > gas per window."
@@ -1170,12 +1884,44 @@ The largest task, and the one that adds declarations — so it is the one whose 
 - Produces:
   - `Population.ante() returns (uint256)` and `Population.level() returns (uint32)`
   - `Population.rakeAccrued()`, `prizePool()`, `seasonId()`, `seasonStartWindow()`, `seasonWindows()`, `levelWindows()`, `baseAnte()`, `anteMultBps()`, `rakeBps()`
-  - `Population.setSeason(uint256 minEndowment_, uint256 cognitionEndowment_, uint256 baseAnte_, uint16 anteMultBps_, uint32 levelWindows_, uint32 seasonWindows_, uint16 rakeBps_)` — **extends Task 2's signature**
+  - `Population.prizeShareBps()`
+  - `Population.SeasonParams` — a struct with named fields `minEndowment`, `cognitionEndowment`, `baseAnte`, `anteMultBps`, `levelWindows`, `seasonWindows`, `rakeBps`, `prizeShareBps`
+  - `Population.setSeason(SeasonParams calldata s)` — **replaces Task 2's two-argument version**; every earlier call site is rewritten in Step 7
   - `Population.withdrawRake(address to, uint256 amount)` — `onlyOwner`, draws only against `rakeAccrued`
   - `Population.endSeason()` — permissionless once the season is over
-  - `Prophet.settleWindow(...) returns (uint256 collateralOut, bool starved, uint256 charged)` — **third return value added**
+  - `Population.EndowmentBelowAnte(uint256 supplied, uint256 required)` — the second entry floor
+  - `Prophet.settleWindow(address venue, address collateral, uint256 metabolicCost, uint16 rakeBps_) returns (uint256 collateralOut, bool starved, uint256 charged, uint256 raked)` — **one parameter and two return values added**
 
 - [ ] **Step 1: Write the failing tests**
+
+First two harness helpers, next to the existing `_econ()` / `_setEconomics()` pair they are modelled
+on. Read-modify-write is the only safe shape here: `setSeason` takes eight fields, and a test that
+wants to change one of them must not have to restate the other seven.
+
+```solidity
+    /// @dev Read the live season into a struct so a test can change ONE field and
+    ///      write it back. Every read happens outside the prank, which is the whole
+    ///      point — `vm.prank` binds to the next call and a `view` read IS a call,
+    ///      so `population.setSeason(_season())` would consume the prank on the
+    ///      first getter and send the real transaction unpranked.
+    function _season() internal view returns (Population.SeasonParams memory s) {
+        s.minEndowment = population.minEndowment();
+        s.cognitionEndowment = population.cognitionEndowment();
+        s.baseAnte = population.baseAnte();
+        s.anteMultBps = population.anteMultBps();
+        s.levelWindows = population.levelWindows();
+        s.seasonWindows = population.seasonWindows();
+        s.rakeBps = population.rakeBps();
+        s.prizeShareBps = population.prizeShareBps();
+    }
+
+    function _setSeason(Population.SeasonParams memory s) internal {
+        vm.prank(owner);
+        population.setSeason(s);
+    }
+```
+
+Then the tests:
 
 ```solidity
 function test_ante_isFlatWithinALevelAndIgnoresTreasury() public {
@@ -1198,8 +1944,10 @@ function test_ante_isFlatWithinALevelAndIgnoresTreasury() public {
 }
 
 function test_ante_escalatesByLevel() public {
-    vm.prank(owner);
-    population.setSeason(10 * ONE, 0.1 ether, 1 * ONE, 20_000, 2, 100, 250);
+    Population.SeasonParams memory s = _season();
+    s.baseAnte = 1 * ONE;
+    s.levelWindows = 2;
+    _setSeason(s);
 
     assertEq(population.level(), 0, "level should start at 0");
     uint256 l0 = population.ante();
@@ -1228,10 +1976,44 @@ function test_rake_isBookedSeparatelyFromEntrantCollateral() public {
     _commit();
 
     uint256 rakeBefore = population.rakeAccrued();
+    uint256 poolBefore = population.prizePool();
+    uint256 staked = _p(1).currentStake(); // read before settlement zeroes it
     _settle();
 
-    // Two organisms each paid metabolism, and it is booked as revenue.
-    assertEq(population.rakeAccrued() - rakeBefore, 2 * population.metabolicCost(), "metabolism not booked as rake");
+    // Income this window is BOTH revenue lines: rent from both organisms, plus the
+    // skim on the winner's profit — which under a flat ante is exactly the ante,
+    // because the winner redeems 2x what it risked.
+    uint256 income = 2 * population.metabolicCost() + (staked * population.rakeBps()) / 10_000;
+    uint256 toPool = (income * population.prizeShareBps()) / 10_000;
+    assertGt(toPool, 0, "test is vacuous: prizeShareBps or income is zero");
+
+    assertEq(population.prizePool() - poolBefore, toPool, "pool did not take its share of income");
+    assertEq(population.rakeAccrued() - rakeBefore, income - toPool, "revenue not booked as rake");
+}
+
+function test_rake_isTakenOnProfitNotOnGrossRedemption() public {
+    _seed(2);
+    _upWins();
+    _think();
+    _answer(1, "UP | MOMENTUM | rising");
+    _answer(2, "DOWN | MEANREVERSION | falling");
+    _commit();
+
+    uint256 staked = _p(1).currentStake();
+    uint256 held = _p(1).treasury(); // endowment minus the ante it just risked
+    _settle();
+
+    // A paired mintSet gives each side `2 * staked` tokens for `staked` risked, so
+    // the winner's redemption is 2x and its PROFIT is exactly `staked`. Taxing the
+    // gross would take twice this and would tax the organism's own returned stake.
+    uint256 skim = (staked * population.rakeBps()) / 10_000;
+    assertGt(skim, 0, "test is vacuous: rakeBps or the ante is zero");
+    assertEq(
+        _p(1).treasury(),
+        held + 2 * staked - skim - population.metabolicCost(),
+        "winner's net is not redemption - skim - rent"
+    );
+    _assertLedgerMatchesBalance(1);
 }
 
 function test_rake_withdrawalCannotTouchEntrantCollateral() public {
@@ -1280,8 +2062,9 @@ function test_season_endsPermissionlesslyAndPaysTheEntrant() public {
     vm.stopPrank();
     _fundCognition(population.prophetCount());
 
-    vm.prank(owner);
-    population.setSeason(10 * ONE, 0.1 ether, 1 * ONE, 20_000, 100, 1, 250);
+    Population.SeasonParams memory s = _season();
+    s.seasonWindows = 1;
+    _setSeason(s);
 
     _upWins();
     _think();
@@ -1295,36 +2078,60 @@ function test_season_endsPermissionlesslyAndPaysTheEntrant() public {
     population.endSeason();
     assertEq(population.seasonId(), seasonBefore + 1, "season did not roll over");
 }
+
+function test_enter_refusesAnEndowmentThatCannotCoverTheAnte() public {
+    // Put the OTHER floor out of the way so this test can only pass or fail on the
+    // ante floor. `minEndowment` is a fixed number; the ante doubles every level,
+    // so these are genuinely two different checks and only one of them tracks the
+    // climate.
+    Population.SeasonParams memory s = _season();
+    s.minEndowment = 1;
+    s.baseAnte = 10 * ONE;
+    _setSeason(s);
+
+    address bob = address(0xB0B);
+    collateral.mint(bob, 100 * ONE);
+    vm.startPrank(bob);
+    collateral.approve(address(population), 100 * ONE);
+    // Parameterized error, so the WHOLE revert data must be matched — a bare
+    // selector fails here for the reason CLAUDE.md documents.
+    vm.expectRevert(abi.encodeWithSelector(Population.EndowmentBelowAnte.selector, 20 * ONE, 40 * ONE));
+    population.enter("dead on arrival", 20 * ONE);
+    vm.stopPrank();
+}
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_" -vv
+npx --yes forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_|test_enter_refuses" -vv
 ```
 
 Expected: compile errors for every new symbol.
 
 - [ ] **Step 3: Add the season storage**
 
-Immediately before `__gap` — `uint256[16]` after Task 2 — add:
+Immediately before `__gap` — `uint256[14]` after Task 2 — add:
 
 ```solidity
     // --- seasons, ante schedule, and revenue ---
-    // Packs into one slot: 4 + 8 + 4 + 4 + 2 + 2 = 24 bytes.
+    // Packs into one slot: 4 + 8 + 4 + 4 + 2 + 2 + 2 = 26 bytes.
     uint32 public seasonId;
     uint64 public seasonStartWindow;
     uint32 public seasonWindows; // season length; endSeason opens after this many
     uint32 public levelWindows; // windows per ante level
     uint16 public anteMultBps; // ante multiplier per level, in bps of 10_000
-    uint16 public rakeBps; // skim on a winning settlement
+    uint16 public rakeBps; // skim on a winning settlement, in bps of PROFIT
+    uint16 public prizeShareBps; // share of ALL income diverted to the pot
 
     uint256 public baseAnte; // the level-0 ante
     uint256 public rakeAccrued; // protocol revenue, withdrawable
-    uint256 public prizePool; // forfeited residues, paid out at season end
+    uint256 public prizePool; // forfeited residues + prizeShareBps of income
 ```
 
-and shrink the gap to `uint256[12]` — four slots consumed: one packed group plus three `uint256`. The packed group lands on a fresh slot with no padding needed, because the declaration before it (`cognitionEndowment`) is a full-width `uint256`. Packing NEW variables with EACH OTHER is fine; the rule `CLAUDE.md` states is about packing into slots that already hold live data.
+and shrink the gap to `uint256[10]` — four slots consumed: one packed group plus three `uint256`. The packed group lands on a fresh slot with no padding needed, because the declaration before it (`cognitionEndowment`) is a full-width `uint256`. Packing NEW variables with EACH OTHER is fine; the rule `CLAUDE.md` states is about packing into slots that already hold live data.
+
+That leaves **10 of the original 20 gap slots**, which is the budget for post-freeze repairs after Sep 2. Spend the rest deliberately.
 
 Add the errors:
 
@@ -1346,9 +2153,21 @@ In `initialize`, after the `cognitionEndowment` line:
         // number of levels. It is also the honest metaphor: the climate hardens.
         baseAnte = minStake; // 0.25 tUSDC
         anteMultBps = 20_000; // doubles per level
-        levelWindows = 24; // ~6 hours at 15-minute windows
+
+        // 72 windows per level = ~18h at a 15-minute cadence, so level 6 (ante 16
+        // tUSDC, above a 10 tUSDC entry) arrives at window 432 and the arena is
+        // still populated when the season closes at 576. levelWindows = 24 was the
+        // first draft and was WRONG for a 576-window season: level 6 would land at
+        // window 144 and rent alone would empty the arena by ~window 200-340,
+        // leaving roughly 300 windows of empty arena with a leaderboard on it —
+        // during the judging period. The two numbers are a pair: changing one
+        // without the other is what produces either an unfinishable season or an
+        // extinct one.
+        levelWindows = 72;
         seasonWindows = 576; // ~6 days
-        rakeBps = 250; // 2.5% of a winner's take
+
+        rakeBps = 250; // 2.5% of a winner's PROFIT, not of its gross redemption
+        prizeShareBps = 4_000; // 40% of income funds the pot; 60% is revenue
         seasonStartWindow = 0;
         seasonId = 1;
 ```
@@ -1410,19 +2229,64 @@ Replace `_pair` (`:477-496`) so both sides risk the same absolute amount:
     }
 ```
 
-- [ ] **Step 5: Book metabolism as rake and skim the settlement**
+- [ ] **Step 5: Skim the rake on profit, and split protocol income**
 
-In `contracts/src/Prophet.sol`, add a third return value to `settleWindow` so Population can book the charge without a second read:
+Two revenue lines start existing in this step, and `BUSINESS_PLAN.md` §6 lists them separately:
+rent (metabolism), which until now vanished into a balance indistinguishable from custody, and
+**the rake on a winning settlement**, which does not exist at all — before this step `rakeBps` is
+declared, initialized, settable and publicly readable, and **read by nothing**.
+
+In `contracts/src/Prophet.sol`, extend `settleWindow` — one parameter in, two return values out:
 
 ```solidity
-    function settleWindow(address venue, address collateral, uint256 metabolicCost)
+    function settleWindow(address venue, address collateral, uint256 metabolicCost, uint16 rakeBps_)
         external
         onlyPopulation
-        returns (uint256 collateralOut, bool starved, uint256 charged)
+        returns (uint256 collateralOut, bool starved, uint256 charged, uint256 raked)
     {
 ```
 
-and at the metabolism block (`:383-386`), assign it:
+`rakeBps_` is passed in rather than read back through `IPopulationConfig` for the same reason
+`metabolicCost` already is: every economic parameter lives in `Population` so the run is
+recalibrable from one call without a beacon upgrade, and `settleWindow` is `onlyPopulation`, so
+there is exactly one caller to keep in step.
+
+Insert the skim AFTER `bool won = collateralOut > staked;` and after `treasury += received;`
+(`Prophet.sol:384-390`), and BEFORE the metabolism block:
+
+```solidity
+        // THE RAKE — taken on PROFIT, never on the gross redemption, and that is
+        // why it sits after the grading rather than before it. A paired mintSet
+        // hands each side `amount` tokens for `amount / 2` risked
+        // (`Population.executePair`, :536-539), so a winner redeems ~2x its stake:
+        // skimming the gross would tax the organism's own returned collateral at
+        // twice the intended rate. It would also tax a VOIDED market, which pays
+        // both sides 0.5 and is deliberately scored as neither a win nor a loss.
+        // `won` is already `collateralOut > staked`, so reuse it rather than
+        // recomputing a second, subtly different, definition of winning.
+        //
+        // Computed from WORTH but paid out of CUSTODY — the same distinction that
+        // makes `collateralOut` and `received` different numbers — so it is clamped
+        // to `treasury`. A winner can never be STARVED by this: the skim is a small
+        // fraction of a gain realized in this very call. The clamp is there because
+        // a settlement that CREDITED rather than paid would otherwise underflow.
+        if (won && rakeBps_ > 0) {
+            uint256 skim = ((collateralOut - staked) * rakeBps_) / 10_000;
+            if (skim > treasury) skim = treasury;
+            if (skim > 0) {
+                treasury -= skim;
+                raked = skim;
+                if (!IERC20Like(collateral).transfer(population, skim)) revert TransferFailed();
+            }
+        }
+```
+
+Keep `skim` inside that block's scope. `settleWindow` is not on `CLAUDE.md`'s list of
+stack-fragile functions, but it now carries four named returns plus `quantity`, `staked`,
+`received` and `won`; a local that stays live to the end of the body is the cheapest way to put it
+on that list.
+
+Then the metabolism block (`:415-418`) assigns the third return instead of a local:
 
 ```solidity
         charged = treasury >= metabolicCost ? metabolicCost : treasury;
@@ -1433,24 +2297,60 @@ and at the metabolism block (`:383-386`), assign it:
 
 Replace the later uses of the old `charge` local in the same function with `charged`.
 
-In `Population.settleAll`, capture it and apply the rake and the residue forfeit. Note the ordering constraint: **drain before `die`**, because `stakeOut` is `alive`-gated.
+In `contracts/src/Population.sol`, add the one place income is divided — next to `_breedThreshold`:
 
 ```solidity
-            try p.settleWindow(v, collateral, metabolicCost) returns (uint256, bool starved, uint256 charged) {
-                // Rent, booked as revenue rather than left indistinguishable from
-                // collateral this contract merely routes.
-                rakeAccrued += charged;
+    /**
+     *  Split protocol income between the prize pool and withdrawable revenue.
+     *
+     *  EVERY unit of collateral this contract takes from an organism passes through
+     *  here — rent, and the rake on a winning settlement — so the split is decided
+     *  in one place and the two counters can be audited against the balance
+     *  together. `BUSINESS_PLAN.md` §8 funds the pot from forfeited residues AND a
+     *  share of the rake; `prizeShareBps` is that share.
+     *
+     *  Forfeited residue does NOT come through here. It goes to `prizePool` whole,
+     *  which is the only thing "residue forfeits to the prize pool" can honestly
+     *  mean when it is said to an entrant.
+     */
+    function _book(uint256 amount) internal {
+        if (amount == 0) return;
+        uint256 toPool = (amount * prizeShareBps) / 10_000;
+        prizePool += toPool;
+        rakeAccrued += amount - toPool;
+    }
+```
+
+Now `settleAll`'s loop body. **Three things carry over from Task 2A and must not be dropped:** the
+loop runs BACKWARDS, it indexes `prophets[living[i - 1] - 1]`, and a reap calls `_removeLiving`.
+
+```solidity
+        address v = venue;
+        uint16 rb = rakeBps;
+
+        // Backwards — see Task 2A. A reap swap-removes from `living` and the
+        // element that fills the hole comes from the end.
+        for (uint256 i = living.length; i > 0; --i) {
+            Prophet p = Prophet(payable(prophets[living[i - 1] - 1]));
+            if (p.dead() || !p.positionOpen()) continue;
+
+            try p.settleWindow(v, collateral, metabolicCost, rb) returns (
+                uint256, bool starved, uint256 charged, uint256 raked
+            ) {
+                // Rent plus skim, booked as revenue and pot rather than left
+                // indistinguishable from collateral this contract merely routes.
+                _book(charged + raked);
 
                 if (starved || p.treasury() < metabolicCost) {
-                    // RESIDUE FORFEITS. Drain BEFORE die(): stakeOut is
-                    // alive-gated, so the reverse order reverts and strands the
-                    // collateral in a dead organism forever.
+                    // RESIDUE FORFEITS, WHOLE. Drain BEFORE die(): `stakeOut`
+                    // carries the `alive` modifier (`Prophet.sol:266-269`), so the
+                    // reverse order reverts and strands the collateral inside a
+                    // dead organism permanently.
                     uint256 residue = p.treasury();
-                    if (residue > 0) {
-                        prizePool += p.stakeOut(address(this), residue, collateral);
-                    }
+                    if (residue > 0) prizePool += p.stakeOut(address(this), residue, collateral);
                     p.die(windowCount);
                     aliveCount -= 1;
+                    _removeLiving(p.prophetId());
                     emit Reaped(p.prophetId(), windowCount, aliveCount);
                 } else if (p.streak() >= breedStreak && p.treasury() >= _breedThreshold()) {
                     _requestMutation(p);
@@ -1458,31 +2358,102 @@ In `Population.settleAll`, capture it and apply the rake and the residue forfeit
             } catch {
                 emit SettleFailed(p.prophetId());
             }
+        }
 ```
 
-- [ ] **Step 6: Extend `setSeason`, add `withdrawRake` and `endSeason`**
+`rakeBps` is hoisted into `rb` before the loop: it cannot change mid-loop, and re-reading a
+`uint16` out of a packed slot once per organism per window buys nothing.
 
-Replace the `setSeason` written in Task 2:
+- [ ] **Step 6: Replace `setSeason`, harden `enter`, add `withdrawRake` and `endSeason`**
+
+Declare the parameter struct next to `Wiring`:
 
 ```solidity
-    function setSeason(
-        uint256 minEndowment_,
-        uint256 cognitionEndowment_,
-        uint256 baseAnte_,
-        uint16 anteMultBps_,
-        uint32 levelWindows_,
-        uint32 seasonWindows_,
-        uint16 rakeBps_
-    ) external onlyOwner {
-        minEndowment = minEndowment_;
-        cognitionEndowment = cognitionEndowment_;
-        baseAnte = baseAnte_;
-        anteMultBps = anteMultBps_;
-        levelWindows = levelWindows_;
-        seasonWindows = seasonWindows_;
-        rakeBps = rakeBps_;
+    /**
+     *  Season parameters, as a struct rather than eight positional arguments.
+     *
+     *  This is not style. `levelWindows` and `seasonWindows` are adjacent `uint32`s
+     *  whose names are one word apart, and `anteMultBps`, `rakeBps` and
+     *  `prizeShareBps` are three adjacent `uint16`s the compiler cannot tell apart.
+     *  A transposition compiles, deploys, and becomes visible several hundred
+     *  windows later — as a season that ends before its first ante level, or an
+     *  ante that never escalates. `setEconomics`'s seven positional arguments are
+     *  already recorded in this plan's Global Constraints as a documented footgun
+     *  that cost fourteen test failures once; this is the one place where the same
+     *  mistake has not been made yet.
+     */
+    struct SeasonParams {
+        uint256 minEndowment;
+        uint256 cognitionEndowment;
+        uint256 baseAnte;
+        uint16 anteMultBps;
+        uint32 levelWindows;
+        uint32 seasonWindows;
+        uint16 rakeBps;
+        uint16 prizeShareBps;
     }
+```
 
+A struct is safe to add at any time — it is a type, not storage, so it consumes no slot and cannot
+move one.
+
+Replace the two-argument `setSeason` written in Task 2 Step 6:
+
+```solidity
+    function setSeason(SeasonParams calldata s) external onlyOwner {
+        minEndowment = s.minEndowment;
+        cognitionEndowment = s.cognitionEndowment;
+        baseAnte = s.baseAnte;
+        anteMultBps = s.anteMultBps;
+        levelWindows = s.levelWindows;
+        seasonWindows = s.seasonWindows;
+        rakeBps = s.rakeBps;
+        prizeShareBps = s.prizeShareBps;
+    }
+```
+
+Then harden `enter` (Task 2 Step 6), which until now had only `minEndowment` to check because no
+ante existed yet. Add the second floor immediately after the first:
+
+```solidity
+        if (endowmentAmount < minEndowment) revert EndowmentTooSmall();
+
+        // THE ANTE FLOOR. An organism that cannot cover several antes is dead on
+        // arrival: it pays rent every window whether or not it is paired, and it is
+        // not paired AT ALL if it cannot cover the ante — so at 1x the ante an
+        // entry is not a bet, it is a donation to the prize pool. Taking a
+        // stranger's collateral for that is the kind of detail that makes "anyone
+        // can enter" true in the letter and false in the substance.
+        //
+        // `minEndowment` cannot express this on its own, because the ante DOUBLES
+        // every `levelWindows`: a fixed 10 tUSDC floor that is generous at level 0
+        // is unplayable by level 6, and an owner would have to raise it by hand on
+        // a schedule. Four antes is the smallest multiple that survives a losing
+        // streak long enough to be graded rather than eliminated by arithmetic.
+        uint256 floor = 4 * ante();
+        if (endowmentAmount < floor) revert EndowmentBelowAnte(endowmentAmount, floor);
+```
+
+and declare its error alongside the two added in Step 3:
+
+```solidity
+    error EndowmentBelowAnte(uint256 supplied, uint256 required);
+```
+
+Parameterized deliberately: it is the error most likely to be met by a stranger's transaction,
+`scripts/lib/darwin.ts` carries the custom-error fragments so a revert reads as a sentence, and both
+numbers are needed for the sentence to say anything. Note the consequence for tests —
+`vm.expectRevert(bytes4)` compares the WHOLE revert data, so this one needs
+`abi.encodeWithSelector(Population.EndowmentBelowAnte.selector, supplied, required)`.
+
+Task 2's `test_entry_rejectsBelowMinEndowment` still passes unchanged apart from its `setSeason`
+call: it sets `minEndowment = 10 tUSDC` and enters with 9, while the ante floor at level 0 is
+`4 x 0.25 = 1 tUSDC`, so `EndowmentTooSmall` is still the error that fires. That ordering is worth
+keeping — the fixed floor is the cheaper check and the more legible message.
+
+Then the two functions that spend and close:
+
+```solidity
     /**
      *  Draw down protocol revenue.
      *
@@ -1569,9 +2540,10 @@ Add the event next to the others:
 
 **Stack-limit warning:** `endSeason` holds three fixed arrays and several locals. If `forge build` reports a stack error under `--via-ir`, split the winner search into an internal `_topThree()` returning the ids, rather than reducing the number of winners.
 
-- [ ] **Step 7: Update the test helper for the new stake rule**
+- [ ] **Step 7: Update the test harness for the new stake rule and the new `setSeason`**
 
-`_stake()` (`Darwin.t.sol:229-231`) computes `endowment * stakeBps / 10_000`. It is the single point every staking assertion reads through, which is why this refactor is survivable. Change it:
+`_stake()` (`Darwin.t.sol:229-231`) computes `endowment * stakeBps / 10_000`. It is the single point
+every staking assertion reads through, which is why this refactor is survivable. Change it:
 
 ```solidity
     function _stake() internal view returns (uint256) {
@@ -1579,22 +2551,52 @@ Add the event next to the others:
     }
 ```
 
+Then rewrite the two `setSeason` call sites written in earlier tasks. Replacing a signature means
+they will not compile, so this is not fallout to discover in Step 9 — it is part of this step:
+
+1. Task 2 Step 1, in `test_entry_rejectsBelowMinEndowment`:
+
+```solidity
+    // was: vm.prank(owner); population.setSeason(10 * ONE, 0);
+    Population.SeasonParams memory s = _season();
+    s.minEndowment = 10 * ONE;
+    s.cognitionEndowment = 0;
+    _setSeason(s);
+```
+
+2. Task 3 Step 6, in `setUp`:
+
+```solidity
+    // was: vm.prank(owner); population.setSeason(10 * ONE, 0.1 ether);
+    Population.SeasonParams memory s = _season();
+    s.minEndowment = 10 * ONE;
+    s.cognitionEndowment = 0.1 ether;
+    _setSeason(s);
+```
+
+Both go through `_season()` rather than restating all eight fields, so a later change to a default
+in `initialize` does not silently reset six unrelated parameters in the harness.
+
 - [ ] **Step 8: Run the new tests**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_" -vv
+npx --yes forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_|test_enter_refuses" -vv
 ```
 
-Expected: all six PASS.
+Expected: all eight PASS.
 
 - [ ] **Step 9: Run the full suite and repair the fallout**
 
 ```bash
 npm test
-```Expected failures and how to fix each:
-- Any test manipulating `stakeBps` to change stake size (`test_dustStakeOpensEmptyAndStillPays` at `:554` is the likely one) must set `baseAnte` through `setSeason` instead. Read the current values into locals first — `setSeason` has the same `vm.prank` footgun as `setEconomics`, so never inline a `population.xxx()` read into its argument list.
-- `test_pairing_winnerNetsLoserStake` (`:390`) asserts on stake sizes; it should now read `population.ante()`.
+```
+
+Expected failures and how to fix each:
+- **`Prophet.settleWindow`'s arity changed twice in this plan** — Task 1 added `venue`, this task adds `rakeBps_` and two return values. Run `grep -rn "settleWindow" contracts/` before `npm test` so every caller and mock is a known list rather than a sequence of compile errors.
+- `test_pairing_winnerNetsLoserStake` (`:390`) asserts the winner nets exactly the loser's stake. It now nets **stake minus the skim**, so the assertion must subtract `(stake * population.rakeBps()) / 10_000`. Do NOT repair this by zeroing `rakeBps` in the harness: that deletes the coverage this task exists to add. The test's name stays true — the skim is the house's cut of that stake, not a different stake.
+- Any test manipulating `stakeBps` to change stake size (`test_dustStakeOpensEmptyAndStillPays` at `:554` is the likely one) must set `baseAnte` through `_season()`/`_setSeason` instead.
 - Tests asserting Population's collateral balance after settlement may now need to account for `rakeAccrued` and `prizePool` being tracked.
+- `_assertLedgerMatchesBalance` must still hold for every organism: the skim decrements `treasury` and transfers in the same breath, exactly as metabolism does. If it fails, the skim was booked without being moved.
 
 Add one more test capturing the invariant that makes the accounting trustworthy:
 
@@ -1635,12 +2637,18 @@ npx --yes forge inspect --root contracts Prophet storage-layout > "$CLAUDE_JOB_D
 
 `forge inspect` previously returned *"storage layout missing from artifact"* even with `--extra-output storageLayout`; the `forge clean` before the `via_ir` rebuild is what fixes it. If it still fails, report that rather than asserting the layout is fine.
 
-Assert five things from the output:
-1. `Prophet.positionOpen` is still at **slot 15, offset 0**, and **nothing else shares that slot** — the packing `CLAUDE.md` forbids did not happen by accident.
+Assert six things from the output:
+1. `Prophet.positionOpen` is still at **slot 15, offset 0**, and **nothing else shares that slot** — the packing `CLAUDE.md` forbids did not happen by accident. Thirty-one spare bytes next to a `bool` is the most inviting place in the contract to "just add a flag", and this task adds none.
 2. `Prophet.__slotAlign` occupies **slot 16**, unused, which is the whole reason (1) holds.
 3. `Prophet.entrant` occupies **slot 17 alone**, at offset 0.
-4. `Prophet.__gap` begins at **slot 18** and has 18 entries.
-5. Every pre-existing `Population` declaration is at the same slot it occupied before this plan — `phase` still at 26 with its spare bytes still spare — and the new declarations sit between `phase` and `__gap`: `__slotAlign` 27, `venue` 28, `minEndowment` 29, `cognitionEndowment` 30, the packed season group 31, `baseAnte` 32, `rakeAccrued` 33, `prizePool` 34, `__gap` 35–46 with 12 entries.
+4. `Prophet.__gap` begins at **slot 18** and has **18** entries.
+5. Every pre-existing `Population` declaration is at the slot it occupied before this plan — `phase` still at 26 with its spare bytes still spare — and the new declarations sit between `phase` and `__gap`, in this order: `__slotAlign` **27** (Task 1), `venue` **28** (Task 1), `living` **29** (Task 2A), `livingIndex` **30** (Task 2A), `minEndowment` **31** (Task 2), `cognitionEndowment` **32** (Task 2), the packed season group **33** (this task), `baseAnte` **34**, `rakeAccrued` **35**, `prizePool` **36**.
+6. `Population.__gap` begins at **slot 37** and has **10** entries. `20 - 2 - 2 - 2 - 4 = 10`: two for Task 1, two for Task 2A, two for Task 2, four for this task. If the number is not 10, one of the four tasks consumed a slot it did not declare — an `address` after a `bool` silently packs, and a `uint256` pad silently does not, so the arithmetic is the only thing that catches a miscount.
+
+Also assert that the packed season group really is **one** slot: `seasonId`, `seasonStartWindow`,
+`seasonWindows`, `levelWindows`, `anteMultBps`, `rakeBps` and `prizeShareBps` must all report slot
+**33** with ascending offsets 0, 4, 12, 16, 20, 22, 24. Twenty-six of thirty-two bytes used. If any
+of them reports slot 34, the group split and every number in (5) and (6) above is off by one.
 
 Then regenerate `STORAGE.md` with the new layout and a changelog entry naming this plan.
 
@@ -1677,22 +2685,43 @@ graded lineage worth selling.
 - ante() / level(); _pair no longer takes a min(). An organism that
   cannot cover the ante is not paired, pays rent anyway, and dies —
   clean elimination rather than a special case
-- settleWindow returns the metabolic charge so Population can book it
-  into rakeAccrued instead of leaving revenue indistinguishable from
-  collateral it merely custodies
+- enter() gains a second floor of 4x the ante. minEndowment is a fixed
+  number and the ante doubles every level, so a floor that is generous
+  at level 0 is unplayable by level 6; at 1x the ante an entry is not a
+  bet, it is a donation to the prize pool
+- rakeBps was declared, initialized, settable, publicly readable and
+  read by NOTHING. It now exists: settleWindow skims it and returns the
+  amount. Taken on PROFIT (collateralOut - staked), never on the gross
+  redemption — a paired mintSet pays a winner ~2x its stake, so a gross
+  rake would tax the organism's own returned collateral at twice the
+  intended rate, and would tax a voided market besides
+- settleWindow returns the metabolic charge and the skim so Population
+  can book both instead of leaving revenue indistinguishable from
+  collateral it merely custodies. _book() splits every unit of income
+  prizeShareBps to the pot and the rest to revenue, in one place
 - withdrawRake draws only against rakeAccrued, so protocol revenue can
   never reach an entrant's collateral. sweep stays as the emergency
   escape but stops being the revenue path
-- Death forfeits residue to prizePool, drained BEFORE die() because
-  stakeOut is alive-gated and the reverse order strands it forever
+- Death forfeits residue to prizePool WHOLE (not through _book), drained
+  BEFORE die() because stakeOut is alive-gated and the reverse order
+  strands it forever
 - endSeason is permissionless once the season is over, so a payout does
   not depend on the owner being awake. 60/30/10 to the top three
   survivors by correctCount - wrongCount, paid to each entrant; with
   fewer than three survivors the remainder rolls forward rather than
   going to the house, which would give us a reason to prefer extinction
+- setSeason takes a SeasonParams struct rather than eight positional
+  arguments: levelWindows/seasonWindows are adjacent uint32s and
+  anteMultBps/rakeBps/prizeShareBps three adjacent uint16s, so a
+  transposition would compile, deploy, and surface hundreds of windows
+  later. setEconomics's seven positional arguments already cost this
+  suite fourteen failures once
+- levelWindows defaults to 72, not 24: paired with a 576-window season,
+  24 puts level 6 at window 144 and leaves ~300 windows of empty arena
+  under a leaderboard during judging
 - stakeBps is now unused but stays declared: the layout is append-only
 - Storage re-verified with forge clean + --extra-output storageLayout;
-  STORAGE.md regenerated"
+  STORAGE.md regenerated. __gap is down to 10 of its original 20 slots
 ```
 
 ---
