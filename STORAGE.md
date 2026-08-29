@@ -67,6 +67,24 @@ a re-run of the two commands below.
 > above is worth recording because it works: `forge clean` is not the only way to get
 > the layout emitted — `forge build --extra-output storageLayout --force` also does it,
 > which matters when `forge clean` is unavailable.
+>
+> **Re-verified again 2026-08-29 after arena ownership landed — the first change to
+> `Prophet`'s layout in the project's life.** `Prophet` now has **29** entries: slot 15
+> still holds `positionOpen` alone, `__slotAlign` takes slot 16, `entrant` is at **slot
+> 17 offset 0**, and `__gap` is `uint256[18]` starting at **slot 18** — the same 18–35
+> span as before, so the freeze envelope did not grow. `Population` has **36** entries
+> with `minEndowment` at 31, `cognitionEndowment` at 32 and `__gap` now `uint256[14]` at
+> **slot 33** (448 bytes). Everything through `Prophet` slot 15 and `Population` slot 30
+> is unchanged, confirmed row by row against the compiler.
+>
+> **Correction, and the reason to distrust this document over the compiler:** the
+> paragraphs above say "24 `Prophet` entries" and "32 `Population` entries". Both were
+> undercounts of the layout as it stood when they were written — the real numbers were 27
+> and 34. Nothing moved; the *count* was wrong, twice, and a later reader diffing against
+> it would have concluded the layout had shifted when it had not. Entry counts are
+> derived, not asserted: `forge inspect <C> storage-layout | grep -cE "^\| [a-z_]"`.
+> Slots, offsets and types are the invariant; a number typed by hand into a markdown file
+> is not evidence about any of them.
 
 ---
 
@@ -103,7 +121,9 @@ Behind `BeaconProxy`. No constructor state; `initialize` guards on
 | 14 | 24 | `uint32` | `wrongCount` | |
 | 14 | 28 | `uint32` | `abstainCount` | 32/32 bytes — **slot 14 is full** |
 | 15 | 0 | `bool` | `positionOpen` | 1/32 bytes — **31 free. Do not fill.** |
-| 16–35 | — | `uint256[20]` | `__gap` | 20 slots remaining |
+| 16 | — | `uint256` | `__slotAlign` (private, permanently unused — see below) |
+| 17 | 0 | `address` | `entrant` | who owns this organism; the arena's only ownership field |
+| 18–35 | — | `uint256[18]` | `__gap` | 18 slots remaining |
 
 **Slot 14 is exactly full.** A new packed counter cannot join it; it must start a new
 slot out of `__gap`.
@@ -115,6 +135,16 @@ most inviting place in this contract to "just add a bool". It is the same trap a
 nothing for a fresh deploy and corrupts nothing visibly until a beacon upgrade puts a
 live organism's counter on top of someone else's bytes. Every addition takes a fresh
 slot out of `__gap`, without exception.
+
+**`__slotAlign` at slot 16 is padding, and it is why `entrant` is at 17 rather than
+packed into slot 15.** Declaration order alone would have put `address entrant` at slot
+15 offset 1, silently consuming twenty of the thirty-one bytes the note above tells you
+not to fill — declaring it after `positionOpen` is exactly the trap, and the trap works
+on the person adding the field too. A `uint256` cannot pack into anything by definition,
+so one wasted slot forces the boundary and buys a clean, obviously-safe layout for the
+next person who adds a field. Mirrors `Population.__slotAlign` at slot 27, for the same
+reason and at the same cost. Compiler-verified: `entrant` reports slot 17 offset 0, and
+`positionOpen` is still alone in 15.
 
 ### Why `currentStake` and `currentQuantity` are both here
 
@@ -171,7 +201,9 @@ here immediately as a shifted table.
 | 28 | 0 | `address` | `venue` |
 | 29 | — | `uint256[]` | `living` (length; elements at `keccak256(29)`) |
 | 30 | — | `mapping(uint256 => uint256)` | `livingIndex` |
-| 31–46 | — | `uint256[16]` | `__gap` |
+| 31 | — | `uint256` | `minEndowment` (floor on an entrant's stake) |
+| 32 | — | `uint256` | `cognitionEndowment` (native STT handed to a newborn) |
+| 33–46 | — | `uint256[14]` | `__gap` |
 
 `__slotAlign` is padding and it is load-bearing. `phase` at slot 26 is a `uint8`,
 so its slot has thirty-one bytes spare, and `address public venue` declared after
@@ -223,3 +255,4 @@ callback selector and the price read — so the risky surfaces are the replaceab
 | 2026-08-29 | **`Population` +2 slots: `__slotAlign` at 27 (unused padding) and `venue` at 28; `__gap` `uint256[20]` → `uint256[18]` at slot 29. `Prophet` byte-identical. Compiler-verified, not reasoned.** Phase 1 of the arena-engine rework extracts an `IArenaVenue` seam so *where positions live and how a resolved position becomes collateral* is a parameter of the arena rather than its definition — `Population` and `Prophet` no longer name a DreamDEX pool or `BinarySettlement` anywhere on the window path, and `DreamDEXVenue` is adapter one. That needs exactly one new state variable, `address venue`, and the interesting part is what it cost. Declared where it belongs — immediately after `uint8 phase` — Solidity packed it into slot 26 offset 1, because `phase` leaves thirty-one bytes spare and an address fits. That is precisely the edit this document and `CLAUDE.md` forbid (*"`Population` slots 13, 18, 21, 23, 26 have free bytes. Do not fill them."*), and it would have been invisible: the tables would still have been correct for a fresh deploy, and the corruption would only surface once a later upgrade appended a variable expecting slot 26 to be closed. The fix is a `uint256 private __slotAlign;` declared before it — a `uint256` cannot fit in thirty-one bytes, so it is the boundary — and `forge inspect` now reports `phase` alone in 26 and `venue` alone at 28 offset 0. Two slots out of twenty, one permanently unread, is the whole price. **Caught only because the layout was re-derived from the compiler rather than from the source; the same misreading had already been written into the design spec and the implementation plan for `Prophet.entrant` (Phase 2), where it is now corrected the same way — `entrant` costs two slots, not one.** Prophet's layout is untouched by this phase: `settleWindow`'s signature changed from `(settlement, pool, collateral, metabolicCost)` to `(venue, collateral, metabolicCost)`, which is calldata, not storage. **The `forge test` gate then ran: 61/61 (56 existing + 5 new seam tests), plus a clean `forge build` and `tsc`.** One of the five needed a fix, and it was in the assertion rather than the contracts: `vm.expectRevert(bytes4)` compares the *whole* revert data, so the bare `StalePrice` selector could not match `StalePrice(181, 180)` and the precondition read as "the feed was not stale" when it was. `vm.expectPartialRevert` is the selector-only form and is what that line wanted. |
 | 2026-08-29 | **No layout change, and none is possible.** `Population.initialize` now sets `perAgentReward = 0.001 ether` instead of `0.01 ether`. This is a numeric literal in a function body — Solidity assigns slots from state variable *declarations* only, and no declaration was added, removed, reordered or retyped, so the tables above cannot be affected and were not re-derived. Recorded here anyway because the change lands in the same transaction as the freeze and a reader diffing `Population.sol` against the frozen tables deserves to find it accounted for. `forge test` 56/56, including `test_upgrade_preservesEveryOrganismField`, which exercises field-by-field preservation across a real proxy upgrade. Reason: the deposit floor is exactly `0.01 STT x subcommitteeSize` (measured live across n = 1..21) and live traffic pays only 0.0003 per validator on top, so 0.01 was ~33x the going rate and made every window of the run 45% more expensive than it needed to be. The value stays 3.3x above observed, which preserves the anti-skip margin `requestDeposit()`'s own comment argues for, and it is adjustable post-deploy through `setInference` without an upgrade. See docs/SESSION_CHECKPOINT.md §2.14. |
 | 2026-08-29 | **`Population` +2 slots: `living` at 29 and `livingIndex` at 30; `__gap` `uint256[18]` → `uint256[16]` at slot 31. `Prophet` byte-identical. Compiler-verified.** Phase 2A separates *the living population* from *the lineage*, and it is a bug fix wearing a feature's clothes. `maxPopulation` was gated on `prophets.length`, but `prophets` is append-only by design — ids **are** array positions, `prophetAt` returns `prophets[prophetId - 1]`, and the ancestry graph is the one asset this document exists to protect — so nothing ever left it. That made `maxPopulation` a **lifetime birth cap** rather than the gas bound it is documented to be: after 24 births *ever*, `PopulationFull` becomes permanent, the generation counter freezes, and attrition empties an arena nobody can join. The headline metric of this project is generation count, so the cap was bounding the exact number the run is judged on. `living` is the concurrent set and `livingIndex` maps a prophet id to its 1-based position in it, zero meaning "not living" — which is what makes `_removeLiving` idempotent, so a `retire()` racing a starvation cannot corrupt the array or underflow the population. `_spawn`, `think`, `commitAll`, `hatchAll` and `settleAll` now read `living`; `snapshot` deliberately still walks `prophets`, because it is a view over the lineage and the dead are the interesting half of an evolutionary record. **Two non-obvious consequences, both commented at the site and both now covered by a test that fails without them.** (1) `settleAll` iterates **backwards**. It is the only loop that removes while walking, and `_removeLiving` swap-removes — the hole is filled from the END of `living` — so a forward loop hands itself an element it has not visited and then walks straight past it. Flipping the loop to forwards on purpose fails `test_population_livingIndexSurvivesAPartialReap` with *"organism 2 was skipped by settleAll"*: no panic, no event, just an organism silently unsettled with its position left open and never graded. `hatchAll` iterating forwards is correct, because `_spawn` *appends* and `n` is captured before the loop. (2) `ThinkFailed(i + 1)` became `ThinkFailed(living[i])` — `i` is a position now, not an id, so the old form blames a different organism and `monitor.ts` chases the wrong one. **`forge test` 64/64** (61 + 3), clean `forge build`, and the layout re-derived with `forge clean && forge build --extra-output storageLayout && forge inspect`: `living` 29, `livingIndex` 30, `__gap` `uint256[16]` at 31, everything through slot 28 unchanged, `Prophet` untouched at `positionOpen` 15 / `__gap[20]` 16. A mapping and a dynamic array each occupy exactly one slot (the mapping stores nothing in it; the array stores its length), so this is +2, not +2 plus element space. |
+| 2026-08-29 | **`Prophet` +2 slots — the first change to an organism's layout: `__slotAlign` at 16 (unused padding) and `entrant` at 17; `__gap` `uint256[20]` → `uint256[18]`, still starting at slot 18, still ending at 35. `Population` +2 slots: `minEndowment` at 31, `cognitionEndowment` at 32; `__gap` `uint256[16]` → `uint256[14]` at slot 33.** Both re-derived from `forge inspect` after `forge clean` + `--extra-output storageLayout`, then diffed row by row: every pre-existing declaration in both contracts is unmoved. Reason: an organism now has an owner, which is what turns the population into an arena. Three points worth carrying forward. **(1) The padding slot is not waste, it is the trap being disarmed.** `address entrant` declared after `bool positionOpen` packs into slot 15 offset 1 by default — precisely the twenty bytes this document and `CLAUDE.md` both warn against filling, and the warning does not protect you when *you* are the one adding the field. A `uint256` cannot pack, so one dead slot forces the boundary; `Population.__slotAlign` at 27 exists for the identical reason. **(2) The `+2` is two slots, not two slots plus the entrants.** `entrant` is one `address` per proxy, and each `Prophet` is its own proxy, so there is no per-organism mapping and no array — the same distinction as `living`/`livingIndex` in the entry above. **(3) `Prophet`'s slot span did not grow.** `__gap` shrank by exactly the two slots consumed, so the beacon's storage envelope is byte-for-byte what it was, and the freeze on 2026-08-30 covers the same range either way. `retire` is the behavioural half of this entry and it stores nothing: it reuses `positionOpen` as the anti-rage-quit gate and `dead` as the exit flag, so an entrant's ability to leave costs zero new state. The ordering inside it is load-bearing — `stakeOut` carries `alive`, so draining must precede `die()`; flipping the two was tried on purpose and makes all three `test_retire_*` cases fail with `IsDead()`, which is a locked exit rather than the silent confiscation the plan predicted. |

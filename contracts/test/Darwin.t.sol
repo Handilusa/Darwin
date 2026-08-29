@@ -413,6 +413,172 @@ contract DarwinTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                    OWNERSHIP, ENTRY, AND THE EXIT
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Every entry test needs the same three lines. Kept as a helper so the
+    ///      tests below assert about ownership rather than about ERC20 approval.
+    function _enter(address who, string memory genome, uint256 amount) internal returns (uint256 id) {
+        collateral.mint(who, amount);
+        vm.startPrank(who);
+        collateral.approve(address(population), amount);
+        id = population.enter(genome, amount);
+        vm.stopPrank();
+    }
+
+    function test_entry_isPermissionlessAndRecordsTheEntrant() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "buy when funding is negative", 10 * ONE);
+
+        assertEq(_p(id).entrant(), alice, "entrant not recorded");
+        assertEq(_p(id).treasury(), 10 * ONE, "endowment not credited");
+        assertEq(_p(id).generation(), 0, "an entrant's organism is generation 0");
+        assertEq(population.livingCount(), 1, "the entrant's organism is not in the living set");
+        _assertLedgerMatchesBalance(id);
+    }
+
+    function test_entry_rejectsBelowMinEndowment() public {
+        address alice = address(0xA11CE);
+        collateral.mint(alice, 100 * ONE);
+
+        vm.prank(owner);
+        population.setSeason(10 * ONE, 0);
+
+        vm.startPrank(alice);
+        collateral.approve(address(population), 100 * ONE);
+        vm.expectRevert(Population.EndowmentTooSmall.selector);
+        population.enter("underfunded", 9 * ONE);
+        vm.stopPrank();
+    }
+
+    /**
+     *  A genome that reproduces makes its ENTRANT richer in organisms, not the
+     *  house. Ownership descending the lineage is what makes breeding worth
+     *  anything to the person who paid for the parent.
+     */
+    function test_entry_childInheritsTheEntrant() public {
+        address alice = address(0xA11CE);
+        uint256 parent = _enter(alice, "momentum", 100 * ONE);
+
+        // A second organism so the parent has a counterparty to beat.
+        _seed(1);
+        uint256 foil = population.prophetCount();
+
+        _upWins();
+        Econ memory e = _econ();
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        _think();
+        _answer(parent, "UP_MOMENTUM");
+        _answer(foil, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        requester.deliver(_p(parent).pendingMutationRequestId(), "mutated momentum");
+        vm.prank(owner);
+        population.hatchAll();
+
+        uint256 child = population.prophetCount();
+        assertGt(child, foil, "no child was born");
+        assertEq(_p(child).entrant(), alice, "child did not inherit the entrant");
+        assertEq(_p(child).parentId(), parent, "child parentage is wrong");
+    }
+
+    function test_entry_genesisOrganismsBelongToTheHouse() public {
+        _seed(1);
+        assertEq(_p(1).entrant(), owner, "genesis organism should belong to the owner");
+    }
+
+    function test_retire_returnsTheEntrantsRemainingCapital() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 10 * ONE);
+
+        uint256 before = collateral.balanceOf(alice);
+        uint256 held = _p(id).treasury();
+        uint256 livingBefore = population.livingCount();
+
+        vm.prank(alice);
+        population.retire(id);
+
+        assertEq(collateral.balanceOf(alice) - before, held, "capital was not returned in full");
+        assertEq(_p(id).treasury(), 0, "the organism kept collateral");
+        assertTrue(_p(id).dead(), "retiring must kill the organism");
+        assertEq(population.livingIndex(id), 0, "still in the living index");
+        assertEq(population.livingCount(), livingBefore - 1, "living count did not fall");
+        assertEq(population.aliveCount(), population.livingCount(), "aliveCount drifted from the index");
+        assertEq(population.prophetCount(), 1, "a retired organism must stay in the lineage");
+    }
+
+    function test_retire_isEntrantOnly() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 10 * ONE);
+
+        // Not even the owner can retire someone else's organism: this is the entrant's
+        // capital, and an owner-callable exit would be an admin drain path.
+        vm.prank(owner);
+        vm.expectRevert(Population.NotEntrant.selector);
+        population.retire(id);
+
+        // And an entrant cannot retire a house organism. `house` is hoisted out of the
+        // call because a view read AFTER vm.prank consumes the prank — see _econ().
+        _seed(1);
+        uint256 house = population.prophetCount();
+        vm.prank(alice);
+        vm.expectRevert(Population.NotEntrant.selector);
+        population.retire(house);
+    }
+
+    /// @dev Retiring twice must not underflow `aliveCount`, and must say why it
+    ///      refused. `die` is idempotent, so without the explicit `dead()` check the
+    ///      second call would corrupt the counter instead of reverting.
+    function test_retire_cannotBeCalledTwice() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 10 * ONE);
+
+        vm.prank(alice);
+        population.retire(id);
+
+        vm.prank(alice);
+        vm.expectRevert(Population.ProphetIsDead.selector);
+        population.retire(id);
+
+        assertEq(population.aliveCount(), 0, "aliveCount underflowed or double-counted");
+    }
+
+    /**
+     *  The anti-rage-quit rule. An entrant must not be able to watch a market move
+     *  against their organism and pull the stake out from under the counterparty it
+     *  is already paired 1:1 with — that would leave the winner holding tokens
+     *  against collateral that has walked out of the building.
+     */
+    function test_retire_refusesWhileAPositionIsOpen() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 50 * ONE);
+
+        _seed(1);
+        uint256 foil = population.prophetCount();
+
+        _upWins();
+        _think();
+        _answer(id, "UP_MOMENTUM");
+        _answer(foil, "DOWN_REVERSION");
+        _commit();
+
+        assertTrue(_p(id).positionOpen(), "the test needs an open position to be meaningful");
+        vm.prank(alice);
+        vm.expectRevert(Population.PositionStillOpen.selector);
+        population.retire(id);
+
+        // Once the window closes, the exit opens again.
+        _settle();
+        assertFalse(_p(id).dead(), "a 50 tUSDC organism must not have starved in one window");
+        vm.prank(alice);
+        population.retire(id);
+        assertTrue(_p(id).dead(), "retire should succeed with no position open");
+    }
+
+    /*//////////////////////////////////////////////////////////////
                      COGNITION — ALL FIVE STATUS BRANCHES
     //////////////////////////////////////////////////////////////*/
 
@@ -1253,6 +1419,11 @@ contract DarwinTest is Test {
         uint32 abstainBefore = p.abstainCount();
         uint64 birthBefore = p.birthWindow();
         Thesis thesisBefore = p.lastThesis();
+        address entrantBefore = p.entrant();
+        // Guards the assertion below against being vacuous: if `entrant` were never
+        // written, comparing address(0) to address(0) after the upgrade would pass
+        // while proving nothing about whether the field survives.
+        assertTrue(entrantBefore != address(0), "the organism must have an entrant to preserve");
 
         // Deployed BEFORE the prank: a CREATE is a call, and it would consume the
         // prank, leaving `upgradeTo` to arrive from the unauthorized test contract.
@@ -1276,6 +1447,7 @@ contract DarwinTest is Test {
         assertEq(p.abstainCount(), abstainBefore);
         assertEq(p.birthWindow(), birthBefore);
         assertEq(uint8(p.lastThesis()), uint8(thesisBefore));
+        assertEq(p.entrant(), entrantBefore, "ownership must survive a beacon upgrade");
 
         // And v2's derived view reads v1's counters correctly.
         assertEq(ProphetV2(payable(address(p))).winRateBps(), 10_000);
@@ -1441,7 +1613,7 @@ contract DarwinTest is Test {
         _seed(1);
         Prophet p = _p(1);
         vm.expectRevert(Prophet.AlreadyInitialized.selector);
-        p.initialize(address(this), 99, 0, 0, 0, "hijacked");
+        p.initialize(address(this), 99, 0, 0, 0, address(this), "hijacked");
     }
 
     function test_access_phaseMachineIsOrdered() public {

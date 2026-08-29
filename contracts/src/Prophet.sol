@@ -82,7 +82,38 @@ contract Prophet {
     // slot 15
     bool public positionOpen;
 
-    uint256[20] private __gap;
+    /**
+     *  PADDING, AND NOT DEAD WEIGHT. Slot 15 above holds one `bool` and has
+     *  thirty-one bytes spare, so `address public entrant` declared straight after
+     *  it lands AT offset 1 of slot 15 rather than on a slot of its own.
+     *  `CLAUDE.md` names slot 15 as *"the most inviting place in the contract to
+     *  'just add a bool'"* and forbids filling it: packing into a partially-used
+     *  slot is invisible on a fresh deploy and only surfaces once a beacon upgrade
+     *  puts a live organism's counter on top of another field's bytes. A `uint256`
+     *  cannot fit in thirty-one bytes, so declaring one is what forces the
+     *  boundary; there is no padding primitive that does it more directly. Two
+     *  slots, one of them permanently unread, is the cheap side of that trade.
+     *
+     *  Mirrors `Population.__slotAlign`, for the same reason and at the same cost.
+     */
+    uint256 private __slotAlign;
+
+    // slot 17 — reached because the padding above forced a boundary, NOT because
+    // declaration order alone would have put it here. Verified with
+    // `forge inspect Prophet storage-layout`, not by reading this comment.
+    /**
+     *  Who owns this organism: whoever paid to enter it, or the parent's entrant
+     *  for a child.
+     *
+     *  This is the field that turns the population into an arena. It is deliberately
+     *  NOT an owner in the access-control sense — an entrant cannot make their
+     *  organism think, trade, or refuse to pay metabolism. The only right it confers
+     *  is `Population.retire`: taking back what the organism still holds. Selection
+     *  pressure has to stay indifferent to who is paying.
+     */
+    address public entrant;
+
+    uint256[18] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -149,6 +180,7 @@ contract Prophet {
         uint256 parentId_,
         uint32 generation_,
         uint64 birthWindow_,
+        address entrant_,
         string calldata systemPrompt_
     ) external {
         if (population != address(0)) revert AlreadyInitialized();
@@ -157,6 +189,7 @@ contract Prophet {
         parentId = parentId_;
         generation = generation_;
         birthWindow = birthWindow_;
+        entrant = entrant_;
         systemPrompt = systemPrompt_;
         genomeHash = keccak256(bytes(systemPrompt_));
         emit Born(prophetId_, parentId_, generation_, genomeHash);

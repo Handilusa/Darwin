@@ -123,7 +123,17 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      which is what makes `_removeLiving` idempotent.
     mapping(uint256 => uint256) public livingIndex;
 
-    uint256[16] private __gap;
+    // --- open arena ---
+    /// @dev Floor on what an entrant must stake to play. No padding needed here,
+    ///      unlike `venue` and `Prophet.entrant`: a `uint256` occupies a whole slot
+    ///      by definition, so it cannot pack into the trailing bytes of anything.
+    uint256 public minEndowment;
+
+    /// @dev Native STT handed to a newborn to think with. Zero until Task 3 makes
+    ///      organisms pay for their own cognition; set per-deploy after that.
+    uint256 public cognitionEndowment;
+
+    uint256[14] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -134,6 +144,9 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event Paired(uint256 indexed upId, uint256 indexed downId, uint256 amount);
     event Unpaired(uint256 indexed prophetId, Belief belief);
     event Reaped(uint256 indexed prophetId, uint64 window, uint256 aliveRemaining);
+    /// @dev An entrant left voluntarily and took what the organism still held.
+    ///      Distinct from `Reaped`, which is death by starvation and forfeits.
+    event Retired(uint256 indexed prophetId, address indexed entrant, uint256 returned);
     event BreedingRequested(uint256 indexed parentId, uint256 requestId);
     event WindowClosed(uint64 indexed window, uint256 aliveCount);
     /// @dev An unattended run must never be stalled by one bad organism. Each of
@@ -155,6 +168,9 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     error NotEligibleToBreed();
     error TransferFailed();
     error NothingToHatch();
+    error EndowmentTooSmall();
+    error NotEntrant();
+    error PositionStillOpen();
 
     /// @dev The reactivity precompile. Has no bytecode and does not exist on local
     ///      chains, so this is only ever a `msg.sender` comparison here.
@@ -234,6 +250,9 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         breedStreak = 4;
         breedSurplusBps = 5000; // needs 1.5x endowment to afford a child
         maxPopulation = 24;
+
+        minEndowment = 10_000_000; // 10 tUSDC — the same as a house endowment
+        cognitionEndowment = 0; // set per-deploy; Task 3 makes it load-bearing
 
         subcommitteeSize = 3;
         threshold = 2;
@@ -335,11 +354,14 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      selection to act on and no counterparty for pairing.
     function spawnGenesis(string[] calldata genomes) external onlyOwner {
         for (uint256 i; i < genomes.length; ++i) {
-            _spawn(0, 0, genomes[i]);
+            _spawn(0, 0, genomes[i], msg.sender, endowment);
         }
     }
 
-    function _spawn(uint256 parentId, uint32 generation, string memory genome) internal returns (address p) {
+    function _spawn(uint256 parentId, uint32 generation, string memory genome, address entrant, uint256 endow)
+        internal
+        returns (address p)
+    {
         // `living.length`, NOT `prophets.length`. `prophets` is append-only, so
         // capping on it makes `maxPopulation` a LIFETIME BIRTH CAP rather than the
         // gas bound it is documented to be: after that many births ever, the
@@ -355,7 +377,9 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         // for a warm SLOAD each. Do not reintroduce the local. The two index writes
         // below re-read it for the same reason.
         p = address(new BeaconProxy(prophetBeacon, ""));
-        Prophet(payable(p)).initialize(address(this), prophets.length + 1, parentId, generation, windowCount, genome);
+        Prophet(payable(p)).initialize(
+            address(this), prophets.length + 1, parentId, generation, windowCount, entrant, genome
+        );
         prophets.push(p);
         living.push(prophets.length);
         livingIndex[prophets.length] = living.length;
@@ -366,12 +390,79 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         // transaction per birth.
         Prophet(payable(p)).grantPopulation(outcomeToken, collateral);
 
-        if (endowment > 0) {
-            if (!IERC20Like(collateral).transfer(p, endowment)) revert TransferFailed();
-            Prophet(payable(p)).fund(endowment);
+        // `endow` is a PARAMETER rather than a read of `endowment`, because the three
+        // callers fund a birth differently: genesis and hatching spend the house's
+        // balance, while `enter` has already pulled the entrant's own collateral in.
+        // Every caller must make sure this contract holds the amount first — that is
+        // what keeps genesis, entry and breeding on one code path.
+        if (endow > 0) {
+            if (!IERC20Like(collateral).transfer(p, endow)) revert TransferFailed();
+            Prophet(payable(p)).fund(endow);
         }
 
         emit Spawned(prophets.length, p, parentId, generation);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                               OPEN ARENA
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  Enter the arena.
+     *
+     *  Permissionless and deliberately free at the door: entrants are the scarce
+     *  input, so revenue comes from time spent in the arena (metabolism, and the
+     *  rake on settlement) rather than from a toll. What the entrant must supply
+     *  is their own organism's backing — they are not paying the house, they are
+     *  funding their player.
+     */
+    function enter(string calldata genome, uint256 endowmentAmount) external returns (uint256 prophetId) {
+        if (endowmentAmount < minEndowment) revert EndowmentTooSmall();
+        if (!IERC20Like(collateral).transferFrom(msg.sender, address(this), endowmentAmount)) {
+            revert TransferFailed();
+        }
+        _spawn(0, 0, genome, msg.sender, endowmentAmount);
+        prophetId = prophets.length;
+    }
+
+    function setSeason(uint256 minEndowment_, uint256 cognitionEndowment_) external onlyOwner {
+        minEndowment = minEndowment_;
+        cognitionEndowment = cognitionEndowment_;
+    }
+
+    /**
+     *  Leave the arena and take what the organism still holds.
+     *
+     *  Rent already charged and antes already lost stay lost — this is an exit,
+     *  not a refund. What it guarantees is that the *remaining* stake belongs to
+     *  whoever put it in, which is what makes entering a wager rather than a
+     *  donation.
+     *
+     *  `positionOpen` is the entire anti-rage-quit gate, and it needs no new
+     *  state: it is true from `commitAll` until `settleAll`, so an entrant cannot
+     *  watch a market move against their organism and pull the stake out from
+     *  under the counterparty it is already paired 1:1 with. Between windows,
+     *  leaving is free — an organism nobody wants to keep funding should stop
+     *  costing its entrant money.
+     */
+    function retire(uint256 prophetId) external {
+        Prophet p = Prophet(payable(prophetAt(prophetId)));
+        if (msg.sender != p.entrant()) revert NotEntrant();
+        if (p.dead()) revert ProphetIsDead();
+        if (p.positionOpen()) revert PositionStillOpen();
+
+        // `stakeOut` carries the `alive` modifier, so the drain MUST come before
+        // die(). Reversing these two lines does not merely reorder them: `stakeOut`
+        // then reverts `IsDead()` and the whole exit becomes impossible, locking the
+        // entrant's capital in an organism that can no longer earn it back. Verified
+        // by flipping them — all three test_retire_* cases fail with `IsDead()`.
+        uint256 remaining = p.treasury();
+        if (remaining > 0) p.stakeOut(msg.sender, remaining, collateral);
+
+        p.die(windowCount);
+        aliveCount -= 1;
+        _removeLiving(prophetId);
+        emit Retired(prophetId, msg.sender, remaining);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -759,7 +850,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             return;
         }
 
-        _spawn(parent.prophetId(), parent.generation() + 1, childGenome);
+        _spawn(parent.prophetId(), parent.generation() + 1, childGenome, parent.entrant(), endowment);
     }
 
     /*//////////////////////////////////////////////////////////////
