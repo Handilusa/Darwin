@@ -9,6 +9,9 @@ import {Population} from "../src/Population.sol";
 import {Prophet} from "../src/Prophet.sol";
 import {PushedPriceSource} from "../src/PushedPriceSource.sol";
 import {SelectionEngine} from "../src/SelectionEngine.sol";
+import {DreamDEXVenue} from "../src/venues/DreamDEXVenue.sol";
+import {IArenaVenue} from "../src/interfaces/IArenaVenue.sol";
+import {IPriceSource} from "../src/interfaces/IPriceSource.sol";
 import {Genome, Belief, Thesis} from "../src/Genome.sol";
 import {IBinaryMarketsModule} from "../src/interfaces/IDreamDEX.sol";
 import {
@@ -61,6 +64,11 @@ contract DarwinTest is Test {
     MockAgentRequester requester;
     PushedPriceSource priceSource;
 
+    /// @dev The REAL adapter, not a mock. Every test in this file therefore exercises
+    ///      the venue seam end to end: a call-counting double would prove the
+    ///      interface is called, which is the uninteresting half of the claim.
+    DreamDEXVenue venue;
+
     UpgradeableBeacon beacon;
     Population population;
 
@@ -78,6 +86,13 @@ contract DarwinTest is Test {
         _setPool(address(pool), YES_ID, NO_ID);
 
         priceSource = new PushedPriceSource(IBinaryMarketsModule(address(module)), owner, owner);
+        venue = new DreamDEXVenue(
+            IPriceSource(address(priceSource)),
+            address(settlement),
+            address(collateral),
+            address(outcomeToken),
+            "BTC"
+        );
         beacon = new UpgradeableBeacon(address(new Prophet()), owner);
 
         Population impl = new Population();
@@ -93,6 +108,7 @@ contract DarwinTest is Test {
                     collateral: address(collateral),
                     prophetBeacon: address(beacon),
                     priceSource: address(priceSource),
+                    venue: address(venue),
                     llmAgentId: 1,
                     symbol: "BTC"
                 })
@@ -568,8 +584,8 @@ contract DarwinTest is Test {
     }
 
     /// @dev One failing mint must not roll back the rest of the window. The pool is
-    ///      swapped BEFORE the window opens, because `activePool` is resolved at
-    ///      `think()` time and deliberately never re-read afterwards.
+    ///      swapped BEFORE the window opens, because the venue resolves it from
+    ///      `IPriceSource` when the pair is issued and never re-reads it afterwards.
     function test_commit_failedPairDoesNotRollBackWindow() public {
         _seed(4);
         _setPool(address(new RevertingPool()), YES_ID, NO_ID);
@@ -591,6 +607,179 @@ contract DarwinTest is Test {
 
         _settle();
         assertEq(_p(1).treasury(), population.endowment() - population.metabolicCost());
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                       THE VENUE SEAM — IArenaVenue
+
+        DreamDEX is fitness function #1, not the definition of the
+        arena. These tests pin the seam's contract rather than its
+        current occupant: what `Population` and `Prophet` are allowed
+        to assume about where positions live and how a resolved
+        position becomes collateral.
+
+        Note that the other tests in this file are also venue tests —
+        the harness wires the REAL `DreamDEXVenue`, not a double, so
+        every window in this suite already goes through the interface.
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  THE REGRESSION GUARD FOR THE DEFECT THIS SEAM ALMOST SHIPPED WITH.
+     *
+     *  The first draft of `DreamDEXVenue.redeemFor` resolved the pool by calling
+     *  `IPriceSource.currentWindow`, mirroring what `openOpposing` does. That is
+     *  wrong in a way no ordinary test would have caught: `PushedPriceSource`
+     *  reverts `StalePrice` past `maxStaleness` (180s), and in the reactive path
+     *  NOBODY pushes a price between the market resolving and the callback firing
+     *  — no keeper between resolution and consequence is the whole claim. So the
+     *  draft would have reverted every settlement on the path that matters and
+     *  passed on the keeper-driven cadence that happens to push first.
+     *
+     *  The fix is that the venue RECORDS the pool per position id at open time.
+     *  This test is what makes that structural: it settles with a feed that has
+     *  provably gone stale, and it fails against any implementation that reads
+     *  prices at settlement.
+     */
+    function test_venue_settlesAfterThePriceFeedHasGoneStale() public {
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _upWins();
+
+        uint256 endowment = population.endowment();
+        uint256 stake = _stake();
+
+        // Past maxStaleness. This is the NORMAL case in the reactive path, not an
+        // edge case: the callback fires whenever the market settles.
+        //
+        // `expectPartialRevert`, not `expectRevert`, and the distinction is a
+        // foundry trap worth naming: `expectRevert(bytes4)` compares the WHOLE
+        // revert data, so a bare selector matches only a parameterless error.
+        // `StalePrice(uint64,uint64)` carries an age and a limit, so the bare
+        // selector fails with `StalePrice(181, 180) != custom error 0x2ccfc2ca` —
+        // which reads like the feed was not stale when in fact it was. Matching on
+        // the selector alone is also the honest assertion here: this line is a
+        // precondition proving the feed HAS gone stale, and the exact age is an
+        // artifact of when the harness last pushed. Encoding it (as
+        // `test_priceSource_refusesStalePrice` legitimately does, because there
+        // the numbers ARE the claim) would couple this test to helper timing it
+        // does not care about.
+        vm.warp(block.timestamp + 181);
+        vm.expectPartialRevert(PushedPriceSource.StalePrice.selector);
+        priceSource.currentWindow("BTC");
+
+        _settle();
+
+        assertEq(
+            _p(1).treasury(),
+            endowment + stake - population.metabolicCost(),
+            "the winner was paid with no live price available"
+        );
+        assertEq(_p(1).correctCount(), 1, "and it was graded");
+        _assertLedgerMatchesBalance(1);
+        _assertLedgerMatchesBalance(2);
+    }
+
+    /**
+     *  The organism PUSHES its position to the venue; the venue never pulls.
+     *
+     *  Not a stylistic choice — `finalizeAndRedeem` burns from `msg.sender`, and
+     *  the ERC-6909 surface here has `transfer` and `setOperator` but no
+     *  `transferFrom`, so a venue cannot pull an organism's tokens no matter what
+     *  rights it holds. An earlier design granted the venue operator rights and
+     *  would simply not have worked. This asserts the absence of that grant, so
+     *  reintroducing the pull design breaks a test instead of a deploy.
+     */
+    function test_venue_organismPushesRatherThanTheVenuePulling() public {
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        assertFalse(
+            outcomeToken.isOperator(address(_p(1)), address(venue)), "the venue must not hold operator rights"
+        );
+        assertEq(outcomeToken.balanceOf(address(venue), YES_ID), 0, "no position parked at the venue mid-window");
+
+        _upWins();
+        _settle();
+
+        // Custody at the venue is transient: it exists only between the push and
+        // the burn, inside one call.
+        assertEq(outcomeToken.balanceOf(address(venue), YES_ID), 0, "venue holds nothing after settlement");
+        assertEq(outcomeToken.balanceOf(address(_p(1)), YES_ID), 0, "position was burned, not left behind");
+        assertEq(collateral.balanceOf(address(venue)), 0, "and it keeps no collateral either");
+    }
+
+    /**
+     *  The seam has to be live, not decorative: a running arena must be
+     *  repointable at a different adjudication mechanism without touching a
+     *  single organism. That is the whole platform claim, and it only holds
+     *  because organisms push — there is no standing authorisation to migrate.
+     */
+    function test_venue_canBeRepointedBetweenWindows() public {
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _upWins();
+        _settle();
+
+        DreamDEXVenue replacement = new DreamDEXVenue(
+            IPriceSource(address(priceSource)),
+            address(settlement),
+            address(collateral),
+            address(outcomeToken),
+            "BTC"
+        );
+        assertEq(replacement.poolOf(YES_ID), address(0), "the replacement has issued nothing yet");
+
+        vm.prank(owner);
+        population.setWiring(address(0), address(0), address(0), address(replacement));
+        assertEq(population.venue(), address(replacement));
+
+        vm.prank(owner);
+        population.forcePhase(0);
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        // Proof the second window went through the NEW venue: it recorded the
+        // pool this position was issued against, which it could not have done
+        // without issuing it.
+        assertEq(replacement.poolOf(YES_ID), address(pool), "the new venue issued the pair");
+
+        _upWins();
+        _settle();
+
+        assertEq(_p(1).correctCount(), 2, "the organism was graded through both venues");
+        _assertLedgerMatchesBalance(1);
+        _assertLedgerMatchesBalance(2);
+    }
+
+    /// @dev The interface's own promises, asserted against the real adapter so a
+    ///      future venue has an unambiguous contract to satisfy. `positionToken()`
+    ///      returning zero is a real answer meaning "skip the push", which is why
+    ///      it must be non-zero here.
+    function test_venue_reportsItsOwnTokens() public view {
+        assertEq(population.venue(), address(venue), "the population is wired to a venue");
+        assertEq(IArenaVenue(address(venue)).collateral(), address(collateral));
+        assertEq(IArenaVenue(address(venue)).positionToken(), address(outcomeToken));
+    }
+
+    /// @dev A position id the venue never issued must not be redeemable through it.
+    ///      Without this, a venue would happily burn tokens against whatever pool
+    ///      `poolOf` returned by default — address zero — and the failure mode is
+    ///      a silent zero payout rather than a revert.
+    function test_venue_rejectsAPositionItNeverIssued() public {
+        vm.expectRevert(abi.encodeWithSelector(DreamDEXVenue.UnknownPosition.selector, uint256(4242)));
+        venue.redeemFor(address(this), 4242, 1);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1207,7 +1396,7 @@ contract DarwinTest is Test {
     function _engine() internal returns (SelectionEngine e) {
         e = new SelectionEngine(population, address(settlement), owner);
         vm.prank(owner);
-        population.setWiring(address(0), address(e), address(0));
+        population.setWiring(address(0), address(e), address(0), address(0));
     }
 
     /**

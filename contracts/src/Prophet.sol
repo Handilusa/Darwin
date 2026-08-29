@@ -2,7 +2,11 @@
 pragma solidity ^0.8.24;
 
 import {IAgentRequester, ILLMAgent, Response, Request, ResponseStatus} from "./interfaces/ISomnia.sol";
-import {IBinaryPool, IBinarySettlement, IOutcomeToken6909, IERC20Like} from "./interfaces/IDreamDEX.sol";
+// `IBinaryPool` is deliberately absent: an organism no longer touches a pool at all.
+// What remains DreamDEX-shaped here is the ERC-6909 position token it custodies and the
+// owed-balance rescue in `_sweepOwed` — both narrowed further as venues are added.
+import {IBinarySettlement, IOutcomeToken6909, IERC20Like} from "./interfaces/IDreamDEX.sol";
+import {IArenaVenue} from "./interfaces/IArenaVenue.sol";
 import {Genome, Belief, Thesis} from "./Genome.sol";
 
 /**
@@ -297,17 +301,23 @@ contract Prophet {
      *  Redeem the window's position and apply the consequence.
      *
      *  Called from SelectionEngine inside the reactive callback the validators
-     *  insert in the SAME BLOCK the market settled — so `finalizeAndRedeem`
-     *  folds finalize and redeem into one call and the organism's winnings, its
-     *  fitness, and its death all land before the block closes. Nothing
-     *  keeper-shaped sits between resolution and consequence.
+     *  insert in the SAME BLOCK the market settled — so redemption, the
+     *  organism's winnings, its fitness, and its death all land before the block
+     *  closes. Nothing keeper-shaped sits between resolution and consequence.
+     *  `IArenaVenue.redeemFor` inherits that requirement as its hardest
+     *  constraint; a venue that needs a second transaction breaks the claim
+     *  rather than merely slowing it.
      *
      *  A losing position redeems successfully and pays nothing, so there is no
      *  branch on winning here — `collateralOut` tells the truth either way. A
      *  voided market pays both sides 0.5, which lands as roughly the stake back
      *  and is correctly scored as neither a win nor a loss.
+     *
+     *  Takes the VENUE rather than a settlement/pool pair. Population chooses the
+     *  callee; the organism does not know or care whether adjudication is a
+     *  complete-set redemption or a price comparison.
      */
-    function settleWindow(address settlement, address pool, address collateral, uint256 metabolicCost)
+    function settleWindow(address venue, address collateral, uint256 metabolicCost)
         external
         onlyPopulation
         returns (uint256 collateralOut, bool starved)
@@ -322,12 +332,28 @@ contract Prophet {
         if (quantity > 0) {
             uint256 balBefore = IERC20Like(collateral).balanceOf(address(this));
 
+            // PUSH the position to the venue before asking it to redeem. Forced by
+            // the redemption primitive rather than chosen: finalizeAndRedeem burns
+            // from msg.sender — DreamDEX's Redeemed event distinguishes `holder`
+            // from `to` for exactly that reason — and the ERC-6909 surface here
+            // exposes `transfer` and `setOperator` but no `transferFrom`, so no
+            // grant of any kind lets a venue pull these tokens. Custody is
+            // transient: a revert below unwinds this transfer with it.
+            //
+            // A venue with no transferable position token reports address(0), and
+            // its ids are pure bookkeeping.
+            {
+                address ptoken = IArenaVenue(venue).positionToken();
+                if (ptoken != address(0)) {
+                    IOutcomeToken6909(ptoken).transfer(venue, currentOutcomeId, quantity);
+                }
+            }
+
             // Redeeming a losing outcome id is legal and returns zero; only a
             // genuinely reverting settlement should abort the whole population,
             // so this is deliberately NOT wrapped in a try/catch that would
             // silence a real integration break.
-            collateralOut =
-                IBinarySettlement(settlement).finalizeAndRedeem(pool, currentOutcomeId, quantity, address(this));
+            collateralOut = IArenaVenue(venue).redeemFor(address(this), currentOutcomeId, quantity);
 
             // THE RETURN VALUE AND THE BALANCE ANSWER DIFFERENT QUESTIONS, and
             // conflating them is a genuine bug rather than a stylistic choice.
@@ -345,7 +371,13 @@ contract Prophet {
                 // ledger. If the claim is unavailable this window, the payout is
                 // not lost — `claimOwed()` is permissionless and can rescue it
                 // later — but the organism is exposed to metabolism until then.
-                received += _sweepOwed(settlement, collateral);
+                //
+                // The settlement address comes from Population rather than from
+                // the removed `settlement` parameter, so this path and the
+                // permissionless `claimOwed()` below read the SAME source. A
+                // venue with no owed ledger never reaches here: it cannot report
+                // more worth than it paid.
+                received += _sweepOwed(IPopulationConfig(population).settlement(), collateral);
             }
         }
 

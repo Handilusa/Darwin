@@ -137,6 +137,10 @@ export const populationAbi = parseAbi([
   "function minStake() view returns (uint256)",
   "function collateral() view returns (address)",
   "function priceSource() view returns (address)",
+  // Where positions live and how a resolved position becomes collateral. Readable
+  // because it is repointable: the manifest records the venue deployed on day two,
+  // and this is how a script confirms the population is still wired to that one.
+  "function venue() view returns (address)",
   "function selectionEngine() view returns (address)",
   "function marketsModule() view returns (address)",
   "function symbol() view returns (string)",

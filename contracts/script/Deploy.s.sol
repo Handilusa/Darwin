@@ -10,6 +10,8 @@ import {Population} from "../src/Population.sol";
 import {Prophet} from "../src/Prophet.sol";
 import {PushedPriceSource} from "../src/PushedPriceSource.sol";
 import {SelectionEngine} from "../src/SelectionEngine.sol";
+import {DreamDEXVenue} from "../src/venues/DreamDEXVenue.sol";
+import {IPriceSource} from "../src/interfaces/IPriceSource.sol";
 import {IBinaryMarketsModule, IERC20Like} from "../src/interfaces/IDreamDEX.sol";
 
 /**
@@ -82,6 +84,7 @@ contract Deploy is Script {
         address populationImpl;
         address population;
         address priceSource;
+        address venue;
         address selectionEngine;
         uint8 collateralDecimals;
     }
@@ -167,18 +170,29 @@ contract Deploy is Script {
         //    initializer. Non-upgradeable by design and freely re-pointable later.
         d.priceSource = address(new PushedPriceSource(IBinaryMarketsModule(d.marketsModule), d.owner, d.updater));
 
-        // 3. Population, behind UUPS. Owner is the deployer for now — see the header.
+        // 3. Venue — where positions live and how a resolved position becomes
+        //    collateral. Also before Population, and also freely replaceable: it holds
+        //    nothing between transactions, so `setWiring` can repoint the population at
+        //    a different adjudication mechanism without touching an organism.
+        d.venue = address(
+            new DreamDEXVenue(
+                IPriceSource(d.priceSource), d.settlement, d.collateral, d.outcomeToken, d.symbol
+            )
+        );
+
+        // 4. Population, behind UUPS. Owner is the deployer for now — see the header.
         d.populationImpl = address(new Population());
         d.population = address(
             new ERC1967Proxy(d.populationImpl, abi.encodeCall(Population.initialize, (d.deployer, _wiring(d))))
         );
 
-        // 4. The reactive adapter, and the one contract that knows the unverified
+        // 5. The reactive adapter, and the one contract that knows the unverified
         //    callback selector.
         d.selectionEngine = address(new SelectionEngine(Population(payable(d.population)), d.settlement, d.engineOwner));
 
-        // 5. Register the engine as a driver, then hand over.
-        Population(payable(d.population)).setWiring(address(0), d.selectionEngine, address(0));
+        // 6. Register the engine as a driver, then hand over. The venue went in through
+        //    the initializer, so the fourth argument is a deliberate no-op here.
+        Population(payable(d.population)).setWiring(address(0), d.selectionEngine, address(0), address(0));
         if (d.owner != d.deployer) Population(payable(d.population)).transferOwnership(d.owner);
 
         vm.stopBroadcast();
@@ -193,6 +207,7 @@ contract Deploy is Script {
             collateral: d.collateral,
             prophetBeacon: d.prophetBeacon,
             priceSource: d.priceSource,
+            venue: d.venue,
             llmAgentId: d.llmAgentId,
             symbol: d.symbol
         });
@@ -211,6 +226,7 @@ contract Deploy is Script {
         console.log("prophetBeacon    ", d.prophetBeacon);
         console.log("prophetImpl      ", d.prophetImpl);
         console.log("priceSource      ", d.priceSource);
+        console.log("venue            ", d.venue);
         console.log("selectionEngine  ", d.selectionEngine);
         console.log("owner            ", d.owner);
         console.log("updater          ", d.updater);
@@ -262,6 +278,7 @@ contract Deploy is Script {
         j = string.concat(j, '  "prophetBeacon": "', vm.toString(d.prophetBeacon), '",\n');
         j = string.concat(j, '  "prophetImpl": "', vm.toString(d.prophetImpl), '",\n');
         j = string.concat(j, '  "priceSource": "', vm.toString(d.priceSource), '",\n');
+        j = string.concat(j, '  "venue": "', vm.toString(d.venue), '",\n');
         j = string.concat(j, '  "selectionEngine": "', vm.toString(d.selectionEngine), '",\n');
         j = string.concat(j, '  "agentRequester": "', vm.toString(d.agentRequester), '",\n');
         j = string.concat(j, '  "marketsModule": "', vm.toString(d.marketsModule), '",\n');

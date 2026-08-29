@@ -4,7 +4,8 @@
 `docs/BUSINESS_PLAN.md`, which carries the commercial argument; this document
 carries the mechanism.*
 
-**Status: design, awaiting approval. No implementation has started.**
+**Status: approved 2026-08-29. Implementation plan at
+`docs/superpowers/plans/2026-08-29-arena-engine.md`.**
 
 ---
 
@@ -106,33 +107,75 @@ restructuring.
 
 ```solidity
 interface IArenaVenue {
-    /// Issue opposing, fully-backed positions of `amount` collateral each to
-    /// `up` and `down`. Collateral is pulled from the two organisms.
-    /// Returns the outcome ids each side now holds.
+    /// Issue opposing, fully-backed positions out of `amount` collateral, which
+    /// the venue pulls from msg.sender. Returns the position ids each side now
+    /// holds and the quantity EACH side holds — not the same number as either
+    /// side's contribution.
     function openOpposing(address up, address down, uint256 amount)
         external
-        returns (uint256 upId, uint256 downId);
+        returns (uint256 upId, uint256 downId, uint256 quantity);
 
-    /// Convert `organism`'s winning position into collateral, paid to
-    /// `organism`. MUST be callable in the same block the underlying resolution
-    /// lands. Returns 0 for a loser rather than reverting.
+    /// Convert `organism`'s resolved position into collateral, paid to
+    /// `organism`. The caller MUST have pushed the position to the venue first
+    /// when `positionToken()` is non-zero. MUST be callable in the same block
+    /// the underlying resolution lands. Returns 0 for a loser rather than
+    /// reverting.
     function redeemFor(address organism, uint256 positionId, uint256 quantity)
         external
         returns (uint256 collateralOut);
 
-    /// Where losing/abstaining organisms' residual claims are booked, if the
-    /// venue books rather than transfers.
+    /// The token positions are denominated in, or address(0) if this venue
+    /// issues no transferable position token and its ids are pure bookkeeping.
+    /// Zero is a real answer: it tells the caller to skip the push.
+    function positionToken() external view returns (address);
+
+    /// The collateral token this venue settles in.
     function collateral() external view returns (address);
 }
 ```
 
-**The one hard constraint.** `redeemFor` is called *by the Prophet* today via
-`finalizeAndRedeem`, and the organism holds the ERC-6909 outcome tokens. For an
-adapter to redeem on the organism's behalf it needs operator rights:
-`IOutcomeToken6909.setOperator(spender, approved)` already exists in the
-interface (`interfaces/IDreamDEX.sol:257`), granted once at birth.
+**The one hard constraint — and the mechanism this section originally got wrong.**
 
-**This is the highest-risk item in the whole design**, because it touches the
+*Corrected 2026-08-29 while implementing.* This section said an adapter needs
+`IOutcomeToken6909.setOperator` rights, granted once at birth, to redeem on the
+organism's behalf. **That cannot work, and the error was structural rather than a
+detail.** `finalizeAndRedeem` burns from `msg.sender` — DreamDEX's `Redeemed`
+event distinguishes `holder` from `to` for exactly that reason, and
+`MockSettlement` (`test/mocks/Mocks.sol:202`) faithfully reproduces it — while
+`IOutcomeToken6909` (`interfaces/IDreamDEX.sol:257`) exposes `transfer`,
+`approve` and `setOperator` but **no `transferFrom`**. Operator rights therefore
+buy nothing at all: no grant of any kind lets a venue pull an organism's
+position.
+
+So the direction inverts. **The organism pushes; the venue redeems as holder and
+directs the payout back** with `to = organism`. Custody at the venue is transient
+— it exists only between the push and the burn, inside one call, and a revert
+anywhere unwinds the transfer with it. Three consequences worth recording:
+
+- `positionToken()` joins the interface, so a venue with no transferable token
+  (`DirectDuelVenue`) can tell the caller to skip the push.
+- `Prophet.grantPopulation` is **unchanged**. There is no `grantOperators`, and no
+  batched re-grant walk after a venue swap — which is precisely what makes
+  `setWiring`'s venue argument cheap enough to be a real seam rather than a
+  theoretical one.
+- Passing `to = organism` is load-bearing, not a saved hop: settlement may CREDIT
+  an owed balance instead of transferring, and the credit is booked against `to`.
+  Routing it to the venue would strand a winner's payout somewhere with no claim
+  path, where `Prophet._sweepOwed` can rescue it from the organism.
+
+A second implementation error, caught the same way: `redeemFor` must **not** read
+`IPriceSource`. `currentWindow` reverts `StalePrice` past `maxStaleness` = 180s
+(`PushedPriceSource.sol:115`), and in the reactive path nobody pushes a price
+between resolution and the callback — that is the central claim, not an
+oversight. A `redeemFor` that resolved the pool from the price source would have
+reverted every settlement on the path that matters while passing under a
+keeper-driven cadence that happened to push first. `DreamDEXVenue` therefore
+**records** `poolOf[positionId]` when it issues the position. That is not the
+cache `CLAUDE.md` forbids: it is recorded truth about one specific position, the
+same shape as `Prophet.currentMarketId`. `openOpposing` still resolves fresh,
+because pools genuinely are recycled.
+
+**This remains the highest-risk item in the whole design**, because it touches the
 exact path the project's central technical claim depends on — consequence in the
 same block as resolution. It must be re-proven by `scripts/prove-same-block.ts`
 against Shannon before `SelectionEngine.fallbackEnabled` is closed. Until then
@@ -163,9 +206,28 @@ story needs.
 
 ### 3.3 Ownership and entry
 
-`Prophet` gains `address entrant`. Slot 15 currently holds only
-`bool positionOpen` (`Prophet.sol:78-79`) with `__gap` beginning at slot 16, so
-`entrant` (20 bytes) packs into slot 15 alongside it: **zero new slots.**
+`Prophet` gains `address entrant` on a **slot of its own**, taken from `__gap`
+together with the `uint256` pad that forces the boundary.
+
+*Corrected twice on 2026-08-29, the second time against the compiler:* an
+earlier draft of this section claimed `entrant` costs zero slots by packing into
+slot 15 alongside `positionOpen`. `CLAUDE.md` forbids exactly that — *"slots 0
+(31/32) and 15 (1/32 — thirty-one bytes spare) have free bytes. **Do not fill
+them.** Slot 15 … is the most inviting place in the contract to 'just add a
+bool'"* — because packing into a partially-used slot changes nothing on a fresh
+deploy and only surfaces later, when a counter starts reading another field's
+bytes.
+
+The first correction then said the cost is one slot, which is still wrong:
+declaring `address public entrant;` after `bool public positionOpen;` **is** the
+packing, because Solidity fills the previous slot's trailing bytes whenever the
+next variable fits. A `uint256` cannot fit in 31 bytes, so declaring one is the
+only thing that forces the boundary. The real cost is **two slots** — one of
+them permanently unused — and `__gap` goes `uint256[20]` → `uint256[18]`. The
+same applies to `Population.venue`, which was caught the same way while
+implementing Phase 1. The "zero storage" boast is withdrawn, and so is the
+one-slot arithmetic that replaced it; `forge inspect` is what settles this, not
+this paragraph.
 
 ```solidity
 // Population
@@ -284,13 +346,22 @@ The layout freezes at the Season 0 deploy, so all of this must land before it.
 
 | Contract | Change | Slot cost |
 |---|---|---|
-| `Prophet` | `address entrant` | **0** — packs into slot 15 with `positionOpen` |
+| `Prophet` | `address entrant` + `uint256` pad | **2** — the pad is what forces `entrant` off slot 15; see §3.3 |
 | `Prophet` | native cognition balance | **0** — `address(this).balance` |
+| `Population` | `address venue` + `uint256` pad | **2** — same mechanism, forced off `phase`'s slot |
 | `Population` | 10 new vars above | shrink `__gap` (`Population.sol:88`, `uint256[20]`) accordingly |
 
-`Population.__gap` has 20 slots; the additions consume roughly 6 after packing
-(`seasonId`+`seasonStartWindow`+`levelWindows`+`anteMultBps`+`rakeBps` pack into
-one). Ample headroom remains.
+`Population.__gap` has 20 slots and the additions consume **8**: 2 for `venue`
+and its pad, 2 for `minEndowment`/`cognitionEndowment`, then 4 for the season
+block (`seasonId`+`seasonStartWindow`+`seasonWindows`+`levelWindows`+`anteMultBps`+`rakeBps`
+pack into one, plus `baseAnte`, `rakeAccrued`, `prizePool`). `Prophet.__gap`
+loses 2 of its 20. Ample headroom remains in both.
+
+Note what the two pads cost and what they buy: two of forty spare slots, in
+exchange for every pre-existing slot boundary staying exactly where `STORAGE.md`
+records it. The alternative saves nothing that matters and violates a repo
+constraint whose failure mode is invisible until an organism's counter is already
+reading another field's bytes.
 
 **Verification is not optional.** `forge inspect ... storage-layout` must be
 re-run and `STORAGE.md` regenerated after the change, and
@@ -305,9 +376,14 @@ in a function body cannot move a slot. **Adding declarations can.**
 
 Existing suite is 56 tests. New coverage required:
 
-- **Venue abstraction:** the full window against a `MockVenue`; then the same
-  assertions against `DreamDEXVenue` and `DirectDuelVenue`, proving the engine is
-  venue-indifferent. This double-run *is* the platform claim, expressed as a test.
+- **Venue abstraction:** no `MockVenue`. The harness wires the **real**
+  `DreamDEXVenue`, so the whole existing suite runs through the seam — a
+  call-counting double would only prove the interface is called, which is the
+  uninteresting half of the claim. On top of that: settlement with a *provably
+  stale* price feed (the regression guard for the `redeemFor` defect above),
+  absence of any operator grant to the venue, and repointing `venue` between
+  windows on a live population. `DirectDuelVenue` then re-runs the same
+  assertions, and owns the `positionToken() == address(0)` branch.
 - **Cognition budget:** an organism with insufficient native balance abstains,
   pays metabolism, is not paired, and does not halt the window.
 - **Escalating ante:** level arithmetic at boundaries; a whale-funded organism is

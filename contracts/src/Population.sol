@@ -7,7 +7,8 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 
 import {IAgentRequester, ILLMAgent, ConsensusType} from "./interfaces/ISomnia.sol";
-import {IBinaryPool, IERC20Like} from "./interfaces/IDreamDEX.sol";
+import {IERC20Like} from "./interfaces/IDreamDEX.sol";
+import {IArenaVenue} from "./interfaces/IArenaVenue.sol";
 import {IPriceSource} from "./interfaces/IPriceSource.sol";
 import {Prophet} from "./Prophet.sol";
 import {Genome, Belief} from "./Genome.sol";
@@ -85,7 +86,28 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     uint256 public activeDownId;
     uint8 public phase; // 0 idle, 1 thinking, 2 committed
 
-    uint256[20] private __gap;
+    // --- the venue seam ---
+    /**
+     *  THE PADDING IS NOT DEAD WEIGHT. `phase` above is a `uint8`, so its slot has
+     *  thirty-one bytes spare and Solidity would happily pack a 20-byte `address`
+     *  into them. `CLAUDE.md` forbids exactly that — *"`Population` slots 13, 18,
+     *  21, 23, 26 have free bytes. Do not fill them. Packing into a partially-used
+     *  slot changes nothing for a fresh deploy and corrupts nothing visibly until
+     *  an organism's counter starts reading someone else's bytes. Take a fresh slot
+     *  from `__gap`."* A `uint256` cannot fit in thirty-one bytes, so declaring one
+     *  here is what forces `venue` onto a fresh slot; there is no padding
+     *  primitive that does it more directly.
+     *
+     *  Cost: two slots out of twenty, one of them unused, to keep every slot
+     *  boundary where `STORAGE.md` says it is. That is the cheap side of the trade.
+     */
+    uint256 private __slotAlign;
+
+    /// @dev Where positions live and how a resolved position becomes collateral.
+    ///      DreamDEX is fitness function #1, not the definition of the arena.
+    address public venue;
+
+    uint256[18] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -146,6 +168,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         address collateral;
         address prophetBeacon;
         address priceSource;
+        address venue;
         uint256 llmAgentId;
         string symbol;
     }
@@ -176,6 +199,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         collateral = w.collateral;
         prophetBeacon = w.prophetBeacon;
         priceSource = w.priceSource;
+        venue = w.venue;
         llmAgentId = w.llmAgentId;
         symbol = w.symbol;
 
@@ -231,10 +255,18 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                                  CONFIG
     //////////////////////////////////////////////////////////////*/
 
-    function setWiring(address priceSource_, address selectionEngine_, address prophetBeacon_) external onlyOwner {
+    /// @dev The venue is swappable so a running arena can be repointed at a
+    ///      different settlement mechanism. Existing organisms need no re-grant:
+    ///      they PUSH their position to the venue at settlement rather than the
+    ///      venue pulling it, so there is no standing authorisation to migrate.
+    function setWiring(address priceSource_, address selectionEngine_, address prophetBeacon_, address venue_)
+        external
+        onlyOwner
+    {
         if (priceSource_ != address(0)) priceSource = priceSource_;
         if (selectionEngine_ != address(0)) selectionEngine = selectionEngine_;
         if (prophetBeacon_ != address(0)) prophetBeacon = prophetBeacon_;
+        if (venue_ != address(0)) venue = venue_;
     }
 
     function setEconomics(
@@ -508,21 +540,38 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 fromDown = down.stakeOut(address(this), stake, collateral);
         uint256 amount = fromUp + fromDown;
 
-        // The pool pulls the collateral, so it needs an allowance for exactly this
-        // amount. Approving per-call rather than infinitely: pools are recycled
-        // across windows, and a standing allowance to a recycled address is a
-        // liability nobody is watching.
-        IERC20Like(collateral).approve(activePool, amount);
-        IBinaryPool(activePool).mintSet(address(up), address(down), amount);
+        // The venue pulls the collateral, so it needs an allowance for exactly
+        // this amount. Approving per-call rather than infinitely: a venue is
+        // replaceable via setWiring, and a standing allowance to an address we
+        // have since stopped using is a liability nobody is watching.
+        address v = venue;
+        IERC20Like(collateral).approve(v, amount);
+        (uint256 upId, uint256 downId, uint256 quantity) =
+            IArenaVenue(v).openOpposing(address(up), address(down), amount);
 
-        // Each side HOLDS `amount` tokens but RISKED only its own contribution, so
-        // the winner redeems the pair's whole backing and nets the loser's stake.
-        // Even odds at an effective price of 0.5.
-        up.noteCommitted(activeUpId, fromUp, amount);
-        down.noteCommitted(activeDownId, fromDown, amount);
+        // Each side HOLDS `quantity` tokens but RISKED only its own contribution,
+        // so the winner redeems the pair's whole backing and nets the loser's
+        // stake. Even odds at an effective price of 0.5. The venue reports the
+        // quantity rather than this contract deriving it from `amount`, because
+        // what a position unit means is the venue's business, not ours.
+        up.noteCommitted(upId, fromUp, quantity);
+        down.noteCommitted(downId, fromDown, quantity);
         emit Paired(up.prophetId(), down.prophetId(), amount);
     }
 
+    /**
+     *  Record a zero-size position: the organism had a forecast but no
+     *  counterparty, or no forecast at all.
+     *
+     *  THE ID HERE IS A LABEL, NOT A CLAIM ON ANYTHING. It comes from the price
+     *  source's view of the window rather than from the venue, which is the one
+     *  place the engine still names an outcome id the venue did not issue. That is
+     *  sound because `quantity` is zero: `Prophet.settleWindow` skips the venue
+     *  entirely on a zero quantity, so the id is never pushed and never redeemed.
+     *  A venue whose ids are pure bookkeeping (`positionToken() == address(0)`)
+     *  therefore costs nothing here — but do not start treating this argument as a
+     *  position the venue knows about.
+     */
     function _openEmpty(Prophet p, uint256 outcomeId) internal {
         try p.noteCommitted(outcomeId, 0, 0) {
             emit Unpaired(p.prophetId(), p.belief());
@@ -543,20 +592,21 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  Grade the window: redeem, score, charge metabolism, reap, flag breeding.
      *
      *  Invoked from SelectionEngine's reactive callback in the SAME BLOCK the
-     *  market settled. `finalizeAndRedeem` folds finalization into redemption, so
-     *  nothing keeper-shaped sits between resolution and consequence — that is the
-     *  demo's central claim, and it is architecturally exact rather than
-     *  aspirational.
+     *  market settled. The venue folds finalization into redemption, so nothing
+     *  keeper-shaped sits between resolution and consequence — that is the demo's
+     *  central claim, and it is architecturally exact rather than aspirational.
+     *  It is also the reason `IArenaVenue.redeemFor` may not read a price feed:
+     *  on this path no price has been pushed since the window opened.
      */
     function settleAll() external onlyDriver inPhase(2) {
-        address pool = activePool;
+        address v = venue;
         uint256 n = prophets.length;
 
         for (uint256 i; i < n; ++i) {
             Prophet p = Prophet(payable(prophets[i]));
             if (p.dead() || !p.positionOpen()) continue;
 
-            try p.settleWindow(settlement, pool, collateral, metabolicCost) returns (uint256, bool starved) {
+            try p.settleWindow(v, collateral, metabolicCost) returns (uint256, bool starved) {
                 // DEATH: it can no longer afford to think. Not a health bar
                 // reaching zero — an organism that cannot pay for cognition in a
                 // world where cognition is metered is simply over.
