@@ -155,8 +155,8 @@ function test_venue_windowRunsThroughTheVenueSeam() public {
     _seed(2);
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
 
     // The seam is real only if the venue actually saw the pair.
@@ -174,7 +174,7 @@ function test_venue_windowRunsThroughTheVenueSeam() public {
 
 ```bash
 cd C:/Users/Handi/Desktop/somnia_predict/darwin
-npx --yes forge test --root contracts --match-test test_venue_windowRunsThroughTheVenueSeam -vv
+forge test --root contracts --match-test test_venue_windowRunsThroughTheVenueSeam -vv
 ```
 
 Expected: compile error — `mockVenue` is not declared, `MockVenue` does not exist.
@@ -475,7 +475,7 @@ Add `venue: address(mockVenue),` to the `Population.Wiring` literal (after `pric
 - [ ] **Step 12: Run the new test**
 
 ```bash
-npx --yes forge test --root contracts --match-test test_venue_windowRunsThroughTheVenueSeam -vv
+forge test --root contracts --match-test test_venue_windowRunsThroughTheVenueSeam -vv
 ```
 
 Expected: PASS.
@@ -673,8 +673,8 @@ function test_population_capIsConcurrentNotLifetime() public {
     _makeThinkingFatal();
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
     _settle();
 
@@ -692,7 +692,7 @@ function test_population_livingIndexTracksAliveCount() public {
     _upWins();
     _think();
     for (uint256 id = 1; id <= 4; ++id) {
-        _answer(id, id % 2 == 0 ? "UP | MOMENTUM | rising" : "DOWN | MEANREVERSION | falling");
+        _answer(id, id % 2 == 0 ? "UP_MOMENTUM" : "DOWN_REVERSION");
     }
     _commit();
     _settle();
@@ -713,8 +713,8 @@ function test_population_deadOrganismsCostNothingToIterate() public {
     _makeThinkingFatal();
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
     _settle();
 
@@ -730,7 +730,7 @@ function test_population_deadOrganismsCostNothingToIterate() public {
 - [ ] **Step 2: Run them to verify they fail**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_population_" -vv
+forge test --root contracts --match-test "test_population_" -vv
 ```
 
 Expected: compile error — `livingCount` and `livingIndex` do not exist. Note
@@ -917,7 +917,7 @@ block rather than restructuring the loop, and report which function needed it.
 - [ ] **Step 7: Run the new tests**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_population_" -vv
+forge test --root contracts --match-test "test_population_" -vv
 ```
 
 Expected: all three PASS.
@@ -939,7 +939,7 @@ Not a gate, but record it in the commit: the point of the task is that per-windo
 tracking history.
 
 ```bash
-npx --yes forge test --root contracts --match-test test_lifecycle --gas-report -vv | head -40
+forge test --root contracts --match-test test_lifecycle --gas-report -vv | head -40
 ```
 
 Note `settleAll`'s gas next to the pre-change figure if it is at hand. What matters is the
@@ -1059,8 +1059,8 @@ function test_entry_childInheritsTheEntrant() public {
     _setEconomics(e);
 
     _think();
-    _answer(parent, "UP | MOMENTUM | rising");
-    _answer(foil, "DOWN | MEANREVERSION | falling");
+    _answer(parent, "UP_MOMENTUM");
+    _answer(foil, "DOWN_REVERSION");
     _commit();
     _settle();
 
@@ -1138,8 +1138,8 @@ function test_retire_refusesWhileAPositionIsOpen() public {
 
     _upWins();
     _think();
-    _answer(id, "UP | MOMENTUM | rising");
-    _answer(foil, "DOWN | MEANREVERSION | falling");
+    _answer(id, "UP_MOMENTUM");
+    _answer(foil, "DOWN_REVERSION");
     _commit();
 
     assertTrue(_p(id).positionOpen(), "the test needs an open position to be meaningful");
@@ -1159,7 +1159,7 @@ function test_retire_refusesWhileAPositionIsOpen() public {
 - [ ] **Step 2: Run them to verify they fail**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_entry_" --match-test "test_retire_" -vv
+forge test --root contracts --match-test "test_entry_" --match-test "test_retire_" -vv
 ```
 
 Expected: compile error — `enter`, `retire`, `setSeason`, `entrant`, `EndowmentTooSmall`, `PositionStillOpen` do not exist. (`forge` takes the last `--match-test`; run the two patterns as two invocations, or use `--match-test "test_(entry|retire)_"`.)
@@ -1395,7 +1395,7 @@ Three things to notice, because each is a decision rather than an implementation
 - [ ] **Step 8: Run the new tests**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_(entry|retire)_" -vv
+forge test --root contracts --match-test "test_(entry|retire)_" -vv
 ```
 
 Expected: all seven PASS.
@@ -1530,7 +1530,7 @@ function test_cognition_brokeOrganismAbstainsAndStillPaysMetabolism() public {
     assertEq(broke.pendingBeliefRequestId(), 0, "broke organism should not have a request");
     assertGt(solvent.pendingBeliefRequestId(), 0, "solvent organism should have thought");
 
-    _answer(2, "UP | MOMENTUM | rising");
+    _answer(2, "UP_MOMENTUM");
     _commit();
     _upWins();
     _settle();
@@ -1554,7 +1554,7 @@ function test_cognition_topUpIsPermissionless() public {
 - [ ] **Step 2: Run them to verify they fail**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_cognition_" -vv
+forge test --root contracts --match-test "test_cognition_" -vv
 ```
 
 Expected: `test_cognition_organismPaysItsOwnInference` fails on the balance assertion (Population still pays); `test_cognition_topUpIsPermissionless` fails to compile.
@@ -1717,8 +1717,8 @@ function test_cognition_breedingIsPaidByTheParent() public {
 
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
 
     uint256 popBefore = address(population).balance;
@@ -1803,7 +1803,7 @@ Newly hatched children are funded by `cognitionEndowment`, which is 0 by default
 - [ ] **Step 7: Run the new tests**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_cognition_" -vv
+forge test --root contracts --match-test "test_cognition_" -vv
 ```
 
 Expected: all four PASS. Note `test_cognition_failedRequestsDoNotHaltPopulation` (`:373`) already exists and must also still pass — it uses `_makeThinkingFatal`, which is about metabolism rather than native balance, so it should be unaffected.
@@ -1935,8 +1935,8 @@ function test_ante_isFlatWithinALevelAndIgnoresTreasury() public {
     uint256 expected = population.ante();
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
 
     assertEq(_p(1).currentStake(), expected, "rich organism did not risk the ante");
@@ -1957,8 +1957,8 @@ function test_ante_escalatesByLevel() public {
     _upWins();
     for (uint256 i; i < 2; ++i) {
         _think();
-        _answer(1, "UP | MOMENTUM | rising");
-        _answer(2, "DOWN | MEANREVERSION | falling");
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
         _commit();
         _settle();
     }
@@ -1971,8 +1971,8 @@ function test_rake_isBookedSeparatelyFromEntrantCollateral() public {
     _seed(2);
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
 
     uint256 rakeBefore = population.rakeAccrued();
@@ -1995,8 +1995,8 @@ function test_rake_isTakenOnProfitNotOnGrossRedemption() public {
     _seed(2);
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
 
     uint256 staked = _p(1).currentStake();
@@ -2020,8 +2020,8 @@ function test_rake_withdrawalCannotTouchEntrantCollateral() public {
     _seed(2);
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
     _settle();
 
@@ -2042,8 +2042,8 @@ function test_death_residueForfeitsToThePrizePool() public {
     uint256 poolBefore = population.prizePool();
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
-    _answer(2, "DOWN | MEANREVERSION | falling");
+    _answer(1, "UP_MOMENTUM");
+    _answer(2, "DOWN_REVERSION");
     _commit();
     _settle();
 
@@ -2068,7 +2068,7 @@ function test_season_endsPermissionlesslyAndPaysTheEntrant() public {
 
     _upWins();
     _think();
-    _answer(1, "UP | MOMENTUM | rising");
+    _answer(1, "UP_MOMENTUM");
     _commit();
     _settle();
 
@@ -2104,7 +2104,7 @@ function test_enter_refusesAnEndowmentThatCannotCoverTheAnte() public {
 - [ ] **Step 2: Run them to verify they fail**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_|test_enter_refuses" -vv
+forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_|test_enter_refuses" -vv
 ```
 
 Expected: compile errors for every new symbol.
@@ -2580,7 +2580,7 @@ in `initialize` does not silently reset six unrelated parameters in the harness.
 - [ ] **Step 8: Run the new tests**
 
 ```bash
-npx --yes forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_|test_enter_refuses" -vv
+forge test --root contracts --match-test "test_ante_|test_rake_|test_death_residue|test_season_|test_enter_refuses" -vv
 ```
 
 Expected: all eight PASS.
@@ -2606,10 +2606,10 @@ function test_accounting_rakeAndPoolAndTreasuriesNeverExceedHoldings() public {
     _upWins();
     for (uint256 w; w < 3; ++w) {
         _think();
-        _answer(1, "UP | MOMENTUM | rising");
-        _answer(2, "UP | MOMENTUM | rising");
-        _answer(3, "DOWN | MEANREVERSION | falling");
-        _answer(4, "DOWN | MEANREVERSION | falling");
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "UP_MOMENTUM");
+        _answer(3, "DOWN_REVERSION");
+        _answer(4, "DOWN_REVERSION");
         _commit();
         _settle();
     }
@@ -2629,10 +2629,10 @@ This task added declarations, and unlike the earlier `perAgentReward` change, **
 
 ```bash
 cd C:/Users/Handi/Desktop/somnia_predict/darwin
-npx --yes forge clean --root contracts
-npx --yes forge build --root contracts --extra-output storageLayout
-npx --yes forge inspect --root contracts Population storage-layout > "$CLAUDE_JOB_DIR/tmp/pop-layout.txt"
-npx --yes forge inspect --root contracts Prophet storage-layout > "$CLAUDE_JOB_DIR/tmp/prophet-layout.txt"
+forge clean --root contracts
+forge build --root contracts --extra-output storageLayout
+forge inspect --root contracts Population storage-layout > "$CLAUDE_JOB_DIR/tmp/pop-layout.txt"
+forge inspect --root contracts Prophet storage-layout > "$CLAUDE_JOB_DIR/tmp/prophet-layout.txt"
 ```
 
 `forge inspect` previously returned *"storage layout missing from artifact"* even with `--extra-output storageLayout`; the `forge clean` before the `via_ir` rebuild is what fixes it. If it still fails, report that rather than asserting the layout is fine.
@@ -2774,7 +2774,7 @@ function test_directDuel_settlesFromAPriceComparison() public {
 - [ ] **Step 2: Run it to verify it fails**
 
 ```bash
-npx --yes forge test --root contracts --match-test test_directDuel -vv
+forge test --root contracts --match-test test_directDuel -vv
 ```
 
 Expected: compile error — `DirectDuelVenue` does not exist.
@@ -2887,7 +2887,7 @@ contract DirectDuelVenue is IArenaVenue {
 - [ ] **Step 4: Run the test**
 
 ```bash
-npx --yes forge test --root contracts --match-test test_directDuel -vv
+forge test --root contracts --match-test test_directDuel -vv
 ```
 
 Expected: PASS. Add the imports it needs to `Darwin.t.sol`:
@@ -2939,8 +2939,8 @@ function test_venue_engineIsIndifferentToTheSettlementMechanism() public {
 
     vm.prank(owner);
     arena2.think();
-    requester.deliver(Prophet(payable(arena2.prophetAt(1))).pendingBeliefRequestId(), "UP | MOMENTUM | rising");
-    requester.deliver(Prophet(payable(arena2.prophetAt(2))).pendingBeliefRequestId(), "DOWN | MEANREVERSION | falling");
+    requester.deliver(Prophet(payable(arena2.prophetAt(1))).pendingBeliefRequestId(), "UP_MOMENTUM");
+    requester.deliver(Prophet(payable(arena2.prophetAt(2))).pendingBeliefRequestId(), "DOWN_REVERSION");
     vm.prank(owner);
     arena2.commitAll();
 
@@ -2962,7 +2962,7 @@ function test_venue_engineIsIndifferentToTheSettlementMechanism() public {
 - [ ] **Step 6: Run it**
 
 ```bash
-npx --yes forge test --root contracts --match-test test_venue_engineIsIndifferent -vv
+forge test --root contracts --match-test test_venue_engineIsIndifferent -vv
 ```
 
 Expected: PASS. If the price push between `commitAll` and `settleAll` trips `PushedPriceSource`'s staleness or resolved-market guards (see `test_priceSource_refusesStalePrice` at `:987`), push a fresh window with the same `MARKET_ID` and an advanced timestamp via `vm.warp` rather than weakening the guard.
