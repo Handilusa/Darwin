@@ -105,7 +105,13 @@ local.config.json
 # Local Claude/session artifacts
 .claude/local/
 .claude/*.local.*
-SESSION_CHECKPOINT.md
+
+# `SESSION_CHECKPOINT.md` used to be ignored here, as local session scratch. It is not
+# scratch: it is the ledger of which claims about Somnia have been closed against a
+# primary source and which are still assumptions, and the repo's own docs cite it by
+# section (CLAUDE.md, SPIKE.md, STORAGE.md, Deploy.s.sol, ISomnia.sol all point at
+# "SESSION_CHECKPOINT.md §n"). A citation to an untracked file is a citation to nothing.
+# It now lives at docs/SESSION_CHECKPOINT.md and is tracked deliberately.
 
 
 # ============================================================

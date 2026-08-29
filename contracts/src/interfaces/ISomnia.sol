@@ -18,7 +18,7 @@ pragma solidity ^0.8.24;
 // which is what Population.think passes (p.systemPrompt()).
 //
 // Not yet observed live: a request with a non-empty `allowedValues`. The one
-// decoded sample passed `false` and `[]`. See SESSION_CHECKPOINT.md §3.
+// decoded sample passed `false` and `[]`. See docs/SESSION_CHECKPOINT.md §3.
 
 /// @dev Consensus rule the subcommittee applies to validator responses.
 enum ConsensusType {

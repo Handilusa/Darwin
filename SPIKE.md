@@ -167,8 +167,8 @@ reproduction are every one of them chain-executed.
 Each item now names the thing that resolves it, so this list is a work queue rather than a
 disclaimer. Nothing here may be stated as fact in the pitch until its line is closed.
 
-**Rows 1–5 were closed on 2026-08-29.** Full evidence in `SESSION_CHECKPOINT.md`; summary here so
-this table is not read as current.
+**Rows 1–5 were closed on 2026-08-29.** Full evidence in `docs/SESSION_CHECKPOINT.md`; summary
+here so this table is not read as current.
 
 | # | Was unverified | Outcome |
 |---|---|---|

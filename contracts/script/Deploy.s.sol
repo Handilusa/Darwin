@@ -141,7 +141,7 @@ contract Deploy is Script {
         //   LLM_AGENT_ID=12847293847561029384
         // If it ever needs re-deriving, the testnet roster is at
         // agents.testnet.somnia.network (NOT agents.somnia.network — that is mainnet),
-        // and the chain-side method is recorded in SESSION_CHECKPOINT.md §2.4.
+        // and the chain-side method is recorded in docs/SESSION_CHECKPOINT.md §2.4.
         if (d.llmAgentId == 0 && !vm.envOr("ALLOW_PLACEHOLDER_AGENT", false)) revert PlaceholderAgentId();
 
         if (d.collateralDecimals != EXPECTED_DECIMALS && !vm.envOr("ALLOW_ANY_DECIMALS", false)) {

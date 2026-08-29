@@ -101,8 +101,8 @@ LLM_AGENT_ID=12847293847561029384
 
 Of the three agent ids in 6,236 request-creation logs, only this one carries `inferString`'s
 selector `0xfe7ca098` in its payload — 96 of 96 times — and decoding one of its live payloads yields
-an English oracle prompt. Method and evidence in `SESSION_CHECKPOINT.md` §2.4. The testnet roster
-UI, if it ever needs re-deriving, is `agents.testnet.somnia.network` — **not**
+an English oracle prompt. Method and evidence in `docs/SESSION_CHECKPOINT.md` §2.4. The testnet
+roster UI, if it ever needs re-deriving, is `agents.testnet.somnia.network` — **not**
 `agents.somnia.network`, which is mainnet. A population that cannot think abstains every window,
 pays metabolism anyway, and dies of nothing.
 
