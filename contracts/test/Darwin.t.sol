@@ -8,9 +8,16 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {Population} from "../src/Population.sol";
 import {Prophet} from "../src/Prophet.sol";
 import {PushedPriceSource} from "../src/PushedPriceSource.sol";
+import {SelectionEngine} from "../src/SelectionEngine.sol";
 import {Genome, Belief, Thesis} from "../src/Genome.sol";
 import {IBinaryMarketsModule} from "../src/interfaces/IDreamDEX.sol";
-import {Response, Request, ResponseStatus, ConsensusType} from "../src/interfaces/ISomnia.sol";
+import {
+    Response,
+    Request,
+    ResponseStatus,
+    ConsensusType,
+    ISomniaEventHandler
+} from "../src/interfaces/ISomnia.sol";
 
 import {
     MockERC20,
@@ -1176,5 +1183,176 @@ contract DarwinTest is Test {
             if (ok) return true;
         }
         return false;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        THE REACTIVE HANDLER
+
+        SelectionEngine had no coverage at all until 2026-08-29, which is
+        backwards: it carries the project's central claim. What CANNOT be
+        tested here is validator insertion — the precompile does not exist
+        on chain id 31337, so `prove-same-block.ts` owns that property
+        against Shannon. What CAN be tested is everything around it: who
+        is allowed to call the callback, which emitter it accepts, and
+        whether a failing callback costs the subscription owner a revert.
+    //////////////////////////////////////////////////////////////*/
+
+    address constant REACTIVITY = 0x0000000000000000000000000000000000000100;
+
+    event Reacted(
+        address indexed emitter, uint64 indexed window, uint256 blockNumber, bytes32 parentHash, bool viaReactivity
+    );
+    event ReactionFailed(address indexed emitter, uint256 blockNumber, bytes reason);
+
+    function _engine() internal returns (SelectionEngine e) {
+        e = new SelectionEngine(population, address(settlement), owner);
+        vm.prank(owner);
+        population.setWiring(address(0), address(e), address(0));
+    }
+
+    /**
+     *  The regression guard for the bug this section was written after.
+     *
+     *  The handler was originally named `onSomniaEvent`, a name this repo invented
+     *  while the real one was unread. The precompile calls a FIXED selector, so an
+     *  invented name is not a cosmetic problem — validators would have called a
+     *  function that does not exist, the callback would have failed, and the symptom
+     *  (reactivity appears not to work) is indistinguishable from the feature being
+     *  broken upstream. Pinning the literal signature string means any future rename
+     *  breaks this test instead of breaking production silently.
+     */
+    function test_reactivity_handlerSelectorIsTheOneThePrecompileCalls() public pure {
+        assertEq(
+            SelectionEngine.onEvent.selector,
+            bytes4(keccak256("onEvent(address,bytes32[],bytes)")),
+            "handler selector must match SomniaEventHandlerABI in @somnia-chain/reactivity"
+        );
+        assertEq(
+            SelectionEngine.onEvent.selector,
+            ISomniaEventHandler.onEvent.selector,
+            "engine and interface must not drift apart"
+        );
+    }
+
+    function test_reactivity_precompileAddressIs0x0100() public {
+        assertEq(_engine().REACTIVITY(), REACTIVITY);
+    }
+
+    function test_reactivity_onlyThePrecompileMayInvokeTheCallback() public {
+        SelectionEngine e = _engine();
+        vm.expectRevert(SelectionEngine.NotAuthorized.selector);
+        e.onEvent(address(settlement), new bytes32[](0), "");
+
+        // Not even the owner. The owner's path is `poke()`, which is recorded as
+        // NOT via reactivity — otherwise the owner could manufacture the evidence
+        // that the central claim is proved by.
+        vm.prank(owner);
+        vm.expectRevert(SelectionEngine.NotAuthorized.selector);
+        e.onEvent(address(settlement), new bytes32[](0), "");
+    }
+
+    /**
+     *  BinarySettlement is a shared singleton, so a subscription on it fires for
+     *  every market on DreamDEX, not only ours. The emitter check is the second
+     *  line of defence behind the subscription filter.
+     */
+    function test_reactivity_foreignEmitterIsRejected() public {
+        SelectionEngine e = _engine();
+        address foreign = address(0xF0E1);
+
+        vm.prank(REACTIVITY);
+        vm.expectRevert(
+            abi.encodeWithSelector(SelectionEngine.UnexpectedEmitter.selector, foreign, address(settlement))
+        );
+        e.onEvent(foreign, new bytes32[](0), "");
+    }
+
+    /// @dev The happy path: a callback from the precompile settles the window and
+    ///      records `viaReactivity == true`, which is the flag `npm run prove` reads.
+    function test_reactivity_callbackSettlesTheWindowAndRecordsItAsReactive() public {
+        SelectionEngine e = _engine();
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+
+        uint256 endowment = population.endowment();
+        uint256 stake = _stake();
+        _commit();
+        _upWins();
+
+        uint64 window = population.windowCount();
+
+        vm.expectEmit(true, true, true, true, address(e));
+        emit Reacted(address(settlement), window, block.number, blockhash(block.number - 1), true);
+
+        vm.prank(REACTIVITY);
+        e.onEvent(address(settlement), new bytes32[](0), "");
+
+        // Selection actually happened — this is not merely an event being emitted.
+        uint256 metabolism = population.metabolicCost();
+        assertEq(_p(1).treasury(), endowment + stake - metabolism, "winner nets the loser's stake");
+        assertEq(_p(2).treasury(), endowment - stake - metabolism, "loser forfeits its stake");
+        assertFalse(_p(1).positionOpen(), "position must be cleared by the reactive path too");
+    }
+
+    /**
+     *  A revert inside a reactive callback is paid for by the subscription owner and
+     *  buys nothing. Because the emitter is a shared singleton, MOST callbacks will
+     *  be for windows this population never committed to — so the common case must
+     *  be a caught failure, not a revert.
+     */
+    function test_reactivity_failingCallbackIsLoggedRatherThanReverted() public {
+        SelectionEngine e = _engine();
+        _seed(2);
+        // Phase 0: `settleAll()` reverts. The callback must absorb it.
+
+        vm.expectEmit(true, false, false, false, address(e));
+        emit ReactionFailed(address(settlement), 0, "");
+
+        vm.prank(REACTIVITY);
+        e.onEvent(address(settlement), new bytes32[](0), "");
+    }
+
+    /// @dev The fallback must never be able to masquerade as the reactive path.
+    function test_reactivity_pokeIsOwnerOnlyAndNotMarkedReactive() public {
+        SelectionEngine e = _engine();
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _upWins();
+
+        vm.expectRevert(SelectionEngine.NotAuthorized.selector);
+        e.poke();
+
+        uint64 window = population.windowCount();
+
+        vm.expectEmit(true, true, true, true, address(e));
+        emit Reacted(address(settlement), window, block.number, blockhash(block.number - 1), false);
+
+        vm.prank(owner);
+        e.poke();
+    }
+
+    function test_reactivity_disableFallbackIsIrreversible() public {
+        SelectionEngine e = _engine();
+        assertTrue(e.fallbackEnabled());
+
+        vm.prank(owner);
+        e.disableFallback();
+        assertFalse(e.fallbackEnabled());
+
+        // Closed for the owner as well, and there is no re-enable function at all —
+        // which is what makes "no keeper in the causal chain" structural rather than
+        // a promise about operator behaviour.
+        vm.prank(owner);
+        vm.expectRevert(SelectionEngine.FallbackClosed.selector);
+        e.poke();
+
+        // The reactive path is unaffected by closing the fallback.
+        vm.prank(REACTIVITY);
+        e.onEvent(address(settlement), new bytes32[](0), "");
     }
 }

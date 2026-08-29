@@ -197,9 +197,32 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
         subcommitteeSize = 3;
         threshold = 2;
+        // 300 s, deliberately below the platform's defaultTimeout() of 600 s. Verified
+        // 2026-08-29 on Shannon: AgentRequester enforces no minimum — every value from 1 to
+        // 86400 is accepted and only 0 reverts (InvalidTimeout()). Measured latency over
+        // 6,231 completed requests was p50 0.6 s, max 5.3 s, so this is ~50x headroom, and a
+        // shorter deadline means a stalled request abstains within one window instead of
+        // straddling two. Adjustable post-deploy via setInference; see SPIKE.md row 8.
         requestTimeout = 300;
         chainOfThought = true;
-        perAgentReward = 0.01 ether;
+        // 0.001, lowered from 0.01 on 2026-08-29 because the run's STT budget is the
+        // binding constraint on how long this population can live, and 0.01 was a guess.
+        //
+        // Measured on Shannon: getAdvancedRequestDeposit(n) is EXACTLY 0.01 STT * n,
+        // linear across n = 1..21, so the floor is 0.01 per validator and the total
+        // deposit is n * (0.01 + perAgentReward). Real traffic on the platform pays
+        // 0.0003 per validator and gets served — five single-request transactions cost
+        // 0.0309 STT net each, which is exactly 3 * (0.01 + 0.0003). See §2.13.
+        //
+        // So 0.01 was ~33x the reward real requests pay, making our deposit 0.06 against
+        // their 0.0309. 0.001 is still 3.3x the observed rate, which keeps the margin the
+        // comment on requestDeposit() argues for while cutting the deposit to 0.033 —
+        // a 45% cut in the cost of every window the population lives through.
+        //
+        // If validators start declining (indistinguishable from a silent population —
+        // watch ThinkFailed and the abstain counts), raise it with setInference. That is
+        // one onlyOwner tx, no upgrade. Do not go below 0.0003.
+        perAgentReward = 0.001 ether;
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import {Script, console} from "forge-std/Script.sol";
+import {VmSafe} from "forge-std/Vm.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
@@ -131,8 +132,13 @@ contract Deploy is Script {
 
         // A population deployed with a placeholder agent id cannot think: every
         // `createAdvancedRequest` fails, every organism abstains, every organism still
-        // pays metabolism, and the run dies quietly of nothing at all. Fetch the real
-        // id from agents.somnia.network first.
+        // pays metabolism, and the run dies quietly of nothing at all.
+        //
+        // The id was measured from Shannon on 2026-08-29 and is:
+        //   LLM_AGENT_ID=12847293847561029384
+        // If it ever needs re-deriving, the testnet roster is at
+        // agents.testnet.somnia.network (NOT agents.somnia.network — that is mainnet),
+        // and the chain-side method is recorded in SESSION_CHECKPOINT.md §2.4.
         if (d.llmAgentId == 0 && !vm.envOr("ALLOW_PLACEHOLDER_AGENT", false)) revert PlaceholderAgentId();
 
         if (d.collateralDecimals != EXPECTED_DECIMALS && !vm.envOr("ALLOW_ANY_DECIMALS", false)) {
@@ -227,8 +233,23 @@ contract Deploy is Script {
      *  file, and a hand-built string has no dependency on cheatcode key ordering. Not
      *  one big `string.concat` either — a forty-argument concat is exactly how a script
      *  stops compiling.
+     *
+     *  A DRY RUN MUST NOT WRITE THIS FILE. Without `--broadcast`, forge still executes
+     *  the whole script, so the addresses here are simulated and will not exist on chain.
+     *  Every downstream script, `monitor.ts` and the frontend read this manifest as the
+     *  source of truth, so writing it on a dry run would point the entire operational
+     *  surface at contracts that were never deployed — and it looks exactly like a
+     *  successful deploy. Dry-running the deploy is the cheapest possible check that it
+     *  works, so it must be safe to do repeatedly.
      */
     function _writeManifest(D memory d) internal {
+        if (vm.isContext(VmSafe.ForgeContext.ScriptDryRun)) {
+            console.log("");
+            console.log("DRY RUN - manifest NOT written. Addresses above are simulated.");
+            console.log("Re-run with --broadcast to deploy and write deployments/<chainid>.json.");
+            return;
+        }
+
         string memory j = "{\n";
         j = string.concat(j, '  "chainId": ', vm.toString(block.chainid), ",\n");
         j = string.concat(j, '  "deployedAtBlock": ', vm.toString(block.number), ",\n");

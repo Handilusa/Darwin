@@ -1,44 +1,152 @@
-# Foundry
+# ============================================================
+# FOUNDRY
+# ============================================================
+
 contracts/out/
 contracts/cache/
 contracts/lib/
+
+# Deployment artifacts
 contracts/broadcast/
 !contracts/broadcast/**/dry-run/
 
-# Deploy manifests ARE committed — the frontend, the monitor and every later script
-# read them, and a public repo whose addresses live only on one laptop is not a
-# reproducible submission. The keystore next to them is not.
+# Deploy manifests are intentionally committed.
+# They contain public contract addresses/config, not secrets.
+#
+# NEVER commit private keys or secret deployment material.
 contracts/deployments/*.key
 contracts/deployments/*.secret
+contracts/deployments/*.pem
+contracts/deployments/*private*
+contracts/deployments/*secret*
+contracts/deployments/*seed*
+contracts/deployments/*mnemonic*
+contracts/deployments/keystore/
+contracts/deployments/**/keystore/
 
-# Hardhat. It compiles nothing here (see hardhat.config.js) but still writes these.
+
+# ============================================================
+# HARDHAT
+# ============================================================
+
 hardhat/cache/
 hardhat/artifacts/
 
-# Node
+
+# ============================================================
+# NODE
+# ============================================================
+
 node_modules/
 dist/
 .tsbuildinfo
 *.tsbuildinfo
 
-# Next.js
+# Other package-manager artifacts
+.npm/
+.pnpm-store/
+.yarn/
+.yarn-cache/
+
+
+# ============================================================
+# NEXT.JS
+# ============================================================
+
 web/.next/
 web/out/
 web/node_modules/
 
-# Secrets. The population's cadence key signs a transaction every fifteen minutes for
-# eleven days; it is a hot key by construction and must never reach the public repo.
+
+# ============================================================
+# SECRETS / CREDENTIALS
+# ============================================================
+
+# Environment files
 .env
 .env.*
 !.env.example
-*.pem
-keystore/
 
-# Run artifacts
+# Private keys / certificates
+*.pem
+*.key
+*.key.json
+*.p12
+*.pfx
+*.crt
+
+# Wallet / blockchain key material
+keystore/
+**/keystore/
+*wallet*
+*wallet*.json
+*private*
+*private*.json
+*seed*
+*seed*.json
+*mnemonic*
+*mnemonic*.txt
+*mnemonic*.json
+*secret*
+*secret*.json
+
+# Common credential/config files
+credentials.json
+secrets.json
+secret.json
+config.local.json
+local.config.json
+
+
+# ============================================================
+# CLAUDE / AI LOCAL STATE
+# ============================================================
+
+# Local Claude/session artifacts
+.claude/local/
+.claude/*.local.*
+SESSION_CHECKPOINT.md
+
+
+# ============================================================
+# RUN ARTIFACTS
+# ============================================================
+
 logs/
 *.log
 cadence-state.json
 
+# Temporary/runtime files
+*.tmp
+*.temp
+.tmp/
+temp/
+tmp/
+
+
+# ============================================================
+# TEST / LOCAL STATE
+# ============================================================
+
+coverage/
+.cache/
+.cache/**
+
+
+# ============================================================
 # OS
+# ============================================================
+
 .DS_Store
 Thumbs.db
+desktop.ini
+
+
+# ============================================================
+# EDITORS / IDE
+# ============================================================
+
+.vscode/*.local
+.idea/
+*.swp
+*.swo

@@ -131,6 +131,61 @@ interface IBinaryMarketsModule {
  *  into. `redeem` was REMOVED from the pool in v2; this is where it lives.
  */
 interface IBinarySettlement {
+    /*
+     *  The event the reactivity subscription filters on. VERIFIED 2026-08-29
+     *  against `binarySettlementEventsAbi` in `@somnia-chain/markets-sdk@0.28.1`
+     *  (`dist/eventsAbi.js`), which states it mirrors `IBinarySettlement` exactly.
+     *
+     *  This is the log whose topic0 goes in `SubscriptionData.eventTopics[0]`.
+     *  Until it was read, that topic0 was unknown and `subscribe.ts --discover`
+     *  existed to guess it from live traffic; the guess is no longer needed, and
+     *  `--discover` is now a cross-check rather than the source of truth.
+     *
+     *  Two properties matter for DARWIN:
+     *
+     *    1. `pool` is INDEXED, so it is topic2. A subscription can therefore filter
+     *       on our own pool, and `prove-same-block.ts` can correlate a settlement to
+     *       this population by matching topic2 — which is what stops the central
+     *       proof being satisfied by somebody else's market settling in the block.
+     *    2. The key is `marketKey` (uint256), NOT `marketId` (bytes32). A correlation
+     *       strategy that searches this log for a marketId will never match, because
+     *       the marketId is not in it. `BinaryMarketsModule` emits a DIFFERENT
+     *       `MarketFinalized(bytes32 indexed marketId, address indexed pool,
+     *       uint256 marketKey)` that does carry both — same name, different signature,
+     *       different topic0, different emitter.
+     */
+    event MarketFinalized(
+        uint256 indexed marketKey,
+        address indexed pool,
+        uint64 nonce,
+        address collateralToken,
+        uint256 netBacking,
+        bool voided,
+        uint8 winningOutcome
+    );
+
+    /// @dev The fee skim, charged ONCE at finalize on this singleton rather than
+    ///      per-redeem on the pool. If DARWIN's zero-fee premise is wrong, this
+    ///      event is where the evidence shows up — `npm run fee` measures the rate,
+    ///      this reports the realized amount.
+    event SettlementFeeCharged(
+        uint256 indexed marketKey, address indexed feeRecipient, uint256 grossBacking, uint256 fee
+    );
+
+    event Redeemed(
+        uint256 indexed marketKey,
+        address indexed holder,
+        address indexed to,
+        uint8 outcomeIdx,
+        uint256 amountBurned,
+        uint256 collateralOut
+    );
+
+    /// @dev The push-fallback booking, and the later claim. An organism whose payout
+    ///      falls back to a credited balance has won and holds nothing until it claims.
+    event PayoutOwed(address indexed owner, address indexed token, uint256 amount);
+    event OwedClaimed(address indexed owner, address indexed token, uint256 amount);
+
     /// @dev The keystone for DARWIN. Folds finalize + redeem into ONE call and
     ///      returns collateralOut, so a reactive callback can collect an
     ///      organism's winnings in the very block the market settled. Nothing

@@ -18,11 +18,30 @@
  *  chain." If this script fails, the narration changes — not the script.
  */
 import { manifest, publicClient, log, warn, shannon, type Manifest } from "./lib/darwin.js";
-import { parseAbiItem, type Address, type Hex } from "viem";
+import { decodeEventLog, parseAbiItem, toEventSelector, type Address, type Hex } from "viem";
 
 const REACTED = parseAbiItem(
   "event Reacted(address indexed emitter, uint64 indexed window, uint256 blockNumber, bytes32 parentHash, bool viaReactivity)",
 );
+
+/*
+ *  The settlement event, VERIFIED 2026-08-29 against `binarySettlementEventsAbi` in
+ *  `@somnia-chain/markets-sdk@0.28.1`.
+ *
+ *  This used to be unknown, and its absence is why `references()` below fell back to
+ *  scanning a log's raw hex for a 32-byte word. With the ABI in hand the correlation can be
+ *  an exact decode of an indexed field instead of a substring search — which matters,
+ *  because the substring version would also match an unrelated event that merely happened
+ *  to contain our pool address somewhere in its payload.
+ *
+ *  Note it is keyed by `marketKey`, not `marketId`. Matching on our marketId can therefore
+ *  NEVER succeed against this event; `pool` (topic2) is the field that ties a settlement to
+ *  this population.
+ */
+const MARKET_FINALIZED = parseAbiItem(
+  "event MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64 nonce, address collateralToken, uint256 netBacking, bool voided, uint8 winningOutcome)",
+);
+const MARKET_FINALIZED_TOPIC0 = toEventSelector(MARKET_FINALIZED);
 
 /**
  *  Used to close a hole the naive version of this script had.
@@ -131,17 +150,35 @@ async function verify(m: Manifest, r: Reaction): Promise<void> {
 
   // THE CORRELATION. Without this the assertion is satisfiable by coincidence.
   if (opened && settlementLogs.length > 0) {
-    const ours = settlementLogs.filter((l) => references(l, opened));
-    if (ours.length === 0) {
+    const matches = settlementLogs.map((l) => references(l, opened)).filter((k): k is MatchKind => k !== undefined);
+    const decoded = matches.filter((k) => k === "decoded").length;
+    const raw = matches.length - decoded;
+
+    if (matches.length === 0) {
       problems.push(
         `a settlement landed in block ${r.blockNumber}, but none of the ${settlementLogs.length} log(s)\n` +
-          `    reference this population's market (${opened.marketId}) or pool (${opened.pool}).\n` +
+          `    reference this population's pool (${opened.pool}).\n` +
           `    BinarySettlement is a shared singleton, so this is somebody else's market settling\n` +
           `    while ours happened to be resolvable — a coincidence, not the claim. Selection still\n` +
           `    ran on-chain, but it did not run in the block our window resolved in.`,
       );
+    } else if (decoded > 0) {
+      log(
+        `correlated EXACTLY: ${decoded} of ${settlementLogs.length} log(s) are MarketFinalized with ` +
+          `pool == ${opened.pool}`,
+      );
     } else {
-      log(`correlated: ${ours.length} of ${settlementLogs.length} settlement log(s) reference our own market`);
+      // Every match came from the hex scan. Worth saying out loud: it is a real
+      // correlation, but a weaker one, and the reason is that no log in this block carried
+      // the MarketFinalized topic0 this script knows about.
+      warn(
+        `correlated only by RAW HEX: ${raw} of ${settlementLogs.length} log(s) contain our pool or\n` +
+          `  marketId somewhere in their topics/data, but none of them is the MarketFinalized\n` +
+          `  signature this script expects (${MARKET_FINALIZED_TOPIC0}).\n` +
+          `  Either BinarySettlement's ABI has changed since 2026-08-29, or the matching log is a\n` +
+          `  different settlement event. The block-sharing is real; treat the correlation as\n` +
+          `  suggestive and re-derive the event before leaning on it in the pitch.`,
+      );
     }
   } else if (!opened && settlementLogs.length > 0) {
     warn(
@@ -207,18 +244,41 @@ async function windowIdentity(m: Manifest, r: Reaction): Promise<WindowIdentity 
 }
 
 /**
- *  Does this log mention our market or our pool anywhere?
+ *  Does this log mention our pool?
  *
- *  Deliberately signature-agnostic: the settlement event's ABI is not declared in any
- *  document we have, so rather than guess at a decode, this looks for the 32-byte word a
- *  marketId or a left-padded pool address would occupy in either the topics or the data.
- *  A false positive would need an unrelated event to contain our exact pool address.
+ *  Two tiers, and the difference is reported rather than flattened, because they license
+ *  different statements:
+ *
+ *    "decoded"  — the log IS `MarketFinalized` and its indexed `pool` equals ours. Exact.
+ *    "raw"      — the log is something else, and the 32-byte word our pool (or marketId)
+ *                 would occupy appears somewhere in its topics or data. Suggestive only:
+ *                 an unrelated event carrying our pool address in its payload matches too.
+ *
+ *  The raw tier is kept rather than deleted because the singleton could be upgraded and
+ *  start emitting a signature this script does not know, and silently reporting "no
+ *  correlation" in that case would be worse than reporting a weaker one.
  */
-function references(l: { topics: readonly Hex[]; data: Hex }, w: WindowIdentity): boolean {
+type MatchKind = "decoded" | "raw";
+
+function references(l: { topics: readonly Hex[]; data: Hex }, w: WindowIdentity): MatchKind | undefined {
+  if (l.topics[0] === MARKET_FINALIZED_TOPIC0) {
+    try {
+      const decoded = decodeEventLog({
+        abi: [MARKET_FINALIZED],
+        topics: l.topics as [Hex, ...Hex[]],
+        data: l.data,
+      });
+      return decoded.args.pool.toLowerCase() === w.pool.toLowerCase() ? "decoded" : undefined;
+    } catch {
+      // A MarketFinalized topic0 that will not decode means the ABI has drifted. Fall
+      // through to the raw scan rather than dropping the log.
+    }
+  }
+
   const haystack = (l.topics.join("") + l.data).toLowerCase().replaceAll("0x", "");
   const marketId = w.marketId.slice(2).toLowerCase();
   const pool = w.pool.slice(2).toLowerCase();
-  return haystack.includes(marketId) || haystack.includes(pool);
+  return haystack.includes(marketId) || haystack.includes(pool) ? "raw" : undefined;
 }
 
 /*//////////////////////////////////////////////////////////////

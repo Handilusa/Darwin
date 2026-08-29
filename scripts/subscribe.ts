@@ -1,46 +1,71 @@
 /**
  *  The subscription. Without this, reactivity never fires and the central claim is unproven.
  *
- *    npm run subscribe -- --discover            # measure the settlement event's topic0
- *    npm run subscribe -- --topic0 0x… --create # create the subscription
+ *    npm run subscribe -- --discover            # cross-check the settlement topic0 on chain
+ *    npm run subscribe -- --create              # create the subscription
  *    npm run subscribe -- --status
  *    npm run subscribe -- --unsubscribe <id>
  *
- *  Everything else in this repo is written; this is the one step that has to be *measured*
- *  first. Two facts the subscription needs are not in any document we have:
+ *  RESOLVED 2026-08-29 — this file used to open by saying two facts it needed were in no
+ *  document we had. Both were, in fact, in `node_modules`, and both are now read from the
+ *  installed SDKs rather than guessed:
  *
- *    1. **The settlement event's topic0.** No event signature is declared in the
- *       `IBinarySettlement` interface, and guessing one produces a subscription that
- *       silently never fires — the single worst failure mode here, because it is
- *       indistinguishable from reactivity not working at all. So `--discover` reads the
- *       live `BinarySettlement` singleton's own logs and reports which topic0 values it
- *       actually emits, with counts. The chain knows the answer.
+ *    1. **The settlement event.** `binarySettlementEventsAbi` in
+ *       `@somnia-chain/markets-sdk@0.28.1` declares, and states that it mirrors
+ *       `IBinarySettlement` exactly:
  *
- *    2. **The callback selector.** `ISomniaEventHandler.onSomniaEvent` is a placeholder
- *       name, not a transcribed signature (see the note in `interfaces/ISomnia.sol`).
- *       `REACTIVITY_CALLBACK_SIG` exists so that when `@somnia-chain/reactivity` is
- *       installed and its real ABI read, the fix is one environment variable rather than
- *       a redeploy.
+ *           MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64 nonce,
+ *                           address collateralToken, uint256 netBacking, bool voided,
+ *                           uint8 winningOutcome)
  *
- *  UNVERIFIED: the 11-parameter `subscribe(...)` signature itself was transcribed from
- *  docs and has not been executed. If it reverts with no reason data, the ABI is wrong —
- *  read it from `@somnia-chain/reactivity` before trying anything else, and do not
- *  interpret the failure as "reactivity does not work".
+ *       So topic0 is derived, not discovered, and `--topic0` is now an override rather than
+ *       a requirement. `--discover` is kept as a CROSS-CHECK: if the derived topic0 does not
+ *       appear in the singleton's recent logs, something is wrong and it is better to find
+ *       out before creating a subscription than after.
+ *
+ *    2. **The callback selector.** `SomniaEventHandlerABI` in
+ *       `@somnia-chain/reactivity@0.2.1` declares `onEvent(address,bytes32[],bytes)`.
+ *       `SelectionEngine.onEvent` now matches it, and `Darwin.t.sol` pins the signature so
+ *       a rename cannot silently break the callback.
+ *
+ *  The `subscribe(...)` ABI was ALSO wrong, and wrong in a way no amount of retrying would
+ *  have fixed: it is not an 11-parameter function, it is a ONE-ARGUMENT function taking an
+ *  11-field struct, so the old selector did not exist on the precompile. There is no
+ *  `gasPayer`, no `refundee`, no `includeData` and no `active` — those were invented. The
+ *  subscription's OWNER (this wallet) funds every callback from its own balance, and the
+ *  SDK refuses to create a subscription while that balance is under 32 SOMI.
+ *
+ *  `subscribe` is nonpayable, so `--value` was not merely unnecessary, it could not work.
+ *  DreamDEX's `SpotStopOrderRegistry` funding-by-msg.value precedent applies to its own
+ *  contract, not to the precompile.
  *
  *  A COST YOU SHOULD KNOW ABOUT BEFORE RUNNING THIS. `BinarySettlement` is a shared
  *  singleton: every market on DreamDEX finalizes into it, so this subscription fires on
- *  other people's settlements too, and the gas payer pays for each one. `_handle` catches
- *  the resulting `settleAll()` revert and emits `ReactionFailed` rather than bubbling, so
- *  the failure is cheap and bounded — but it is not free. Watch the gas payer's balance
- *  for the first hour, and size `REACTIVITY_GAS_LIMIT` from a real receipt (below) rather
- *  than from optimism.
+ *  other people's settlements too, and the owner pays for each one. `_handle` catches the
+ *  resulting `settleAll()` revert and emits `ReactionFailed` rather than bubbling, so the
+ *  failure is cheap and bounded — but it is not free.
+ *
+ *  The obvious narrowing is to filter on `pool` (topic2), and it is deliberately NOT the
+ *  default. Pools are RECYCLED across windows — that is why nothing in this repo caches
+ *  `activePool` — so a subscription pinned to today's pool stops matching the moment the
+ *  population is moved onto another one, and stops matching SILENTLY. A subscription that
+ *  fires too often costs gas; one that has quietly stopped firing costs the entire claim.
+ *  `--pool <addr>` is available for a run where the pool is known to be fixed, and it warns.
+ *
+ *  What IS on by default is `isCoalesced`, which collapses several matching logs in one
+ *  block into a single callback. That is safe here for a specific reason: the handler
+ *  ignores the log payload entirely and calls `settleAll()`, which reads window state from
+ *  chain. Nothing is lost by being told "at least one settlement happened" instead of being
+ *  told once per settlement. Pass `--no-coalesced` to turn it off.
+ *
+ *  Watch the owner's balance for the first hour, and size `REACTIVITY_GAS_LIMIT` from a real
+ *  receipt (below) rather than from optimism.
  */
 import {
   explorerTx,
   log,
   manifest,
   num,
-  flag,
   publicClient,
   selectionEngineAbi,
   wallet,
@@ -48,28 +73,68 @@ import {
   shannon,
   type Manifest,
 } from "./lib/darwin.js";
-import { parseAbi, parseAbiItem, toFunctionSelector, formatGwei, type Address, type Hex } from "viem";
+import {
+  parseAbi,
+  parseAbiItem,
+  toFunctionSelector,
+  toEventSelector,
+  formatEther,
+  formatGwei,
+  padHex,
+  type Address,
+  type Hex,
+} from "viem";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REACTIVITY: Address = "0x0000000000000000000000000000000000000100";
 
+/*
+ *  VERIFIED against `SomniaReactivityPrecompileABI` in `@somnia-chain/reactivity@0.2.1`.
+ *
+ *  ONE struct argument, not eleven parameters. Field order is load-bearing and the fee
+ *  fields are uint64. Getting this wrong does not produce a helpful revert — it produces a
+ *  call to a selector the precompile does not implement.
+ */
 const precompileAbi = parseAbi([
-  "function subscribe(bytes32[4] topics, address emitter, address handler, address gasPayer, address refundee, bytes4 callbackSelector, uint64 gasLimit, uint64 maxFeePerGas, uint64 priorityFeePerGas, bool includeData, bool active) returns (uint256)",
+  "struct SubscriptionData { bytes32[4] eventTopics; address origin; address caller; address emitter; address handlerContractAddress; bytes4 handlerFunctionSelector; uint64 priorityFeePerGas; uint64 maxFeePerGas; uint64 gasLimit; bool isGuaranteed; bool isCoalesced; }",
+  "function subscribe(SubscriptionData subscriptionData) returns (uint256 subscriptionId)",
   "function unsubscribe(uint256 subscriptionId)",
+  "function getSubscriptionInfo(uint256 subscriptionId) view returns (SubscriptionData subscriptionData, address owner)",
 ]);
+
+/*
+ *  The event the subscription filters on. VERIFIED against `binarySettlementEventsAbi` in
+ *  `@somnia-chain/markets-sdk@0.28.1`, which states it mirrors `IBinarySettlement` exactly.
+ *
+ *  `pool` is indexed, so it is topic2 — which is what lets this subscription narrow from
+ *  "every settlement on DreamDEX" to "settlements of our pool", and what lets
+ *  `prove-same-block.ts` correlate rather than coincide. Note the key is `marketKey`, NOT
+ *  `marketId`: searching this log for a marketId will never match.
+ */
+const MARKET_FINALIZED = parseAbiItem(
+  "event MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64 nonce, address collateralToken, uint256 netBacking, bool voided, uint8 winningOutcome)",
+);
+const SETTLEMENT_TOPIC0 = toEventSelector(MARKET_FINALIZED);
 
 const REACTED = parseAbiItem(
   "event Reacted(address indexed emitter, uint64 indexed window, uint256 blockNumber, bytes32 parentHash, bool viaReactivity)",
 );
 
-/** Placeholder until `@somnia-chain/reactivity` is installed and its ABI read. */
-const CALLBACK_SIG = process.env.REACTIVITY_CALLBACK_SIG ?? "onSomniaEvent(address,bytes32[],bytes)";
+/**
+ *  The selector the precompile invokes on the handler.
+ *
+ *  VERIFIED against `SomniaEventHandlerABI` in `@somnia-chain/reactivity@0.2.1`.
+ *  `REACTIVITY_CALLBACK_SIG` is retained only as an escape hatch against a future SDK
+ *  change; it should not normally be set, and setting it wrongly is the one way left to
+ *  build a subscription that can never fire.
+ */
+const CALLBACK_SIG = process.env.REACTIVITY_CALLBACK_SIG ?? "onEvent(address,bytes32[],bytes)";
 
 /**
  *  Gas ceiling for each reactive callback.
  *
- *  10,000,000 is `DEFAULT_SUBSCRIPTION_OPTIONS.gasLimit` in `@somnia-chain/reactivity`, and
+ *  10,000,000 is `defaultSubscriptionOptions.gasLimit` in `@somnia-chain/reactivity`, and
  *  the precompile's hard ceiling is 200,000,000 — so at eight organisms this population is
  *  nowhere near gas-bound and there is no reason to economise. Which matters, because a
  *  callback that runs out of gas emits NOTHING, not even the `ReactionFailed` that the catch
@@ -83,11 +148,11 @@ const GAS_LIMIT_CEILING = 200_000_000n;
 const FEE_SEPARATION = 6_000_000_000n; // 6 gwei
 
 /**
- *  The handler ignores the log payload entirely — it calls `settleAll()`, which reads the
- *  window's state from chain. Excluding the data makes every callback cheaper, and there
- *  are a lot of callbacks.
+ *  The SDK refuses to create a subscription while the owner holds less than this, because
+ *  the owner funds every callback. Checked here too: failing before broadcasting is much
+ *  cheaper than failing after.
  */
-const INCLUDE_DATA = flag("REACTIVITY_INCLUDE_DATA", false);
+const MIN_OWNER_BALANCE = 32_000_000_000_000_000_000n; // 32 SOMI
 
 const ZERO32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as Hex;
 const CHUNK = 9_000n;
@@ -96,13 +161,16 @@ type Record_ = {
   chainId: number;
   subscriptionId: string;
   topic0: Hex;
+  poolFilter: Hex;
   emitter: Address;
   handler: Address;
   callbackSig: string;
   callbackSelector: Hex;
-  gasPayer: Address;
+  /** The subscription owner, which is also the account that funds every callback. */
+  owner: Address;
   gasLimit: string;
-  includeData: boolean;
+  isGuaranteed: boolean;
+  isCoalesced: boolean;
   createdAtBlock: string;
   createdAt: string;
   txHash: Hex;
@@ -177,7 +245,7 @@ async function discover(m: Manifest): Promise<void> {
     console.log("=== TOPIC0 VALUES ACTUALLY EMITTED ==========================");
     const ranked = [...seen].sort((a, b) => b[1].count - a[1].count);
     for (const [t0, info] of ranked) {
-      console.log(`${t0}`);
+      console.log(`${t0}${t0 === SETTLEMENT_TOPIC0 ? "   <-- MarketFinalized (the one we subscribe to)" : ""}`);
       console.log(
         `    ${String(info.count).padStart(5)} occurrences · ${info.topics} topic(s) · ` +
           `${info.bytes} data bytes · newest block ${info.block}`,
@@ -185,12 +253,30 @@ async function discover(m: Manifest): Promise<void> {
       console.log(`    ${explorerTx(info.sample)}`);
     }
     console.log("=============================================================");
-    const top = ranked[0];
-    if (top) {
-      console.log("");
-      log(`most frequent — open the sample above, confirm it is the resolution event, then:`);
-      console.log(`    npm run subscribe -- --topic0 ${top[0]} --create`);
-      warn("do NOT skip opening the sample. The most frequent event is not necessarily resolution.");
+
+    /*
+     *  The cross-check that gives this command its remaining purpose. topic0 is now DERIVED
+     *  from the markets-sdk ABI, so the question is no longer "which one is it" but "is the
+     *  derived one real". If MarketFinalized is absent from a healthy lookback window, then
+     *  either the singleton was upgraded, the manifest points at the wrong address, or the
+     *  SDK's ABI has drifted — and every one of those produces a subscription that is
+     *  created successfully and never fires.
+     */
+    if (seen.has(SETTLEMENT_TOPIC0)) {
+      const info = seen.get(SETTLEMENT_TOPIC0)!;
+      log(`cross-check PASSED: MarketFinalized ${SETTLEMENT_TOPIC0} seen ${info.count}x, newest block ${info.block}`);
+      // topic0 + the two indexed parameters (marketKey, pool) = 3.
+      const expectedTopics = MARKET_FINALIZED.inputs.filter((i) => "indexed" in i && i.indexed).length + 1;
+      console.log(`    expect ${expectedTopics} topics; this sample has ${info.topics}`);
+      log(`ready:  npm run subscribe -- --create`);
+    } else {
+      warn(
+        `cross-check FAILED: the derived MarketFinalized topic0\n` +
+          `    ${SETTLEMENT_TOPIC0}\n` +
+          `  does NOT appear in ${lookback} blocks of this emitter's logs. Do not subscribe yet.\n` +
+          `  Either no market finalized in the range (widen --lookback), or the ABI has drifted.\n` +
+          `  If a value above is provably the resolution event, override it: --topic0 0x… --create`,
+      );
     }
   }
 
@@ -248,10 +334,23 @@ async function fees(): Promise<void> {
   const scaled = price * 4n;
   const cap = scaled > 20_000_000_000n ? scaled : 20_000_000_000n;
   log(`current gas price ${formatGwei(price)} gwei · subscription cap ${formatGwei(cap)} gwei, priority 0`);
-  log(
-    `if subscribe() reverts on funding, try --value: DreamDEX's own SpotStopOrderRegistry pays ` +
-      `reactivity gas as msg.value == somiPaymentPerOrder(), which is the shipped precedent.`,
-  );
+
+  /*
+   *  `subscribe` is NONPAYABLE — verified from the precompile ABI — so callbacks cannot be
+   *  pre-funded with an escrow and the `--value` flag this script used to carry could never
+   *  have worked. DreamDEX's `SpotStopOrderRegistry` does take `msg.value ==
+   *  somiPaymentPerOrder()`, but that is its own contract's accounting, not the precompile's.
+   *  Funding here means one thing only: keep the OWNER's balance up.
+   */
+  const { account } = wallet();
+  const balance = await publicClient.getBalance({ address: account.address });
+  log(`subscription owner ${account.address} holds ${formatEther(balance)} SOMI`);
+  if (balance < MIN_OWNER_BALANCE) {
+    warn(
+      `below the ${formatEther(MIN_OWNER_BALANCE)} SOMI required to create a subscription. ` +
+        `The owner funds every callback directly; there is no gas payer and no escrow.`,
+    );
+  }
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -259,11 +358,13 @@ async function fees(): Promise<void> {
 //////////////////////////////////////////////////////////////*/
 
 async function create(m: Manifest): Promise<void> {
-  const topic0 = arg("--topic0");
-  if (topic0 === undefined) {
-    throw new Error("--create needs --topic0. Get it from: npm run subscribe -- --discover");
+  // Derived, not discovered — see the note on MARKET_FINALIZED. `--topic0` remains as an
+  // override for the case where the singleton is upgraded and the SDK has not caught up.
+  const override = arg("--topic0");
+  if (override !== undefined && !/^0x[0-9a-fA-F]{64}$/.test(override)) {
+    throw new Error(`--topic0 must be 32 bytes of hex, got ${override}`);
   }
-  if (!/^0x[0-9a-fA-F]{64}$/.test(topic0)) throw new Error(`--topic0 must be 32 bytes of hex, got ${topic0}`);
+  const topic0 = (override ?? SETTLEMENT_TOPIC0) as Hex;
 
   const { account, client } = wallet();
   const selector = toFunctionSelector(CALLBACK_SIG);
@@ -292,61 +393,87 @@ async function create(m: Manifest): Promise<void> {
     throw new Error(`maxFeePerGas ${maxFee} must be >= priorityFeePerGas + 6 gwei`);
   }
 
-  const value = arg("--value");
-  const escrow = value === undefined ? 0n : BigInt(Math.round(Number(value) * 1e18));
+  /*
+   *  The owner funds every callback out of its own balance, and the SDK rejects a
+   *  subscription created below 32 SOMI. Check before broadcasting: an owner that passes
+   *  now and drains later switches reactivity off SILENTLY, which is why `--status` reports
+   *  this balance every time rather than only on creation.
+   */
+  const balance = await publicClient.getBalance({ address: account.address });
+  if (balance < MIN_OWNER_BALANCE) {
+    throw new Error(
+      `subscription owner ${account.address} holds ${formatEther(balance)} SOMI; ` +
+        `at least ${formatEther(MIN_OWNER_BALANCE)} is required.\n` +
+        `  The owner pays for every callback — there is no separate gas payer.\n` +
+        `  Top it up (npm run fund -- --faucet) before creating the subscription.`,
+    );
+  }
+
+  // Opt-in, and hazardous — pools are recycled across windows, so this can go stale and
+  // stop matching without any error surfacing. See the file header.
+  const poolArg = arg("--pool");
+  if (poolArg !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(poolArg)) {
+    throw new Error(`--pool must be a 20-byte address, got ${poolArg}`);
+  }
+  const poolFilter = poolArg === undefined ? ZERO32 : padHex(poolArg as Hex, { size: 32 });
+  if (poolArg !== undefined) {
+    warn(
+      `filtering on pool ${poolArg} (topic2). Pools are RECYCLED across windows — if the ` +
+        `population moves pool, this subscription stops firing and says nothing. Re-check with --status.`,
+    );
+  }
+
+  const isCoalesced = !process.argv.includes("--no-coalesced");
+  const isGuaranteed = process.argv.includes("--guaranteed");
 
   console.log("");
   console.log("=== SUBSCRIPTION ============================================");
   console.log(`emitter          ${m.settlement}   (BinarySettlement — shared singleton)`);
   console.log(`handler          ${m.selectionEngine}`);
-  console.log(`topic0           ${topic0}`);
-  console.log(`topics 1-3       (zero — see the note below)`);
+  console.log(`topic0           ${topic0}   ${override ? "(override)" : "(derived from markets-sdk)"}`);
+  console.log(`  MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64, address, uint256, bool, uint8)`);
+  console.log(`topic2 (pool)    ${poolFilter === ZERO32 ? "any — see the recycling note" : poolArg}`);
   console.log(`callback         ${CALLBACK_SIG}`);
-  console.log(`selector         ${selector}   ${process.env.REACTIVITY_CALLBACK_SIG ? "(from env)" : "(UNVERIFIED default)"}`);
-  console.log(`gas payer        ${account.address}`);
+  console.log(`selector         ${selector}   ${process.env.REACTIVITY_CALLBACK_SIG ? "(from env — OVERRIDE)" : "(verified against reactivity SDK)"}`);
+  console.log(`owner / payer    ${account.address} — ${formatEther(balance)} SOMI`);
   console.log(`gas limit        ${GAS_LIMIT}`);
   console.log(`fee cap          ${formatGwei(maxFee)} gwei · priority ${formatGwei(priority)} gwei`);
-  console.log(`include data     ${INCLUDE_DATA}`);
-  if (escrow > 0n) console.log(`escrow           ${value} SOMI sent with the call`);
+  console.log(`coalesced        ${isCoalesced}   guaranteed ${isGuaranteed}`);
   console.log("=============================================================");
-
-  // Topics 1-3 are left zero because the settlement singleton's indexed parameters are
-  // unknown and a wrong filter is worse than a broad one: a broad subscription fires too
-  // often and wastes gas, a wrong one never fires and looks like a broken feature.
-  // Whether zero means "wildcard" or "must equal zero" is itself unverified — if the
-  // subscription is created but never fires while --discover shows settlements landing,
-  // that ambiguity is the first thing to suspect.
-  warn("if this subscription never fires, suspect (1) the callback selector, (2) zero-topic wildcarding.");
-
-  const gasPayer = (process.env.REACTIVITY_GAS_PAYER as Address | undefined) ?? account.address;
-  const refundee = (process.env.REACTIVITY_REFUNDEE as Address | undefined) ?? account.address;
 
   const hash = await client.writeContract({
     address: REACTIVITY,
     abi: precompileAbi,
     functionName: "subscribe",
     args: [
-      [topic0 as Hex, ZERO32, ZERO32, ZERO32],
-      m.settlement,
-      m.selectionEngine,
-      gasPayer,
-      refundee,
-      selector,
-      GAS_LIMIT,
-      maxFee,
-      priority,
-      INCLUDE_DATA,
-      true,
+      {
+        eventTopics: [topic0, ZERO32, poolFilter, ZERO32],
+        origin: "0x0000000000000000000000000000000000000000",
+        // Reserved by the protocol and not used in event matching. The SDK always sends
+        // zero; sending anything else is untested.
+        caller: "0x0000000000000000000000000000000000000000",
+        emitter: m.settlement,
+        handlerContractAddress: m.selectionEngine,
+        handlerFunctionSelector: selector,
+        priorityFeePerGas: priority,
+        maxFeePerGas: maxFee,
+        gasLimit: GAS_LIMIT,
+        isGuaranteed,
+        isCoalesced,
+      },
     ],
-    value: escrow,
   });
 
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") {
     throw new Error(
       `subscribe() reverted: ${explorerTx(hash)}\n` +
-        `  The 11-parameter ABI in this script is transcribed from docs, not executed.\n` +
-        `  Read the real one from @somnia-chain/reactivity before concluding anything else.`,
+        `  The struct ABI here is read from @somnia-chain/reactivity@0.2.1, so a revert is\n` +
+        `  more likely to be a rejected argument than a wrong signature. Check, in order:\n` +
+        `    · owner balance >= 32 SOMI (it was ${formatEther(balance)} a moment ago)\n` +
+        `    · gasLimit in (0, 200000000]                    — it is ${GAS_LIMIT}\n` +
+        `    · maxFeePerGas == 0 or >= priority + 6 gwei      — it is ${formatGwei(maxFee)} gwei\n` +
+        `    · at least one of (topics, origin, emitter) non-zero`,
     );
   }
 
@@ -355,14 +482,16 @@ async function create(m: Manifest): Promise<void> {
   const record: Record_ = {
     chainId: m.chainId,
     subscriptionId: subscriptionIdFrom(receipt.logs) ?? "unknown",
-    topic0: topic0 as Hex,
+    topic0,
+    poolFilter,
     emitter: m.settlement,
     handler: m.selectionEngine,
     callbackSig: CALLBACK_SIG,
     callbackSelector: selector,
-    gasPayer,
+    owner: account.address,
     gasLimit: GAS_LIMIT.toString(),
-    includeData: INCLUDE_DATA,
+    isGuaranteed,
+    isCoalesced,
     createdAtBlock: receipt.blockNumber.toString(),
     createdAt: new Date().toISOString(),
     txHash: hash,
@@ -413,13 +542,58 @@ async function status(m: Manifest): Promise<void> {
     log("no subscription recorded — reactivity has never been wired on this deployment.");
   } else {
     console.log(`subscription     ${rec.subscriptionId}`);
-    console.log(`topic0           ${rec.topic0}`);
+    console.log(`topic0           ${rec.topic0}${rec.topic0 === SETTLEMENT_TOPIC0 ? "" : "   (NOT MarketFinalized — override in use)"}`);
+    console.log(`topic2 (pool)    ${rec.poolFilter === ZERO32 ? "any" : rec.poolFilter}`);
     console.log(`callback         ${rec.callbackSig} -> ${rec.callbackSelector}`);
+    console.log(`coalesced        ${rec.isCoalesced}   guaranteed ${rec.isGuaranteed}`);
     console.log(`created          block ${rec.createdAtBlock}, ${rec.createdAt}`);
     console.log(`                 ${explorerTx(rec.txHash)}`);
-    const bal = await publicClient.getBalance({ address: rec.gasPayer as Address });
-    console.log(`gas payer        ${rec.gasPayer} — ${Number(bal) / 1e18} SOMI`);
-    if (bal === 0n) warn("the gas payer is empty. Callbacks are not being funded and reactivity is silently off.");
+
+    /*
+     *  The owner funds every callback — there is no separate gas payer — so this balance
+     *  IS the reactivity kill switch. An owner that drains switches reactivity off with no
+     *  error, no event and no log anywhere, which is why it is checked on every --status
+     *  rather than only at creation.
+     */
+    const bal = await publicClient.getBalance({ address: rec.owner as Address });
+    console.log(`owner / payer    ${rec.owner} — ${formatEther(bal)} SOMI`);
+    if (bal === 0n) {
+      warn("the owner is empty. Callbacks are not being funded and reactivity is silently off.");
+    } else if (bal < MIN_OWNER_BALANCE) {
+      warn(
+        `owner holds ${formatEther(bal)} SOMI, below the ${formatEther(MIN_OWNER_BALANCE)} the SDK ` +
+          `requires to CREATE a subscription. Whether an existing one keeps firing below that ` +
+          `threshold is not something this repo has measured — top it up rather than find out.`,
+      );
+    }
+
+    // Cross-check the on-chain subscription against what was recorded. A subscription that
+    // was replaced or unsubscribed leaves the local file looking healthy.
+    if (rec.subscriptionId !== "unknown") {
+      try {
+        const [onChain, owner] = await publicClient.readContract({
+          address: REACTIVITY,
+          abi: precompileAbi,
+          functionName: "getSubscriptionInfo",
+          args: [BigInt(rec.subscriptionId)],
+        });
+        console.log(`on-chain owner   ${owner}`);
+        if (onChain.handlerFunctionSelector !== rec.callbackSelector) {
+          warn(
+            `on-chain selector ${onChain.handlerFunctionSelector} does not match the recorded ` +
+              `${rec.callbackSelector}. The subscription will call the wrong function or none.`,
+          );
+        }
+        if (onChain.handlerContractAddress.toLowerCase() !== rec.handler.toLowerCase()) {
+          warn(`on-chain handler ${onChain.handlerContractAddress} does not match ${rec.handler}.`);
+        }
+      } catch {
+        warn(
+          `subscription ${rec.subscriptionId} could not be read back from the precompile. ` +
+            `It may have been unsubscribed, or the id was not recoverable from the receipt.`,
+        );
+      }
+    }
   }
 
   console.log(`fallback poke()  ${fallbackOpen ? "OPEN — weaker claim applies" : "CLOSED — keeperless"}`);

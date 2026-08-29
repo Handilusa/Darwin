@@ -19,19 +19,22 @@ import {Population} from "./Population.sol";
  *  `settleAll()` and this contract would be unnecessary. Two reasons it exists
  *  anyway:
  *
- *    1. The external entrypoint the precompile actually invokes is NOT verified.
- *       The docs show only the internal `_onEvent` override on the
- *       `SomniaEventHandler` base; the real selector belongs to whatever that base
- *       declares. Isolating it in a small contract means the unverified part is one
- *       upgradeable adapter, not the contract holding the registry.
+ *    1. The precompile calls a FIXED selector, `onEvent(address,bytes32[],bytes)`,
+ *       and hands over (emitter, topics, data). `settleAll()` takes no arguments and
+ *       has a different selector, so it cannot be a callback target at all. Something
+ *       has to adapt the handler shape to the registry, and keeping that something
+ *       small means the reactive surface is one upgradeable adapter rather than the
+ *       contract holding the registry.
  *    2. Reactivity does not exist on local chains at all, so `forge test` cannot
  *       exercise the real path. A thin adapter is mockable; a subscription is not.
+ *       `Darwin.t.sol` reaches `onEvent` by pranking as `0x0100`, which tests the
+ *       authorisation and the emitter check but not validator insertion — that last
+ *       property is what `scripts/prove-same-block.ts` asserts against Shannon.
  *
- *  RESOLUTION PATH: install `@somnia-chain/reactivity-contracts`, make this contract
- *  inherit `SomniaEventHandler`, and move the body of `_handle` into the `_onEvent`
- *  override. Delete `onSomniaEvent` at that point. Until then the fallback driver
- *  below keeps the population running, because the day-2 go-live must not be blocked
- *  on an unverified selector.
+ *  The handler selector was verified on 2026-08-29 against `SomniaEventHandlerABI`
+ *  in `@somnia-chain/reactivity@0.2.1`, so the earlier "unverified selector" caveat
+ *  is retired. The fallback driver below remains, because a subscription can still
+ *  be unfunded or unfired for reasons that have nothing to do with the selector.
  */
 contract SelectionEngine {
     /// @dev The reactivity precompile. No bytecode — `eth_getCode` returns `0x` —
@@ -72,16 +75,14 @@ contract SelectionEngine {
         owner = owner_;
     }
 
-    /**
+    /*
      *  Entrypoint invoked by the precompile.
      *
-     *  UNVERIFIED SELECTOR — see the contract-level note. The parameter shape is
-     *  documented and correct; the function NAME is a placeholder standing in for
-     *  whatever `SomniaEventHandler` declares.
+     *  `onEvent(address,bytes32[],bytes)` is VERIFIED (2026-08-29) against
+     *  `SomniaEventHandlerABI` in `@somnia-chain/reactivity@0.2.1`. It is no longer
+     *  a placeholder, so the selector no longer needs an env-var escape hatch.
      */
-    function onSomniaEvent(address emitter, bytes32[] calldata, /* topics */ bytes calldata /* data */ )
-        external
-    {
+    function onEvent(address emitter, bytes32[] calldata, /* topics */ bytes calldata /* data */ ) external {
         if (msg.sender != REACTIVITY) revert NotAuthorized();
         // The subscription filters on emitter, but a filter is a request and this is
         // a check. Cheap enough to do both.

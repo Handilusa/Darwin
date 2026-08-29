@@ -3,6 +3,7 @@
  *
  *    npm run fee                      # newest of this population's own settled windows
  *    npm run fee -- --pool 0x…        # a specific pool
+ *    npm run fee -- --key 0x…         # a specific marketKey, straight from a settlement log
  *    npm run fee -- --windows 8       # try the last N of our windows until one answers
  *
  *  DARWIN's whole selection story rests on one number being zero.
@@ -19,17 +20,36 @@
  *  fee is zero; the settlement struct has a fee field anyway; a claim this central is not
  *  something to take on documentation.
  *
- *  HOW THE marketKey IS OBTAINED. `getSettlement` is keyed by `marketKey`, and the only
- *  function that yields one is `finalize(pool)` — a state-changing call. It is run here
- *  through `eth_call` simulation, so nothing is broadcast and no market is finalized as a
- *  side effect of measuring it.
+ *  HOW THE marketKey IS OBTAINED. `getSettlement` is keyed by `marketKey`. `finalize(pool)`
+ *  returns one, and is run here through `eth_call` simulation so nothing is broadcast and no
+ *  market is finalized as a side effect of measuring it. That simulation only succeeds on a
+ *  market that is actually finalizable, so `--key` takes one directly instead: the key is
+ *  `(uint256(uint160(pool)) << 64) | nonce`, which is exactly topic1 of a settlement log.
  */
 import { fmt, log, manifest, populationAbi, publicClient, warn, type Manifest } from "./lib/darwin.js";
 import { parseAbi, parseAbiItem, type Address } from "viem";
 
+/**
+ *  `getSettlement` returns ONE DYNAMIC STRUCT, not nine flat values — note the extra
+ *  parentheses. Measured on Shannon 2026-08-29: the raw returndata begins `0x…0020`,
+ *  the offset word that a single dynamic return value carries. Declaring it flat shifts
+ *  every field by exactly one word (`flat[i + 1] == struct[i]`), and both resulting
+ *  failure modes are silent:
+ *
+ *    - a settled market whose backing has been redeemed to 0 reads `finalized` from
+ *      `backing == 0` => "not finalized yet", and the fee is never measured at all;
+ *    - a market with non-zero backing reads `finalized` truthy and the fee from
+ *      `voided == false` => `0`, and the script prints
+ *      "PASS — settlementFeeBpsTimes1k == 0" WITHOUT EVER READING THE FEE FIELD.
+ *
+ *  The second is the dangerous one: an honesty gate that confirms itself. Verified
+ *  against marketKey 0x…0547acf6…0140 (pool 0x0547ACF6…, nonce 320), where the struct
+ *  decode gives finalized=true / voided=false / fee=0 and the flat decode gives
+ *  finalized=false. This shape is load-bearing. Do not flatten it.
+ */
 const settlementAbi = parseAbi([
   "function finalize(address pool) returns (uint256 marketKey)",
-  "function getSettlement(uint256 marketKey) view returns (address collateralToken, uint128 backing, bool finalized, bool voided, uint256 settlementFeeBpsTimes1k, address feeRecipient, address pool, uint64 nonce, uint256[] payoutNumerators)",
+  "function getSettlement(uint256 marketKey) view returns ((address collateralToken, uint128 backing, bool finalized, bool voided, uint256 settlementFeeBpsTimes1k, address feeRecipient, address pool, uint64 nonce, uint256[] payoutNumerators))",
 ]);
 
 const WINDOW_OPENED = parseAbiItem(
@@ -43,8 +63,21 @@ const FEE_DENOMINATOR = 10_000_000n;
 
 async function main(): Promise<void> {
   const m = manifest();
+  const explicitKey = arg("--key");
   const explicit = arg("--pool") as Address | undefined;
   const tries = Number(arg("--windows") ?? "8");
+
+  // A marketKey lifted straight out of a settlement log skips the `finalize(pool)`
+  // simulation, so the gate can be run against any market the venue has already
+  // settled — including one this population never traded. Measured on Shannon:
+  //   marketKey == (uint256(uint160(pool)) << 64) | nonce
+  // so the pool is recoverable from the key and nothing else is needed.
+  if (explicitKey !== undefined) {
+    const key = BigInt(explicitKey);
+    const pool = `0x${((key >> 64n) & ((1n << 160n) - 1n)).toString(16).padStart(40, "0")}` as Address;
+    if (!(await measure(m, pool, key))) process.exitCode = 1;
+    return;
+  }
 
   const pools = explicit ? [explicit] : await recentPools(m, tries);
   if (pools.length === 0) {
@@ -83,7 +116,17 @@ async function measure(m: Manifest, pool: Address, key: bigint): Promise<boolean
     args: [key],
   });
 
-  const [collateralToken, backing, finalized, voided, feeBpsTimes1k, feeRecipient, recordedPool, nonce, payouts] = s;
+  const {
+    collateralToken,
+    backing,
+    finalized,
+    voided,
+    settlementFeeBpsTimes1k: feeBpsTimes1k,
+    feeRecipient,
+    pool: recordedPool,
+    nonce,
+    payoutNumerators: payouts,
+  } = s;
 
   if (!finalized) {
     log(`pool ${pool} — settlement exists but is not finalized yet. Next.`);

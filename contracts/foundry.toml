@@ -1,11 +1,30 @@
 # Foundry configuration — DARWIN contracts
 #
-# EVM VERSION: deliberately `paris`, not `cancun`. Nothing in this codebase uses
-# a post-Paris opcode (no MCOPY, no transient storage, no PUSH0 requirement), and
-# Shannon's exact supported fork has not been confirmed on a live deploy. Guessing
-# high costs a day if a deploy reverts on an unsupported opcode; guessing low costs
-# a few hundred gas. Raise it after the first successful deploy if there is any
-# reason to.
+# EVM VERSION: `shanghai`, changed from `paris` on 2026-08-29 because paris made the
+# deploy impossible, not merely conservative.
+#
+# `evm_version` configures BOTH solc's target and the EVM spec forge executes with.
+# Any script that touches a live Shannon contract therefore executes that contract's
+# fetched bytecode under this spec — and the deployed DreamDEX contracts use PUSH0
+# (Shanghai). Under `paris`, `forge script Deploy.s.sol --rpc-url <shannon>` dies on
+# its very first live call, `IERC20Like(TUSDC).decimals()`, with:
+#
+#     EvmError: NotActivated  →  Error: script failed: <empty revert data>
+#
+# which names neither PUSH0 nor evm_version. `--broadcast` simulates before sending,
+# so this was not a dry-run-only problem: the Day-2 deploy would have failed at the
+# first command. Verified by re-running the same script unchanged under `shanghai` and
+# `cancun` — both simulate the full deploy clean (~11.9M gas, ~0.143 STT).
+#
+# Shannon's supported fork is no longer unconfirmed: its own production contracts
+# contain PUSH0 and execute, so the chain is at least Shanghai. `shanghai` is chosen
+# over `cancun` deliberately — it is the minimum that works and the maximum the
+# evidence supports. The cancun simulation passing says nothing about Shannon; it only
+# exercised local revm.
+#
+# This does NOT weaken the reasoning behind `Population`'s explicit
+# `constructor() { _disableInitializers(); }`. That guards against `selfdestruct` on the
+# implementation, and EIP-6780 is a *Cancun* change — still not assumed here.
 
 [profile.default]
 src = "src"
@@ -14,7 +33,7 @@ libs = ["lib"]
 test = "test"
 script = "script"
 solc = "0.8.28"
-evm_version = "paris"
+evm_version = "shanghai"
 optimizer = true
 optimizer_runs = 200
 bytecode_hash = "none"

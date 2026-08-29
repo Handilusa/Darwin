@@ -31,6 +31,6 @@
   },
   "optionalDependencies": {
     "@somnia-chain/markets-sdk": "0.28.1",
-    "@somnia-chain/reactivity": "latest"
+    "@somnia-chain/reactivity": "0.2.1"
   }
 }

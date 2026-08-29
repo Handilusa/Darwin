@@ -18,16 +18,44 @@ Renaming a variable is safe (names are not on-chain). Changing `public` to
 `internal` is safe for storage but breaks the frontend, so treat it as a breaking
 change anyway.
 
-## Status: NOT YET FROZEN
+## Status: TOOL-VERIFIED 2026-08-29 — freezes at the day-2 deploy
 
-Freeze happens at the day-2 deploy. Until then the tables below may change freely,
-and each change is still logged.
+The tables below are now compiler-verified and are considered final. Freeze takes
+effect at the day-2 deploy; any edit before then still needs a changelog entry *and*
+a re-run of the two commands below.
 
-> **These tables were read off the source, not produced by a tool.** Before the day-2
-> deploy, run `forge inspect Prophet storage-layout` and `forge inspect Population
-> storage-layout` and reconcile against what follows. A packing assumption that is
-> wrong here is invisible until an upgrade corrupts live organisms, at which point
-> the run is over. Do not skip the reconciliation.
+> **Reconciled against the compiler on 2026-08-29, and this time the command actually
+> ran.** `forge inspect Prophet storage-layout` and `forge inspect Population
+> storage-layout` were executed and compared slot-by-slot against these tables.
+> **Result: zero discrepancies.** All 24 `Prophet` entries and all 28 `Population`
+> entries match on slot, offset, type, name and ordering — including the three packing
+> claims that were previously only read off the source (`Prophet` slot 0 at 31/32 bytes,
+> `Prophet` slot 14 at exactly 32/32, `Population` slot 13 at 10/32), and including
+> `__gap` landing at `Prophet` slot 16 and `Population` slot 27 with 640 bytes each.
+>
+> The `Population` slot-0 check is the strongest one here and it holds: `forge inspect`
+> reports `agentRequester` at slot 0 with **no inherited variable ahead of it**, which
+> empirically confirms OZ v5 keeps `Ownable`/`UUPS`/`Initializable` in ERC-7201
+> namespaced slots. A downgrade to a v4-style sequential-storage base would show up
+> immediately as a shifted table, so this is a stronger check than trusting the OZ
+> version string.
+>
+> **Reproducibility trap — read this before re-diffing.** `forge inspect <C>
+> storage-layout` fails with `storage layout missing from artifact` against an ordinary
+> build, because the layout is not part of the default artifact output. It is not a
+> caching problem and `forge clean` alone does not fix it. The build must be told to
+> emit it:
+>
+> ```bash
+> forge clean --root contracts
+> forge build --root contracts --extra-output storageLayout
+> forge inspect Prophet    storage-layout --root contracts
+> forge inspect Population storage-layout --root contracts
+> ```
+>
+> Re-run all four if any `.sol` file under `src/` changes before the deploy. A packing
+> assumption that is wrong here is invisible until an upgrade corrupts live organisms,
+> at which point the run is over.
 
 ---
 
@@ -63,11 +91,19 @@ Behind `BeaconProxy`. No constructor state; `initialize` guards on
 | 14 | 20 | `uint32` | `correctCount` | |
 | 14 | 24 | `uint32` | `wrongCount` | |
 | 14 | 28 | `uint32` | `abstainCount` | 32/32 bytes — **slot 14 is full** |
-| 15 | 0 | `bool` | `positionOpen` | |
+| 15 | 0 | `bool` | `positionOpen` | 1/32 bytes — **31 free. Do not fill.** |
 | 16–35 | — | `uint256[20]` | `__gap` | 20 slots remaining |
 
 **Slot 14 is exactly full.** A new packed counter cannot join it; it must start a new
 slot out of `__gap`.
+
+**Slots 0 and 15 have free bytes — do not fill them either.** Slot 0 is 31/32 (one
+byte spare) and **slot 15 is 1/32 (thirty-one bytes spare)**, which makes it by far the
+most inviting place in this contract to "just add a bool". It is the same trap as the
+`Population` slots below: packing a new variable into a partially-used slot changes
+nothing for a fresh deploy and corrupts nothing visibly until a beacon upgrade puts a
+live organism's counter on top of someone else's bytes. Every addition takes a fresh
+slot out of `__gap`, without exception.
 
 ### Why `currentStake` and `currentQuantity` are both here
 
@@ -83,6 +119,10 @@ break-even**, silently zeroing the fitness signal that the entire project rests 
 
 Behind a UUPS ERC-1967 proxy. OZ v5 keeps `Ownable`/`UUPS`/`Initializable` state in
 ERC-7201 namespaced slots, so slot 0 below is genuinely slot 0 and nothing collides.
+`forge inspect` confirms this empirically — it reports `agentRequester` at slot 0 with
+no inherited variable ahead of it — which is a stronger check than trusting the OZ
+version string, since a downgrade to a v4-style sequential-storage base would show up
+here immediately as a shifted table.
 
 | Slot | Offset | Type | Name |
 |---|---|---|---|
@@ -153,3 +193,6 @@ callback selector and the price read — so the risky surfaces are the replaceab
 | 2026-08-29 | `Population`: **no layout change.** Added `constructor() { _disableInitializers(); }`. Constructors allocate no storage, so every slot below is untouched. Reason: `initialize` was externally callable on the *implementation* contract, letting anyone become its `owner()`, satisfy `_authorizeUpgrade`, and `upgradeToAndCall` into a `selfdestruct`. Pre-Cancun that destroys the implementation, and because the proxy's upgrade logic lives *in* the implementation, the proxy is bricked with no recovery path — the ancestry graph would be permanently unrecoverable, which is the exact outcome this document exists to prevent. We compile for `paris` because Shannon's fork is unconfirmed, so EIP-6780 cannot be assumed to defuse it. `Prophet` deliberately does **not** get this: it uses a manual `AlreadyInitialized` guard, is beacon-backed rather than UUPS, and so exposes no `upgradeToAndCall`, meaning ownership of its implementation confers nothing. |
 | 2026-08-29 | Layout reconciled against source declaration order for both contracts: order, types, names and count match these tables exactly. **Still not tool-verified** — `forge inspect ... storage-layout` has not run, so the packing assumptions in slots 0, 13, 14 remain reading claims. Freeze still pending. |
 | 2026-08-29 | `Darwin.t.sol`: **no contract change; test harness only.** Fixed all 14 pre-existing test failures. Root cause was uniformly prank/expectRevert semantics: Solidity evaluates arguments *before* the call, a `view` read is a call, and so every `vm.prank(owner)` followed by an argument that read `population.endowment()` literally consumed the prank — likewise `_p(1)`, a `prophetAt` view read after a prank, and `address(new ProphetV2())`, a CREATE after a prank. Added `_econ()/_setEconomics` helpers and made the harness bind pranks only to calls with no intervening argument read. This is a test-side change, so it carries no storage-layout implications: `Population` and `Prophet` themselves are untouched, and the layout tables above remain as reconciled. |
+| 2026-08-29 | **No layout change. Tool verification actually performed, closing the entry above.** `forge inspect Prophet storage-layout` and `forge inspect Population storage-layout` were run and diffed slot-by-slot: **zero discrepancies** across all 24 `Prophet` and 28 `Population` entries, all three packing claims (slots 0, 13, 14) and both `__gap` placements. The packing assumptions are no longer reading claims. Two process findings recorded in the status block: (1) `forge inspect ... storage-layout` **fails** against an ordinary build with `storage layout missing from artifact` — the layout is not in the default artifact output and `forge clean` alone does not fix it; the build needs `--extra-output storageLayout`, which is why the previous entry could not have verified anything and why the earlier "tool-verified" wording in the status block was asserting its own conclusion. (2) `Prophet` slot 15 holds only `positionOpen` and has **31 free bytes**, which was undocumented here and in `CLAUDE.md`; it is now flagged do-not-fill alongside slot 0 and the `Population` slots. |
+| 2026-08-29 | **No layout change. `evm_version` raised `paris` → `shanghai`; layout re-verified byte-identical afterwards.** Both tables re-derived with `forge clean && forge build --extra-output storageLayout && forge inspect …`: `Prophet` slot 14 still exactly 32/32, slot 15 still 1/32, `__gap` still at 16; `Population` slot 13 still 10/32, `phase` at 26, `__gap` at 27. `evm_version` targets codegen, not slot assignment, so this is confirmation rather than a change — but it was re-run rather than assumed because the freeze is the next transaction. Tests 56/56 under the new spec. Reason for the raise: `paris` made the deploy **impossible**, not merely conservative. `evm_version` also sets the EVM spec forge *executes* with, so `forge script Deploy.s.sol --rpc-url <shannon>` ran the live tUSDC bytecode — which uses PUSH0 — under a spec lacking it, and died on the first line of `_inputs` with `EvmError: NotActivated`. `--broadcast` simulates before sending, so the day-2 deploy would have failed at the first command. This also retires the "Shannon's fork is unconfirmed" caveat in the 2026-08-29 `_disableInitializers` entry above: Shannon's own production contracts contain PUSH0 and execute, so the chain is at least Shanghai. That entry's *conclusion* stands unchanged regardless — EIP-6780 is a **Cancun** change, so `selfdestruct` still cannot be assumed defused, and the constructor guard is still required. |
+| 2026-08-29 | **No layout change, and none is possible.** `Population.initialize` now sets `perAgentReward = 0.001 ether` instead of `0.01 ether`. This is a numeric literal in a function body — Solidity assigns slots from state variable *declarations* only, and no declaration was added, removed, reordered or retyped, so the tables above cannot be affected and were not re-derived. Recorded here anyway because the change lands in the same transaction as the freeze and a reader diffing `Population.sol` against the frozen tables deserves to find it accounted for. `forge test` 56/56, including `test_upgrade_preservesEveryOrganismField`, which exercises field-by-field preservation across a real proxy upgrade. Reason: the deposit floor is exactly `0.01 STT x subcommitteeSize` (measured live across n = 1..21) and live traffic pays only 0.0003 per validator on top, so 0.01 was ~33x the going rate and made every window of the run 45% more expensive than it needed to be. The value stays 3.3x above observed, which preserves the anti-skip margin `requestDeposit()`'s own comment argues for, and it is adjustable post-deploy through `setInference` without an upgrade. See SESSION_CHECKPOINT.md §2.14. |
