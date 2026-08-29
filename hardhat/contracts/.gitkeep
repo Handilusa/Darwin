@@ -1,0 +1,8 @@
+# Intentionally empty.
+#
+# `hardhat.config.js` points `paths.sources` here so that `npx hardhat compile` is a
+# no-op. Foundry is the only compiler in this repo — the contracts live in
+# `contracts/src/` and resolve OpenZeppelin through Foundry remappings.
+#
+# Hardhat exists for `@somnia-chain/markets-sdk` and `@somnia-chain/reactivity`, which
+# are TypeScript packages. Do not put Solidity here.

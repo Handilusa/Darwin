@@ -1,0 +1,270 @@
+/**
+ *  The one claim these contracts cannot prove about themselves.
+ *
+ *    npm run prove
+ *    npm run prove -- --lookback 200000
+ *
+ *  Somnia's reactivity precompile inserts a synthetic transaction in the SAME BLOCK as a
+ *  matching log. This project's central technical claim is that a market settling and an
+ *  organism dying are therefore the same event, with no keeper, cron, bot or server in
+ *  between. `forge test` cannot check that — the precompile does not exist on chain ids
+ *  31337/1337, not "reverts" but is absent — so the assertion has to be made against the
+ *  live chain, and this is where it is made.
+ *
+ *  It is also the honesty gate for the pitch. While the population is being settled by
+ *  `SelectionEngine.poke()`, the true claim is the weaker one: "selection is on-chain and
+ *  atomic with redemption." Only a `Reacted` event with `viaReactivity == true`, sharing a
+ *  block with a real `BinarySettlement` log, licenses "no keeper anywhere in the causal
+ *  chain." If this script fails, the narration changes — not the script.
+ */
+import { manifest, publicClient, log, warn, shannon, type Manifest } from "./lib/darwin.js";
+import { parseAbiItem, type Address, type Hex } from "viem";
+
+const REACTED = parseAbiItem(
+  "event Reacted(address indexed emitter, uint64 indexed window, uint256 blockNumber, bytes32 parentHash, bool viaReactivity)",
+);
+
+/**
+ *  Used to close a hole the naive version of this script had.
+ *
+ *  `BinarySettlement` is a shared singleton — every market on DreamDEX finalizes into it.
+ *  So "a settlement log exists in the same block as the reaction" is a weaker statement
+ *  than it looks: it could be somebody else's market settling while ours happened to be
+ *  resolvable. `WindowOpened` records the marketId and pool this population actually
+ *  committed to for a given window, both recoverable from the window number alone, which
+ *  makes the correlation checkable without knowing the settlement event's signature.
+ */
+const WINDOW_OPENED = parseAbiItem(
+  "event WindowOpened(uint64 indexed window, bytes32 indexed marketId, address pool, uint256 openPrice)",
+);
+
+const CHUNK = 9_000n;
+
+type Reaction = {
+  blockNumber: bigint;
+  txHash: Hex;
+  window: bigint;
+  recordedBlock: bigint;
+  viaReactivity: boolean;
+};
+
+async function main(): Promise<void> {
+  const m = manifest();
+  const lookback = BigInt(arg("--lookback") ?? "100000");
+
+  const latest = await publicClient.getBlockNumber();
+  const floor = BigInt(m.deployedAtBlock);
+  const from = latest - lookback > floor ? latest - lookback : floor;
+
+  log(`scanning blocks ${from}..${latest} for SelectionEngine.Reacted (${m.selectionEngine})`);
+  const reactions = await scan(m, from, latest);
+
+  if (reactions.length === 0) {
+    fail(
+      "no Reacted event at all in range.\n" +
+        "  The population has never been settled — not by reactivity and not by poke().\n" +
+        "  Start the cadence before trying to prove anything about it.",
+    );
+    return;
+  }
+
+  const reactive = reactions.filter((r) => r.viaReactivity);
+  const manual = reactions.length - reactive.length;
+  log(`found ${reactions.length} reaction(s): ${reactive.length} via reactivity, ${manual} via poke()`);
+
+  const latestReactive = reactive.at(-1);
+  if (!latestReactive) {
+    fail(
+      `every settlement so far came through SelectionEngine.poke().\n` +
+        `  That is a working system, but the honest claim is the weaker one:\n` +
+        `    "selection is on-chain and atomic with redemption"\n` +
+        `  NOT "no keeper anywhere in the causal chain".\n` +
+        `  Wire the 0x0100 subscription, set CADENCE_USE_REACTIVITY=true, and run this again.`,
+    );
+    return;
+  }
+
+  await verify(m, latestReactive);
+}
+
+/*//////////////////////////////////////////////////////////////
+                           THE ASSERTION
+//////////////////////////////////////////////////////////////*/
+
+async function verify(m: Manifest, r: Reaction): Promise<void> {
+  // Every log the settlement contract emitted in the very same block.
+  const settlementLogs = await publicClient.getLogs({
+    address: m.settlement,
+    fromBlock: r.blockNumber,
+    toBlock: r.blockNumber,
+  });
+
+  const block = await publicClient.getBlock({ blockNumber: r.blockNumber });
+  const opened = await windowIdentity(m, r);
+
+  console.log("");
+  console.log("=== SAME-BLOCK PROOF ========================================");
+  console.log(`block            ${r.blockNumber}  (${new Date(Number(block.timestamp) * 1000).toISOString()})`);
+  console.log(`window           #${r.window}`);
+  if (opened) {
+    console.log(`market           ${opened.marketId}`);
+    console.log(`pool             ${opened.pool}`);
+  }
+  console.log(`reaction tx      ${r.txHash}`);
+  console.log(`                 ${tx(r.txHash)}`);
+  for (const l of settlementLogs) {
+    console.log(`settlement tx    ${l.transactionHash}`);
+    console.log(`                 ${tx(l.transactionHash!)}`);
+  }
+  console.log("=============================================================");
+
+  const problems: string[] = [];
+
+  if (settlementLogs.length === 0) {
+    problems.push(
+      `BinarySettlement (${m.settlement}) emitted nothing in block ${r.blockNumber}.\n` +
+        `    The reaction fired, but not alongside a settlement — so this block does not\n` +
+        `    demonstrate the claim. Either the subscription is filtered on the wrong\n` +
+        `    emitter, or this reaction was triggered by an unrelated log.`,
+    );
+  }
+
+  // THE CORRELATION. Without this the assertion is satisfiable by coincidence.
+  if (opened && settlementLogs.length > 0) {
+    const ours = settlementLogs.filter((l) => references(l, opened));
+    if (ours.length === 0) {
+      problems.push(
+        `a settlement landed in block ${r.blockNumber}, but none of the ${settlementLogs.length} log(s)\n` +
+          `    reference this population's market (${opened.marketId}) or pool (${opened.pool}).\n` +
+          `    BinarySettlement is a shared singleton, so this is somebody else's market settling\n` +
+          `    while ours happened to be resolvable — a coincidence, not the claim. Selection still\n` +
+          `    ran on-chain, but it did not run in the block our window resolved in.`,
+      );
+    } else {
+      log(`correlated: ${ours.length} of ${settlementLogs.length} settlement log(s) reference our own market`);
+    }
+  } else if (!opened && settlementLogs.length > 0) {
+    warn(
+      `could not locate WindowOpened for window #${r.window}, so the settlement in this block\n` +
+        `  could not be tied to this population's own market. The block-sharing below is real;\n` +
+        `  the correlation is unchecked. Widen --lookback, or use an archive RPC.`,
+    );
+  }
+
+  // The contract records `block.number` at execution time; the log carries the block it
+  // was mined in. They can only differ if something is very wrong with the reader.
+  if (r.recordedBlock !== r.blockNumber) {
+    problems.push(`Reacted recorded block ${r.recordedBlock} but was mined in ${r.blockNumber}`);
+  }
+
+  const sameTx = settlementLogs.some((l) => l.transactionHash === r.txHash);
+  if (settlementLogs.length > 0) {
+    log(
+      sameTx
+        ? "reaction shares the settlement TRANSACTION (stronger than required)"
+        : "reaction is a separate transaction in the same BLOCK — exactly the documented behaviour",
+    );
+  }
+
+  if (problems.length > 0) {
+    fail(problems.join("\n  "));
+    return;
+  }
+
+  console.log("");
+  console.log("PASS — a market settled and an organism was judged in the same block,");
+  console.log("       with no keeper in between. The strong claim is licensed.");
+}
+
+type WindowIdentity = { marketId: Hex; pool: Address };
+
+/**
+ *  What market this population was actually committed to in the reacted window.
+ *
+ *  Searched backwards from the reaction, in chunks, because `WindowOpened` was emitted at
+ *  the start of the same window and is therefore close by — and because a full-range
+ *  filtered query is the kind of request public RPCs refuse.
+ */
+async function windowIdentity(m: Manifest, r: Reaction): Promise<WindowIdentity | undefined> {
+  const floor = BigInt(m.deployedAtBlock);
+  let to = r.blockNumber;
+
+  while (to >= floor) {
+    const from = to - CHUNK + 1n > floor ? to - CHUNK + 1n : floor;
+    const logs = await publicClient.getLogs({
+      address: m.population,
+      event: WINDOW_OPENED,
+      args: { window: r.window },
+      fromBlock: from,
+      toBlock: to,
+    });
+    const hit = logs.at(-1);
+    if (hit) return { marketId: hit.args.marketId!, pool: hit.args.pool! };
+    if (from === floor) break;
+    to = from - 1n;
+  }
+  return undefined;
+}
+
+/**
+ *  Does this log mention our market or our pool anywhere?
+ *
+ *  Deliberately signature-agnostic: the settlement event's ABI is not declared in any
+ *  document we have, so rather than guess at a decode, this looks for the 32-byte word a
+ *  marketId or a left-padded pool address would occupy in either the topics or the data.
+ *  A false positive would need an unrelated event to contain our exact pool address.
+ */
+function references(l: { topics: readonly Hex[]; data: Hex }, w: WindowIdentity): boolean {
+  const haystack = (l.topics.join("") + l.data).toLowerCase().replaceAll("0x", "");
+  const marketId = w.marketId.slice(2).toLowerCase();
+  const pool = w.pool.slice(2).toLowerCase();
+  return haystack.includes(marketId) || haystack.includes(pool);
+}
+
+/*//////////////////////////////////////////////////////////////
+                             PLUMBING
+//////////////////////////////////////////////////////////////*/
+
+/** Chunked because public RPCs cap `eth_getLogs` ranges, and Somnia's blocks are fast. */
+async function scan(m: Manifest, from: bigint, to: bigint): Promise<Reaction[]> {
+  const out: Reaction[] = [];
+  for (let start = from; start <= to; start += CHUNK) {
+    const end = start + CHUNK - 1n > to ? to : start + CHUNK - 1n;
+    const logs = await publicClient.getLogs({
+      address: m.selectionEngine,
+      event: REACTED,
+      fromBlock: start,
+      toBlock: end,
+    });
+    for (const l of logs) {
+      out.push({
+        blockNumber: l.blockNumber!,
+        txHash: l.transactionHash!,
+        window: l.args.window ?? 0n,
+        recordedBlock: l.args.blockNumber ?? 0n,
+        viaReactivity: l.args.viaReactivity ?? false,
+      });
+    }
+  }
+  out.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
+  return out;
+}
+
+function arg(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  return i === -1 ? undefined : process.argv[i + 1];
+}
+
+const tx = (hash: string) => `${shannon.blockExplorers.default.url}/tx/${hash}`;
+
+function fail(message: string): void {
+  console.error("");
+  console.error(`FAIL — ${message}`);
+  console.error("");
+  process.exitCode = 1;
+}
+
+main().catch((err) => {
+  console.error("FATAL", err instanceof Error ? err.message : err);
+  process.exit(1);
+});

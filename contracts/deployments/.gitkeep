@@ -1,0 +1,2 @@
+Deploy.s.sol writes <chainid>.json here. Kept in git so `vm.writeFile` has a
+directory to write into on a fresh clone.

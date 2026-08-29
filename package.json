@@ -1,0 +1,36 @@
+{
+  "name": "darwin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "An on-chain population of AI forecasters that must survive real market settlement to keep existing.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "cadence": "tsx scripts/cadence.ts",
+    "cadence:once": "tsx scripts/cadence.ts --once",
+    "fund": "tsx scripts/fund.ts",
+    "monitor": "tsx scripts/monitor.ts",
+    "subscribe": "tsx scripts/subscribe.ts",
+    "fee": "tsx scripts/measure-fee.ts",
+    "prove": "tsx scripts/prove-same-block.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "forge build --root contracts",
+    "test": "forge test --root contracts -vv",
+    "hardhat": "hardhat"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "hardhat": "^2.22.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  },
+  "optionalDependencies": {
+    "@somnia-chain/markets-sdk": "latest",
+    "@somnia-chain/reactivity": "latest"
+  }
+}

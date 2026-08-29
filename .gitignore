@@ -1,0 +1,44 @@
+# Foundry
+contracts/out/
+contracts/cache/
+contracts/lib/
+contracts/broadcast/
+!contracts/broadcast/**/dry-run/
+
+# Deploy manifests ARE committed — the frontend, the monitor and every later script
+# read them, and a public repo whose addresses live only on one laptop is not a
+# reproducible submission. The keystore next to them is not.
+contracts/deployments/*.key
+contracts/deployments/*.secret
+
+# Hardhat. It compiles nothing here (see hardhat.config.js) but still writes these.
+hardhat/cache/
+hardhat/artifacts/
+
+# Node
+node_modules/
+dist/
+.tsbuildinfo
+*.tsbuildinfo
+
+# Next.js
+web/.next/
+web/out/
+web/node_modules/
+
+# Secrets. The population's cadence key signs a transaction every fifteen minutes for
+# eleven days; it is a hot key by construction and must never reach the public repo.
+.env
+.env.*
+!.env.example
+*.pem
+keystore/
+
+# Run artifacts
+logs/
+*.log
+cadence-state.json
+
+# OS
+.DS_Store
+Thumbs.db
