@@ -326,6 +326,15 @@ invariant.
   `population.endowment()`, or `_p(1)`, or `address(new ProphetV2())`, consumes the prank on the
   wrong thing. This caused 14 test failures once. Use the `_econ()` / `_setEconomics()` helpers and
   bind pranks only to calls with no intervening argument read.
+- **`vm.expectRevert(bytes4)` compares the WHOLE revert data**, so a bare selector matches only a
+  *parameterless* error. Against `error StalePrice(uint64 age, uint64 limit)` it fails with
+  `StalePrice(181, 180) != custom error 0x2ccfc2ca`, which reads as "it did not revert as
+  expected" when it reverted for exactly the expected reason. Two correct forms, and the choice is
+  a claim about what the test is asserting: `abi.encodeWithSelector(E.selector, a, b)` when the
+  arguments *are* the claim (`test_priceSource_refusesStalePrice` — the age and the limit are the
+  point), and `vm.expectPartialRevert(E.selector)` when the revert reason is the claim and the
+  arguments are incidental (`test_venue_settlesAfterThePriceFeedHasGoneStale` — a precondition
+  proving the feed is stale, where the age is an artifact of harness timing).
 - TypeScript is `strict` with `noUncheckedIndexedAccess`; `scripts/` uses ESM syntax with `.js`
   import specifiers, run through `tsx`. `package.json` has no `"type": "module"` — that is what lets
   `hardhat.config.js` stay CommonJS.
