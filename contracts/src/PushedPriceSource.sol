@@ -105,40 +105,70 @@ contract PushedPriceSource is IPriceSource {
             bool tradeable
         )
     {
-        Window memory w = windows[symbol];
-        if (w.marketId == bytes32(0)) revert NoWindow(symbol);
+        // Scoped so neither `w` nor `age` stays live alongside the nine named
+        // returns — this whole function runs within a few slots of the limit.
+        {
+            Window memory w = windows[symbol];
+            if (w.marketId == bytes32(0)) revert NoWindow(symbol);
 
-        uint64 age = uint64(block.timestamp) - w.updatedAt;
-        if (age > maxStaleness) revert StalePrice(age, maxStaleness);
+            uint64 age = uint64(block.timestamp) - w.updatedAt;
+            if (age > maxStaleness) revert StalePrice(age, maxStaleness);
 
-        marketId = w.marketId;
-        openPrice = w.openPrice;
-        lastPrice = w.lastPrice;
-        priceDecimals = w.priceDecimals;
+            marketId = w.marketId;
+            openPrice = w.openPrice;
+            lastPrice = w.lastPrice;
+            priceDecimals = w.priceDecimals;
+        }
 
         // Resolved fresh on every call. Pools are RECYCLED across windows, so a
         // cached pool address is a live wire: it will eventually point at a pool
         // belonging to a different market, and a mint would succeed against the
         // wrong book. Outcome ids encode the pool nonce and are equally unsafe to
         // cache.
-        //
-        // The eight skipped fields are oracleQuestionId, outcomeSlotCount,
-        // voidPolicy, collateral, originOperatorId, originVenueId, oracleAdapter,
-        // creator — indices 0..7 of a 14-field record.
-        uint64 tradingStart;
-        uint64 expiry;
-        address marketAddr;
-        (,,,,,,,, marketAddr, pool, outcomeIdUp, outcomeIdDown, tradingStart, expiry) = module.markets(marketId);
+        Resolved memory r = _resolveMarket(marketId);
+        pool = r.pool;
+        outcomeIdUp = r.outcomeIdUp;
+        outcomeIdDown = r.outcomeIdDown;
 
         uint256 now_ = block.timestamp;
-        if (now_ >= expiry) {
+        if (now_ >= r.expiry) {
             secondsRemaining = 0;
         } else {
-            secondsRemaining = uint64(expiry - now_);
+            secondsRemaining = uint64(r.expiry - now_);
         }
 
-        tradeable = pool != address(0) && now_ >= tradingStart && now_ < expiry
-            && !IBinaryMarket(marketAddr).isResolved() && !IBinaryMarket(marketAddr).isVoided();
+        tradeable = r.pool != address(0) && now_ >= r.tradingStart && now_ < r.expiry
+            && !IBinaryMarket(r.marketAddr).isResolved() && !IBinaryMarket(r.marketAddr).isVoided();
+    }
+
+    /// @dev Returned as one memory struct rather than a six-value tuple: a tuple
+    ///      assignment costs six stack slots at the call site, and `currentWindow`
+    ///      does not have six to spare. A memory pointer costs one.
+    struct Resolved {
+        address marketAddr;
+        address pool;
+        uint256 outcomeIdUp;
+        uint256 outcomeIdDown;
+        uint64 tradingStart;
+        uint64 expiry;
+    }
+
+    /**
+     *  Pull the six fields we need out of a 14-field market record.
+     *
+     *  ISOLATED IN ITS OWN STACK FRAME ON PURPOSE. Destructuring a 14-tuple needs
+     *  fourteen stack slots at once, and doing that inside `currentWindow` — where
+     *  nine named return values are live for the whole body — overflows the stack.
+     *  Splitting the read out is what makes that function compile; do not inline it
+     *  back. It also gives the skipped-field documentation one obvious home.
+     *
+     *  The eight skipped fields are indices 0..7: oracleQuestionId,
+     *  outcomeSlotCount, voidPolicy, collateral, originOperatorId, originVenueId,
+     *  oracleAdapter, creator.
+     */
+    function _resolveMarket(bytes32 marketId) internal view returns (Resolved memory r) {
+        (,,,,,,,, r.marketAddr, r.pool, r.outcomeIdUp, r.outcomeIdDown, r.tradingStart, r.expiry) =
+            module.markets(marketId);
     }
 
     /// @dev Convenience for the monitor: what was pushed, without the liveness

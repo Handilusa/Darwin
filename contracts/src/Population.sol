@@ -150,6 +150,21 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         string symbol;
     }
 
+    /// @dev Locks the IMPLEMENTATION against direct initialization. Without this,
+    ///      anyone may call `initialize` on the implementation address (the proxy's
+    ///      storage is separate, so this is not otherwise noticeable), become its
+    ///      `owner()`, satisfy `_authorizeUpgrade`, and `upgradeToAndCall` into a
+    ///      contract that `selfdestruct`s. Pre-Cancun that DESTROYS the implementation,
+    ///      and since the proxy's upgrade logic lives in the implementation it is
+    ///      bricked with no recovery path — the ancestry graph would be unrecoverable.
+    ///      We compile for `paris` precisely because Shannon's fork is unconfirmed, so
+    ///      we cannot assume EIP-6780 defuses this. Constructors allocate no storage,
+    ///      so this is layout-neutral and safe to add before the freeze.
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     function initialize(address owner_, Wiring calldata w) external initializer {
         __Ownable_init(owner_);
         __UUPSUpgradeable_init();
@@ -256,9 +271,14 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     function _spawn(uint256 parentId, uint32 generation, string memory genome) internal returns (address p) {
         if (prophets.length >= maxPopulation) revert PopulationFull();
 
-        uint256 id = prophets.length + 1; // ids are 1-based; 0 means "no parent"
+        // `id` IS NOT A LOCAL ON PURPOSE. The Yul optimizer inlines this function
+        // into `spawnGenesis`'s loop, and the inlined body sits exactly one stack
+        // slot over the limit; holding the id in a local is what pushes it over.
+        // Ids are 1-based (0 means "no parent"), so it is `prophets.length + 1`
+        // before the push and `prophets.length` after — the same number, read twice
+        // for a warm SLOAD each. Do not reintroduce the local.
         p = address(new BeaconProxy(prophetBeacon, ""));
-        Prophet(payable(p)).initialize(address(this), id, parentId, generation, windowCount, genome);
+        Prophet(payable(p)).initialize(address(this), prophets.length + 1, parentId, generation, windowCount, genome);
         prophets.push(p);
         aliveCount += 1;
 
@@ -272,7 +292,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             Prophet(payable(p)).fund(endowment);
         }
 
-        emit Spawned(id, p, parentId, generation);
+        emit Spawned(prophets.length, p, parentId, generation);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -291,29 +311,49 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  malformed organism can halt is not a population.
      */
     function think() external onlyDriver inPhase(0) {
-        (
-            bytes32 marketId,
-            address pool,
-            uint256 upId,
-            uint256 downId,
-            uint256 openPrice,
-            uint256 lastPrice,
-            uint8 priceDecimals,
-            uint64 secondsRemaining,
-            bool tradeable
-        ) = IPriceSource(priceSource).currentWindow(symbol);
+        // SCOPED DELIBERATELY. `currentWindow` returns nine values, but only two
+        // are still needed once the window is recorded. Holding the others alive
+        // across the per-organism request loop below overflows the stack — under the
+        // legacy codegen AND under --via-ir, which misses by exactly one slot. The
+        // `WindowOpened` emit lives inside this block for the same reason: it is the
+        // only later use of `openPrice` and `pool`, and moving it here is what frees
+        // the last slot. Do not hoist these declarations or that emit out.
+        bytes32 marketId;
+        string memory context;
+        {
+            (
+                bytes32 marketId_,
+                address pool_,
+                uint256 upId,
+                uint256 downId,
+                uint256 openPrice_,
+                uint256 lastPrice,
+                uint8 priceDecimals,
+                uint64 secondsRemaining,
+                bool tradeable
+            ) = IPriceSource(priceSource).currentWindow(symbol);
 
-        // status != 1 means not trading. Opening a position anyway is the fastest
-        // way to lose an organism's stake to a revert instead of to a bad forecast.
-        if (!tradeable) revert MarketNotTradeable();
+            // status != 1 means not trading. Opening a position anyway is the fastest
+            // way to lose an organism's stake to a revert instead of to a bad forecast.
+            if (!tradeable) revert MarketNotTradeable();
 
-        activeMarketId = marketId;
-        activePool = pool;
-        activeUpId = upId;
-        activeDownId = downId;
-        windowCount += 1;
+            activeMarketId = marketId_;
+            activePool = pool_;
+            activeUpId = upId;
+            activeDownId = downId;
+            windowCount += 1;
 
-        string memory context = Genome.beliefPrompt(symbol, openPrice, lastPrice, priceDecimals, secondsRemaining);
+            context = Genome.beliefPrompt(symbol, openPrice_, lastPrice, priceDecimals, secondsRemaining);
+            marketId = marketId_;
+
+            // Emitted before the requests rather than after. Same transaction and
+            // same block either way, so every consumer — including
+            // `prove-same-block.ts`, which recovers marketId and pool from this log
+            // — is unaffected. Ordering now reads truthfully anyway: the window is
+            // open, and then the organisms think about it.
+            emit WindowOpened(windowCount, marketId_, pool_, openPrice_);
+        }
+
         string[] memory allowed = Genome.allowedBeliefs();
         uint256 dep = requestDeposit();
 
@@ -342,7 +382,6 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         }
 
         phase = 1;
-        emit WindowOpened(windowCount, marketId, pool, openPrice);
     }
 
     /**
@@ -657,24 +696,32 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         out = new Snapshot[](n);
         for (uint256 i; i < n; ++i) {
             Prophet p = Prophet(payable(prophets[i]));
-            out[i] = Snapshot({
-                id: p.prophetId(),
-                addr: address(p),
-                parentId: p.parentId(),
-                generation: p.generation(),
-                treasury: p.treasury(),
-                streak: p.streak(),
-                windowsLived: p.windowsLived(),
-                correctCount: p.correctCount(),
-                wrongCount: p.wrongCount(),
-                abstainCount: p.abstainCount(),
-                birthWindow: p.birthWindow(),
-                deathWindow: p.deathWindow(),
-                dead: p.dead(),
-                belief: uint8(p.belief()),
-                thesis: uint8(p.lastThesis()),
-                genomeHash: p.genomeHash()
-            });
+
+            // FIELD BY FIELD, NOT A STRUCT LITERAL, AND THIS IS LOAD-BEARING.
+            // `Snapshot({...})` requires all sixteen field values to be live at the
+            // same moment, which — together with the loop counter and the array's
+            // memory pointer — overflows the stack even under --via-ir, whose
+            // stack-limit evader misses by exactly one slot. Assigning one field at a
+            // time keeps a single external call result live. The resulting struct is
+            // identical; do not tidy this back into a literal.
+            Snapshot memory s;
+            s.id = p.prophetId();
+            s.addr = address(p);
+            s.parentId = p.parentId();
+            s.generation = p.generation();
+            s.treasury = p.treasury();
+            s.streak = p.streak();
+            s.windowsLived = p.windowsLived();
+            s.correctCount = p.correctCount();
+            s.wrongCount = p.wrongCount();
+            s.abstainCount = p.abstainCount();
+            s.birthWindow = p.birthWindow();
+            s.deathWindow = p.deathWindow();
+            s.dead = p.dead();
+            s.belief = uint8(p.belief());
+            s.thesis = uint8(p.lastThesis());
+            s.genomeHash = p.genomeHash();
+            out[i] = s;
         }
     }
 

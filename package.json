@@ -30,7 +30,7 @@
     "typescript": "^5.5.0"
   },
   "optionalDependencies": {
-    "@somnia-chain/markets-sdk": "latest",
+    "@somnia-chain/markets-sdk": "0.28.1",
     "@somnia-chain/reactivity": "latest"
   }
 }

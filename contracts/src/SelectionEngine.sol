@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Population} from "./Population.sol";
 
-/**
+/*
  *  The reactive handler: consequence in the same block as resolution.
  *
  *  Somnia's reactivity precompile lets validators insert a synthetic transaction in

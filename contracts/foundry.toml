@@ -18,6 +18,12 @@ evm_version = "paris"
 optimizer = true
 optimizer_runs = 200
 bytecode_hash = "none"
+# REQUIRED, not a preference. `IPriceSource.currentWindow` returns nine values, and
+# the legacy codegen's ABI encoder cannot even build that return frame ("dataEnd is
+# 2 slots too deep"), let alone decode it inside `think()`'s request loop. The IR
+# pipeline is solc's own prescribed fix. It does NOT affect storage layout, so
+# STORAGE.md's tables remain valid.
+via_ir = true
 # Organisms carry their genome as an on-chain string, so revert strings and long
 # prompt literals push contract size. Watch this if Population grows.
 # ignored_error_codes = []

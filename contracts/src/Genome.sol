@@ -74,24 +74,46 @@ library Genome {
         uint8 priceDecimals,
         uint64 secondsRemaining
     ) internal pure returns (string memory) {
-        return string.concat(
+        // STAGED DELIBERATELY, and the staging is load-bearing rather than stylistic.
+        // A single `string.concat` of all eleven operands forces the three inlined
+        // number formatters — `_decimal` twice and `_toString` once, each with its own
+        // locals and digit loops — to be live simultaneously alongside eleven concat
+        // operands and the allocator's memory pointer. That overflows the stack even
+        // under --via-ir, whose stack-limit evader misses by one slot. Formatting
+        // first and concatenating in three steps keeps every step small.
+        //
+        // The assembled string is byte-for-byte what the single expression produced.
+        // Do not collapse this back into one `string.concat`.
+        string memory open_ = _decimal(openPrice, priceDecimals);
+        string memory last_ = _decimal(lastPrice, priceDecimals);
+        string memory secs = _toString(secondsRemaining);
+
+        string memory head = string.concat(
             "MARKET: ",
             symbol,
             " binary event contract.\n"
             "QUESTION: at this window's close, will ",
             symbol,
             " be ABOVE (UP) or BELOW (DOWN) the window's OPENING price?\n"
+        );
+
+        string memory body = string.concat(
             "OPENING PRICE (the level you are graded against): ",
-            _decimal(openPrice, priceDecimals),
+            open_,
             "\n"
             "CURRENT PRICE: ",
-            _decimal(lastPrice, priceDecimals),
+            last_,
             "\n"
             "SECONDS UNTIL CLOSE: ",
-            _toString(secondsRemaining),
+            secs,
             "\n\n"
+        );
+
+        return string.concat(
+            head,
+            body,
             "Answer with exactly one allowed value: a direction and the thesis that\n"
-            "justifies it. Choose ABSTAIN only if you genuinely have no edge — you\n"
+            "justifies it. Choose ABSTAIN only if you genuinely have no edge - you\n"
             "are charged for thinking either way, so habitual abstention starves you."
         );
     }
@@ -131,7 +153,7 @@ library Genome {
             "Write the CHILD genome. Keep what the record suggests was working and\n"
             "change exactly one thing that plausibly explains the losses. This is a\n"
             "mutation, not a rewrite: the child must be recognisably descended from\n"
-            "the parent. Under 700 characters. Output only the genome text — no\n"
+            "the parent. Under 700 characters. Output only the genome text - no\n"
             "preamble, no explanation, no quotes."
         );
     }

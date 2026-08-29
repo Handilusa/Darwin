@@ -162,18 +162,53 @@ contract DarwinTest is Test {
         settlement.setPayouts(YES_ID, NO_ID);
     }
 
-    /// @dev Metabolism alone, no market variance: makes one thought unaffordable.
-    function _makeThinkingFatal() internal {
+    /**
+     *  The seven economics parameters, read and written as one value.
+     *
+     *  THIS EXISTS TO CLOSE A FOOTGUN, not for tidiness. `setEconomics` takes seven
+     *  positional arguments, and the obvious way to change one is to pass
+     *  `population.xxx()` for the other six. That is broken: Solidity evaluates
+     *  arguments BEFORE the call, `vm.prank` applies to the very next call, and a
+     *  `view` read is a call. So the prank is spent on `population.endowment()` and
+     *  `setEconomics` itself arrives from the test contract, which is not the owner —
+     *  `OwnableUnauthorizedAccount`, in a test that looks correctly pranked.
+     *
+     *  Read first into memory, mutate the one field under test, then prank exactly
+     *  once with no call between. Never inline a `population.xxx()` read into a
+     *  `setEconomics` argument list.
+     */
+    struct Econ {
+        uint256 endowment;
+        uint256 metabolicCost;
+        uint256 minStake;
+        uint16 stakeBps;
+        uint32 breedStreak;
+        uint16 breedSurplusBps;
+        uint16 maxPopulation;
+    }
+
+    function _econ() internal view returns (Econ memory e) {
+        e.endowment = population.endowment();
+        e.metabolicCost = population.metabolicCost();
+        e.minStake = population.minStake();
+        e.stakeBps = population.stakeBps();
+        e.breedStreak = population.breedStreak();
+        e.breedSurplusBps = population.breedSurplusBps();
+        e.maxPopulation = population.maxPopulation();
+    }
+
+    function _setEconomics(Econ memory e) internal {
         vm.prank(owner);
         population.setEconomics(
-            population.endowment(),
-            9 * ONE,
-            population.minStake(),
-            population.stakeBps(),
-            population.breedStreak(),
-            population.breedSurplusBps(),
-            population.maxPopulation()
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
         );
+    }
+
+    /// @dev Metabolism alone, no market variance: makes one thought unaffordable.
+    function _makeThinkingFatal() internal {
+        Econ memory e = _econ();
+        e.metabolicCost = 9 * ONE;
+        _setEconomics(e);
     }
 
     /// @dev The invariant that catches almost every accounting mistake here: an
@@ -289,20 +324,26 @@ contract DarwinTest is Test {
     function test_belief_rejectsUnknownRequestId() public {
         _seed(1);
         _think();
-        uint256 real = _p(1).pendingBeliefRequestId();
+        Prophet p = _p(1);
+        uint256 real = p.pendingBeliefRequestId();
 
-        // The right caller, a request that belongs to nobody.
+        // The right caller, a request that belongs to nobody. `req` is built
+        // BEFORE the prank: argument evaluation is a sequence of calls, and a
+        // `view` read between prank and target would consume the prank.
+        Request memory req = _emptyRequest();
         vm.prank(address(requester));
         vm.expectRevert(Prophet.NoSuchRequest.selector);
-        _p(1).handleBelief(real + 999, new Response[](0), ResponseStatus.Success, _emptyRequest());
+        p.handleBelief(real + 999, new Response[](0), ResponseStatus.Success, req);
     }
 
     function test_belief_rejectsNonRequesterCaller() public {
         _seed(1);
         _think();
+        Prophet p = _p(1);
+        Request memory req = _emptyRequest();
         vm.prank(address(0xBAD));
         vm.expectRevert(Prophet.NotAgentRequester.selector);
-        _p(1).handleBelief(1, new Response[](0), ResponseStatus.Success, _emptyRequest());
+        p.handleBelief(1, new Response[](0), ResponseStatus.Success, req);
     }
 
     /// @dev A second callback for an already-answered request must not overwrite a
@@ -310,13 +351,15 @@ contract DarwinTest is Test {
     function test_belief_replayIsRejected() public {
         _seed(1);
         _think();
-        uint256 rid = _p(1).pendingBeliefRequestId();
+        Prophet p = _p(1);
+        uint256 rid = p.pendingBeliefRequestId();
         requester.deliver(rid, "UP_MOMENTUM");
 
+        Request memory req = _emptyRequest();
         vm.prank(address(requester));
         vm.expectRevert(Prophet.NoSuchRequest.selector);
-        _p(1).handleBelief(rid, new Response[](0), ResponseStatus.Success, _emptyRequest());
-        assertEq(uint8(_p(1).belief()), uint8(Belief.Up), "original belief intact");
+        p.handleBelief(rid, new Response[](0), ResponseStatus.Success, req);
+        assertEq(uint8(p.belief()), uint8(Belief.Up), "original belief intact");
     }
 
     /// @dev A population that one malformed organism can halt is not a population.
@@ -502,16 +545,9 @@ contract DarwinTest is Test {
     /// @dev A stake below `minStake` is not worth the gas of a mint, but the organism
     ///      still thought and must still be charged.
     function test_dustStakeOpensEmptyAndStillPays() public {
-        vm.prank(owner);
-        population.setEconomics(
-            population.endowment(),
-            population.metabolicCost(),
-            100 * ONE, // minStake far above 10% of the endowment
-            population.stakeBps(),
-            population.breedStreak(),
-            population.breedSurplusBps(),
-            population.maxPopulation()
-        );
+        Econ memory e = _econ();
+        e.minStake = 100 * ONE; // far above 10% of the endowment
+        _setEconomics(e);
         _seed(2);
         _think();
         _answer(1, "UP_MOMENTUM");
@@ -564,9 +600,10 @@ contract DarwinTest is Test {
         _commit();
         _settle();
 
-        assertTrue(_p(1).dead(), "cannot afford to think means dead");
+        Prophet p = _p(1);
+        assertTrue(p.dead(), "cannot afford to think means dead");
         assertEq(population.aliveCount(), 0);
-        assertEq(_p(1).deathWindow(), population.windowCount());
+        assertEq(p.deathWindow(), population.windowCount());
     }
 
     /// @dev The property the whole product rests on. If any path revives an organism,
@@ -578,9 +615,9 @@ contract DarwinTest is Test {
         _answer(1, "ABSTAIN");
         _commit();
         _settle();
-        assertTrue(_p(1).dead());
 
         Prophet p = _p(1);
+        assertTrue(p.dead());
 
         // Funding a corpse is refused.
         collateral.mint(address(this), 100 * ONE);
@@ -622,23 +659,25 @@ contract DarwinTest is Test {
     function test_death_lateCallbackIsDropped() public {
         _seed(1);
         _think();
-        uint256 rid = _p(1).pendingBeliefRequestId();
+        Prophet p = _p(1);
+        uint256 rid = p.pendingBeliefRequestId();
 
         vm.prank(address(population));
-        _p(1).die(1);
+        p.die(1);
 
         requester.deliver(rid, "UP_MOMENTUM");
-        assertEq(uint8(_p(1).belief()), uint8(Belief.None), "no belief after death");
+        assertEq(uint8(p.belief()), uint8(Belief.None), "no belief after death");
     }
 
     /// @dev `die` is idempotent, so a double reap cannot corrupt the death record.
     function test_death_dieTwiceIsSafe() public {
         _seed(1);
+        Prophet p = _p(1);
         vm.startPrank(address(population));
-        _p(1).die(5);
-        _p(1).die(9);
+        p.die(5);
+        p.die(9);
         vm.stopPrank();
-        assertEq(_p(1).deathWindow(), 5, "the first death is the real one");
+        assertEq(p.deathWindow(), 5, "the first death is the real one");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -717,18 +756,21 @@ contract DarwinTest is Test {
     function test_breeding_failedMutationConsensusDoesNotBreed() public {
         _seed(1);
 
+        Prophet p = _p(1);
         vm.prank(address(population));
-        _p(1).noteMutating(4242);
+        p.noteMutating(4242);
 
         string[] memory answers = new string[](3);
         answers[0] = "genome A";
         answers[1] = "genome B";
         answers[2] = "genome C";
 
+        Response[] memory rs = _responsesFrom(answers);
+        Request memory req = _emptyRequest();
         vm.prank(address(requester));
-        _p(1).handleMutation(4242, _responsesFrom(answers), ResponseStatus.Success, _emptyRequest());
+        p.handleMutation(4242, rs, ResponseStatus.Success, req);
 
-        assertEq(_p(1).pendingChildPrompt(), "", "no consensus, no child");
+        assertEq(p.pendingChildPrompt(), "", "no consensus, no child");
     }
 
     function test_breeding_hatchIsANoOpWithoutAGenome() public {
@@ -742,20 +784,26 @@ contract DarwinTest is Test {
     ///      the settlement that triggered them.
     function test_breeding_respectsMaxPopulation() public {
         _seed(2);
-        vm.prank(owner);
-        population.setEconomics(
-            population.endowment(),
-            population.metabolicCost(),
-            population.minStake(),
-            population.stakeBps(),
-            population.breedStreak(),
-            population.breedSurplusBps(),
-            2 // already at the cap
-        );
+        Econ memory e = _econ();
+        e.maxPopulation = 2; // already at the cap
+        _setEconomics(e);
 
+        Prophet p1 = _p(1);
         vm.prank(address(population));
-        _p(1).noteMutating(77);
-        requester.deliver(77, "a child that cannot be born");
+        p1.noteMutating(77);
+
+        // Delivered straight to the Prophet, not through `requester.deliver`: the
+        // mock only knows about ids its own `createAdvancedRequest` issued, and 77
+        // was set directly via `noteMutating`, so the mock has no record of it.
+        // This is the same idiom as test_breeding_failedMutationConsensusDoesNotBreed.
+        string[] memory answers = new string[](3);
+        answers[0] = "a child that cannot be born";
+        answers[1] = "a child that cannot be born";
+        answers[2] = "a child that cannot be born";
+        Response[] memory rs = _responsesFrom(answers);
+        Request memory req = _emptyRequest();
+        vm.prank(address(requester));
+        p1.handleMutation(77, rs, ResponseStatus.Success, req);
 
         vm.prank(owner);
         population.hatchAll(); // must not revert
@@ -814,12 +862,13 @@ contract DarwinTest is Test {
 
         // Permissionless rescue. It can only ever move value INTO the organism.
         settlement.setClaimEnabled(true);
-        uint256 before = _p(1).treasury();
+        Prophet p = _p(1);
+        uint256 before = p.treasury();
         vm.prank(address(0xDEAD)); // a spectator, neither the owner nor Population
-        uint256 claimed = _p(1).claimOwed();
+        uint256 claimed = p.claimOwed();
 
         assertEq(claimed, stake * 2);
-        assertEq(_p(1).treasury(), before + stake * 2);
+        assertEq(p.treasury(), before + stake * 2);
         _assertLedgerMatchesBalance(1);
     }
 
@@ -864,8 +913,11 @@ contract DarwinTest is Test {
         uint64 birthBefore = p.birthWindow();
         Thesis thesisBefore = p.lastThesis();
 
+        // Deployed BEFORE the prank: a CREATE is a call, and it would consume the
+        // prank, leaving `upgradeTo` to arrive from the unauthorized test contract.
+        address v2 = address(new ProphetV2());
         vm.prank(owner);
-        beacon.upgradeTo(address(new ProphetV2()));
+        beacon.upgradeTo(v2);
         assertEq(ProphetV2(payable(address(p))).version(), "v2", "the upgrade took effect");
 
         assertEq(p.population(), populationBefore);
@@ -907,11 +959,15 @@ contract DarwinTest is Test {
         _answer(1, "ABSTAIN");
         _commit();
         _settle();
-        assertTrue(_p(1).dead());
+        Prophet p = _p(1);
+        assertTrue(p.dead());
 
+        // Deployed BEFORE the prank: a CREATE is a call, and it would consume the
+        // prank, leaving `upgradeTo` to arrive from the unauthorized test contract.
+        address v2 = address(new ProphetV2());
         vm.prank(owner);
-        beacon.upgradeTo(address(new ProphetV2()));
-        assertTrue(_p(1).dead(), "death survives an upgrade");
+        beacon.upgradeTo(v2);
+        assertTrue(p.dead(), "death survives an upgrade");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1026,21 +1082,25 @@ contract DarwinTest is Test {
 
     function test_access_prophetRejectsNonPopulation() public {
         _seed(1);
+        Prophet p = _p(1);
         vm.prank(address(0xBAD));
         vm.expectRevert(Prophet.NotPopulation.selector);
-        _p(1).die(1);
+        p.die(1);
     }
 
     function test_access_executePairIsInternalOnly() public {
         _seed(2);
+        Prophet up = _p(1);
+        Prophet down = _p(2);
         vm.expectRevert(Population.NotDriver.selector);
-        population.executePair(_p(1), _p(2), 1);
+        population.executePair(up, down, 1);
     }
 
     function test_access_prophetCannotBeReinitialized() public {
         _seed(1);
+        Prophet p = _p(1);
         vm.expectRevert(Prophet.AlreadyInitialized.selector);
-        _p(1).initialize(address(this), 99, 0, 0, 0, "hijacked");
+        p.initialize(address(this), 99, 0, 0, 0, "hijacked");
     }
 
     function test_access_phaseMachineIsOrdered() public {

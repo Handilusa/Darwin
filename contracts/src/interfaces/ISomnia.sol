@@ -155,7 +155,7 @@ interface ISomniaReactivityPrecompile {
     function unsubscribe(uint256 subscriptionId) external;
 }
 
-/**
+/*
  *  The one function a reactive handler exposes. msg.sender is the precompile.
  *
  *  VERIFY — the external NAME below is a placeholder, not a transcribed
