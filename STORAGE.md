@@ -7,9 +7,11 @@ asset in this project that cannot be rebuilt in a hurry.
 
 > The deploy was **moved from 2026-08-30 to 2026-09-02** on 2026-08-29, precisely so the
 > storage-affecting half of the arena-engine rework lands before the freeze rather than
-> after it. Phases 1, 2, 2A and 3 are in; phase 4 (escalating ante, seasons, prize pool,
-> rake) adds four more slots and is the last one that can. Moving it costs no generations,
+> after it. **All of it now has: phases 1, 2, 2A, 3 and 4 are in**, and phase 4 — the
+> escalating ante, seasons, prize pool and rake — was the last one that could move a slot.
+> It took the four it was predicted to take. Moving the deploy cost no generations,
 > because the run's length is capped by the STT budget rather than by its start date.
+> Phase 5 (a second venue adapter) is logic and calldata only.
 
 That guarantee holds only if storage never moves.
 
@@ -28,9 +30,11 @@ change anyway.
 
 The tables below are compiler-verified and are considered final for everything landed so
 far. Freeze takes effect at the 2026-09-02 deploy; any edit before then still needs a
-changelog entry *and* a re-run of the two commands below. One storage-affecting change is
-still expected before the freeze — phase 4 of the arena-engine rework — and it will shrink
-`Population.__gap` from `uint256[14]` to `uint256[10]`.
+changelog entry *and* a re-run of the two commands below. **No storage-affecting change
+remains expected.** The one that was — phase 4 of the arena-engine rework — landed on
+2026-08-30 and shrank `Population.__gap` from `uint256[14]` to `uint256[10]` exactly as
+predicted, which is the first time this document called a layout change before the
+compiler did rather than after.
 
 > **Reconciled against the compiler on 2026-08-29, and this time the command actually
 > ran.** `forge inspect Prophet storage-layout` and `forge inspect Population
@@ -93,6 +97,16 @@ still expected before the freeze — phase 4 of the arena-engine rework — and 
 > derived, not asserted: `forge inspect <C> storage-layout | grep -cE "^\| [a-z_]"`.
 > Slots, offsets and types are the invariant; a number typed by hand into a markdown file
 > is not evidence about any of them.
+>
+> **Re-verified 2026-08-30 after the arena's economics landed — the last layout change
+> before the freeze.** `Population` gained four slots exactly where phase 4 said it would:
+> a packed season group at **33** (offsets 0, 4, 12, 16, 20, 22, 24), `baseAnte` **34**,
+> `rakeAccrued` **35**, `prizePool` **36**, and `__gap` `uint256[10]` at **37** — still
+> ending at slot 46, so the freeze envelope is unchanged. Every declaration through slot 32
+> is unmoved and `Prophet` is **byte-identical** (slot 14 still 32/32, `positionOpen` alone
+> at 15, `__slotAlign` 16, `entrant` 17, `__gap uint256[18]` at 18), which is the expected
+> result: phase 4 changed `settleWindow`'s signature and return arity, and both are
+> calldata, not storage. Counted rather than asserted, per the correction above.
 
 ---
 
@@ -211,7 +225,25 @@ here immediately as a shifted table.
 | 30 | — | `mapping(uint256 => uint256)` | `livingIndex` |
 | 31 | — | `uint256` | `minEndowment` (floor on an entrant's stake) |
 | 32 | — | `uint256` | `cognitionEndowment` (native STT handed to a newborn) |
-| 33–46 | — | `uint256[14]` | `__gap` |
+| 33 | 0 | `uint32` | `seasonId` |
+| 33 | 4 | `uint64` | `seasonStartWindow` |
+| 33 | 12 | `uint32` | `seasonWindows` |
+| 33 | 16 | `uint32` | `levelWindows` |
+| 33 | 20 | `uint16` | `anteMultBps` |
+| 33 | 22 | `uint16` | `rakeBps` |
+| 33 | 24 | `uint16` | `prizeShareBps` |
+| 34 | — | `uint256` | `baseAnte` (the ante at level 0) |
+| 35 | — | `uint256` | `rakeAccrued` (the house's book) |
+| 36 | — | `uint256` | `prizePool` (the players' book) |
+| 37–46 | — | `uint256[10]` | `__gap` |
+
+Slot 33 is the one place in this contract where packing was *chosen* rather than
+avoided, and the distinction is the whole point of the rule. The seven fields there
+are **one concept** — a season's climate — declared together in a single group in
+one commit, so no boundary inside the slot has ever been the edge of a shipped
+layout. That is categorically different from appending `venue` into `phase`'s spare
+bytes, where the slot was already frozen. 26 of 32 bytes are used; the remaining six
+are now covered by the do-not-fill rule below like every other partial slot.
 
 `__slotAlign` is padding and it is load-bearing. `phase` at slot 26 is a `uint8`,
 so its slot has thirty-one bytes spare, and `address public venue` declared after
@@ -223,7 +255,7 @@ slot 26 and `venue` is alone at slot 28 offset 0. Cost: two slots out of twenty,
 one of them never read, in exchange for every pre-existing boundary staying where
 this table says it is.
 
-Slots 13, 18, 21, 23 and 26 all have free bytes. **Do not fill them** — packing a new
+Slots 13, 18, 21, 23, 26 and 33 all have free bytes. **Do not fill them** — packing a new
 variable into a partially-used slot is exactly the edit that looks safe and is not,
 because it changes nothing for a fresh deploy and corrupts nothing visibly until an
 organism's counter starts reading someone else's bytes. Take a fresh slot from
@@ -265,3 +297,4 @@ callback selector and the price read — so the risky surfaces are the replaceab
 | 2026-08-29 | **`Population` +2 slots: `living` at 29 and `livingIndex` at 30; `__gap` `uint256[18]` → `uint256[16]` at slot 31. `Prophet` byte-identical. Compiler-verified.** Phase 2A separates *the living population* from *the lineage*, and it is a bug fix wearing a feature's clothes. `maxPopulation` was gated on `prophets.length`, but `prophets` is append-only by design — ids **are** array positions, `prophetAt` returns `prophets[prophetId - 1]`, and the ancestry graph is the one asset this document exists to protect — so nothing ever left it. That made `maxPopulation` a **lifetime birth cap** rather than the gas bound it is documented to be: after 24 births *ever*, `PopulationFull` becomes permanent, the generation counter freezes, and attrition empties an arena nobody can join. The headline metric of this project is generation count, so the cap was bounding the exact number the run is judged on. `living` is the concurrent set and `livingIndex` maps a prophet id to its 1-based position in it, zero meaning "not living" — which is what makes `_removeLiving` idempotent, so a `retire()` racing a starvation cannot corrupt the array or underflow the population. `_spawn`, `think`, `commitAll`, `hatchAll` and `settleAll` now read `living`; `snapshot` deliberately still walks `prophets`, because it is a view over the lineage and the dead are the interesting half of an evolutionary record. **Two non-obvious consequences, both commented at the site and both now covered by a test that fails without them.** (1) `settleAll` iterates **backwards**. It is the only loop that removes while walking, and `_removeLiving` swap-removes — the hole is filled from the END of `living` — so a forward loop hands itself an element it has not visited and then walks straight past it. Flipping the loop to forwards on purpose fails `test_population_livingIndexSurvivesAPartialReap` with *"organism 2 was skipped by settleAll"*: no panic, no event, just an organism silently unsettled with its position left open and never graded. `hatchAll` iterating forwards is correct, because `_spawn` *appends* and `n` is captured before the loop. (2) `ThinkFailed(i + 1)` became `ThinkFailed(living[i])` — `i` is a position now, not an id, so the old form blames a different organism and `monitor.ts` chases the wrong one. **`forge test` 64/64** (61 + 3), clean `forge build`, and the layout re-derived with `forge clean && forge build --extra-output storageLayout && forge inspect`: `living` 29, `livingIndex` 30, `__gap` `uint256[16]` at 31, everything through slot 28 unchanged, `Prophet` untouched at `positionOpen` 15 / `__gap[20]` 16. A mapping and a dynamic array each occupy exactly one slot (the mapping stores nothing in it; the array stores its length), so this is +2, not +2 plus element space. |
 | 2026-08-29 | **`Prophet` +2 slots — the first change to an organism's layout: `__slotAlign` at 16 (unused padding) and `entrant` at 17; `__gap` `uint256[20]` → `uint256[18]`, still starting at slot 18, still ending at 35. `Population` +2 slots: `minEndowment` at 31, `cognitionEndowment` at 32; `__gap` `uint256[16]` → `uint256[14]` at slot 33.** Both re-derived from `forge inspect` after `forge clean` + `--extra-output storageLayout`, then diffed row by row: every pre-existing declaration in both contracts is unmoved. Reason: an organism now has an owner, which is what turns the population into an arena. Three points worth carrying forward. **(1) The padding slot is not waste, it is the trap being disarmed.** `address entrant` declared after `bool positionOpen` packs into slot 15 offset 1 by default — precisely the twenty bytes this document and `CLAUDE.md` both warn against filling, and the warning does not protect you when *you* are the one adding the field. A `uint256` cannot pack, so one dead slot forces the boundary; `Population.__slotAlign` at 27 exists for the identical reason. **(2) The `+2` is two slots, not two slots plus the entrants.** `entrant` is one `address` per proxy, and each `Prophet` is its own proxy, so there is no per-organism mapping and no array — the same distinction as `living`/`livingIndex` in the entry above. **(3) `Prophet`'s slot span did not grow.** `__gap` shrank by exactly the two slots consumed, so the beacon's storage envelope is byte-for-byte what it was, and the freeze on 2026-08-30 covers the same range either way. `retire` is the behavioural half of this entry and it stores nothing: it reuses `positionOpen` as the anti-rage-quit gate and `dead` as the exit flag, so an entrant's ability to leave costs zero new state. The ordering inside it is load-bearing — `stakeOut` carries `alive`, so draining must precede `die()`; flipping the two was tried on purpose and makes all three `test_retire_*` cases fail with `IsDead()`, which is a locked exit rather than the silent confiscation the plan predicted. |
 | 2026-08-30 | **No layout change, and the absence is the point.** Phase 3 of the arena-engine rework makes each organism pay for its own cognition: `think()` and `_requestMutation` now draw the `AgentRequester` deposit out of the organism's own native balance via a new `Prophet.drawCognition(uint256) onlyPopulation`, instead of `Population` sending it from the house balance. That is a change to who is billed for every inference in the run, and it cost **zero slots** — a native balance is `address(this).balance`, which is not storage, and both contracts already had `receive() external payable`. Layouts re-derived anyway with `forge clean && forge build --extra-output storageLayout && forge inspect`, because "no new declarations" is a reading claim until the compiler agrees: `Prophet` still has `positionOpen` alone at 15, `__slotAlign` 16, `entrant` 17, `__gap uint256[18]` at 18, slot 14 still exactly 32/32; `Population` still has `phase` alone at 26 with its spare bytes still spare, `__slotAlign` 27, `venue` 28, `living` 29, `livingIndex` 30, `minEndowment` 31, `cognitionEndowment` 32, `__gap uint256[14]` at 33. **The two behavioural facts a future reader needs from this entry.** (1) `drawCognition` deliberately has **no `alive` modifier**, unlike every other value-moving function on `Prophet`. A dead organism is never in `living` so nothing draws from it in the window path, and the residue of a dead organism should stay drainable by the same call that funded it; gating it on `alive` would strand native inside a corpse. (2) `drawCognition` is **all-or-nothing** — it sends `amount` or it sends nothing. The plan specified `min(amount, balance)`, which would have moved a starving organism's entire remaining balance into `Population` in exchange for no inference at all, quietly funding other organisms' thinking out of one entrant's residue with no event to reconcile against. Refusing the short draw leaves the residue where it belongs and makes `topUpCognition` cumulative instead of a payment into a leak. `cognitionEndowment` (slot 32, added by phase 2) now defaults to **0.33 ether** rather than 0: `Deploy.s.sol` never calls `setSeason`, so a zero default would ship to Shannon and make `think()` skip every organism for want of native — a population abstaining its way to extinction while emitting nothing but `ThinkFailed`, which is indistinguishable from an inference outage. That is a literal in `initialize`, not a declaration, so it cannot move a slot. **`forge test` 82/82**, clean `forge build`, clean `tsc --noEmit`. |
+| 2026-08-30 | **`Population` +4 slots: a packed season group at 33 (`seasonId` 0, `seasonStartWindow` 4, `seasonWindows` 12, `levelWindows` 16, `anteMultBps` 20, `rakeBps` 22, `prizeShareBps` 24 — 26 of 32 bytes), `baseAnte` 34, `rakeAccrued` 35, `prizePool` 36; `__gap` `uint256[14]` → `uint256[10]` at slot 37. `Prophet` byte-identical. Compiler-verified, not reasoned.** Phase 3 of the arena-engine rework replaces proportional staking with a flat, geometrically escalating **ante**, and adds seasons, a prize pool and explicit rake accounting — `stakeBps` (slot 13) is now dead storage and `_stakeOf` is deleted, but the field stays declared because this layout is append-only and removing it would shift every slot below it. The envelope is unchanged: four slots consumed, `__gap` shrunk by exactly four, still ending at slot 46. **Six things a future reader needs from this entry.** **(1) The rake is taken on PROFIT, never on gross.** `collateralOut - staked` is what a window made; skimming `collateralOut` would take roughly twice as much, tax the organism's own returned stake as though it were winnings, and levy a fee on a break-even redemption. This is not a rounding preference — a paired `mintSet` gives each side `2 x staked` tokens for `staked` risked, so a winner's profit **equals its stake**, and a "2.5% rake" on gross is a 5% rake on capital. **(2) The skim is clamped to `treasury` and that clamp is load-bearing.** Settlement may CREDIT winnings to an `owed` ledger instead of transferring them (see the 2026-08-28 `claimOwed` entry), so `collateralOut` can exceed what the organism actually custodies; an unclamped rake would revert the whole settlement for the entire population. Clamped, a stranded winner still owes the rake on worth — and the later `claimOwed` rescue is untaxed, so it is levied exactly once. **(3) It is taken BEFORE metabolism, deliberately.** The skim belongs to the window whose profit produced it, and an organism the rent then finishes off forfeits its residue to the pool anyway, so the ordering cannot lose the house money — it only decides which of the two books it lands in. **(4) A corpse's residue is drained BEFORE `die()`.** `Prophet.stakeOut` carries the `alive` modifier, so collateral left in a dead organism is stranded for the lifetime of the deploy — claimed by a ledger nobody can spend against. Same trap, same ordering, and the same reason as `retire` (2026-08-29). The residue goes to the **prize pool**, not to `rakeAccrued`: a house that profits directly from each death has an incentive nobody should have to trust it to ignore. **(5) Slot 33's packing is chosen, not accidental, and that is why it does not contradict the do-not-fill rule above.** All seven fields are one concept declared as one group in one commit, so no boundary inside that slot has ever been the edge of a shipped layout — the forbidden edit is appending into the spare bytes of a slot that is *already* frozen, which is what `__slotAlign` exists twice over to prevent. The six remaining bytes are now do-not-fill like every other partial slot. **(6) `endSeason` is permissionless and its shortfall rolls forward.** A season cannot be held open by an absent owner, and what the standings do not claim — fewer than three survivors, or a winner with no entrant, i.e. a founder — stays in `prizePool` rather than being swept to the house, for the reason in (4). `setSeason` deliberately cannot touch `seasonStartWindow` or `seasonId`: an owner who could reset the clock could hold a season open until the standings suited them. **`forge test` 92/92** (82 + 10 new arena tests, all passing on the first run), clean `forge build`, and both layouts re-derived with `forge clean && forge build --extra-output storageLayout && forge inspect` — every `Population` declaration through slot 32 unmoved, and `Prophet` still `positionOpen` alone at 15, `__slotAlign` 16, `entrant` 17, `__gap uint256[18]` at 18, slot 14 still exactly 32/32. Task 4 changed `settleWindow`'s signature again (`+uint16 rakeBps_`, `+uint256 charged`, `+uint256 raked`), which is calldata and returndata, not storage. **Process note, cheap to hit and confusing to diagnose:** an em dash inside a Solidity *string literal* is `Error (8936): Invalid character in string` — the prose in this codebase's comments uses them freely and safely, but an assertion message is a literal. |

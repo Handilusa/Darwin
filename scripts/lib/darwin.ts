@@ -141,6 +141,24 @@ export const populationAbi = parseAbi([
   // own inference it is the unit every runway number in `fund.ts`/`monitor.ts` is in.
   "function minEndowment() view returns (uint256)",
   "function cognitionEndowment() view returns (uint256)",
+  // The climate. `ante()` is what every organism risks THIS window — flat across the
+  // population and geometric in `level()`, so it is the one number that says how far
+  // into a season the arena is without reading the window count against a schedule.
+  "function ante() view returns (uint256)",
+  "function level() view returns (uint32)",
+  "function baseAnte() view returns (uint256)",
+  "function anteMultBps() view returns (uint16)",
+  "function levelWindows() view returns (uint32)",
+  // The two books. Both are ledgers over ONE token balance, so a monitor must read
+  // both to know what of this contract's collateral is actually spendable by the
+  // house: `rakeAccrued` is revenue, `prizePool` is owed to the players.
+  "function rakeAccrued() view returns (uint256)",
+  "function prizePool() view returns (uint256)",
+  "function rakeBps() view returns (uint16)",
+  "function prizeShareBps() view returns (uint16)",
+  "function seasonId() view returns (uint32)",
+  "function seasonStartWindow() view returns (uint64)",
+  "function seasonWindows() view returns (uint32)",
   "function collateral() view returns (address)",
   "function priceSource() view returns (address)",
   // Where positions live and how a resolved position becomes collateral. Readable
@@ -163,7 +181,17 @@ export const populationAbi = parseAbi([
   "function enter(string genome, uint256 endowmentAmount) payable returns (uint256)",
   "function retire(uint256 prophetId)",
   "function topUpCognition(uint256 prophetId) payable",
-  "function setSeason(uint256 minEndowment_, uint256 cognitionEndowment_)",
+  // ONE struct rather than a growing argument list, because every field is a climate
+  // knob and they are only ever coherent together: raising `baseAnte` without raising
+  // `minEndowment` admits entrants who cannot post the ante they are being admitted
+  // to pay. Field order matters — viem encodes the tuple positionally.
+  "function setSeason((uint256 minEndowment,uint256 cognitionEndowment,uint256 baseAnte,uint16 anteMultBps,uint32 levelWindows,uint32 seasonWindows,uint16 rakeBps,uint16 prizeShareBps) s)",
+  // Revenue out, and the season close. `endSeason` is PERMISSIONLESS and reverts
+  // `SeasonNotOver` before its window, so a script may simply attempt it each cadence
+  // tick; `withdrawRake` is owner-only and bounded by `rakeAccrued`, which is what
+  // makes it distinct from `sweep`.
+  "function withdrawRake(address to, uint256 amount)",
+  "function endSeason()",
   "function sweep(address token, address to, uint256 amount)",
   // events
   "event WindowOpened(uint64 indexed window, bytes32 indexed marketId, address pool, uint256 openPrice)",
@@ -177,6 +205,14 @@ export const populationAbi = parseAbi([
   "event CognitionFunded(uint256 indexed prophetId, address indexed from, uint256 amount)",
   "event CognitionUnspent(uint256 indexed prophetId, uint256 amount)",
   "event BreedingUnaffordable(uint256 indexed prophetId)",
+  // The arena's money events. `ResidueForfeited` is the pool's other source besides
+  // the rake split, and a `Reaped` with no `ResidueForfeited` beside it means the
+  // organism died with an empty treasury rather than that collateral went missing.
+  "event Raked(uint256 indexed prophetId, uint256 profit, uint256 amount)",
+  "event ResidueForfeited(uint256 indexed prophetId, uint256 amount)",
+  "event SeasonEnded(uint32 indexed season, uint256 pot, uint256 paid)",
+  "event SeasonPrizePaid(uint32 indexed season, uint256 indexed prophetId, address indexed to, uint256 amount)",
+  "event RakeWithdrawn(address indexed to, uint256 amount)",
   // errors, so a revert reads as a sentence instead of a hex blob
   "error NotDriver()",
   "error WrongPhase(uint8 expected, uint8 actual)",
@@ -191,6 +227,13 @@ export const populationAbi = parseAbi([
   "error CognitionTooSmall()",
   "error NotEntrant()",
   "error PositionStillOpen()",
+  // Parameterized, and both numbers matter: this is the revert a stranger's entry
+  // transaction is most likely to meet, and "supplied 10, required 40" is the only
+  // form of it that tells them what to do next.
+  "error EndowmentBelowAnte(uint256 supplied, uint256 required)",
+  "error RakeExceeded()",
+  "error SeasonNotOver()",
+  "error BadSeason()",
 ]);
 
 export const prophetAbi = parseAbi([

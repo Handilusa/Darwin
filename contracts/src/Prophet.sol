@@ -139,6 +139,10 @@ contract Prophet {
         uint256 indexed prophetId, bytes32 indexed marketId, bool correct, uint256 collateralOut, uint256 treasury
     );
     event Starved(uint256 indexed prophetId, uint256 metabolicCost, uint256 treasury);
+    /// @dev Emitted only when a skim actually moves. `profit` is carried alongside
+    ///      `amount` so the log stream proves the rake was taken on the profit and
+    ///      not on the gross redemption, without anyone having to re-derive it.
+    event Raked(uint256 indexed prophetId, uint256 profit, uint256 amount);
     event Died(uint256 indexed prophetId, uint64 window, uint32 windowsLived, uint32 correct, uint32 wrong);
 
     /*//////////////////////////////////////////////////////////////
@@ -349,11 +353,16 @@ contract Prophet {
      *  Takes the VENUE rather than a settlement/pool pair. Population chooses the
      *  callee; the organism does not know or care whether adjudication is a
      *  complete-set redemption or a price comparison.
+     *
+     *  Returns the two amounts it moved back to Population — `charged` (rent) and
+     *  `raked` (the house's cut of the profit) — because Population books them as
+     *  revenue and cannot recover them from a balance delta: the same call receives
+     *  redemptions for other organisms in the same loop.
      */
-    function settleWindow(address venue, address collateral, uint256 metabolicCost)
+    function settleWindow(address venue, address collateral, uint256 metabolicCost, uint16 rakeBps_)
         external
         onlyPopulation
-        returns (uint256 collateralOut, bool starved)
+        returns (uint256 collateralOut, bool starved, uint256 charged, uint256 raked)
     {
         if (!positionOpen) revert NothingCommitted();
         positionOpen = false;
@@ -422,6 +431,32 @@ contract Prophet {
         treasury += received;
         windowsLived += 1;
 
+        // THE HOUSE'S CUT, TAKEN ON PROFIT AND ONLY ON PROFIT.
+        //
+        // `collateralOut - staked` is what this window actually made. Skimming the
+        // gross would take twice as much and would tax the organism's own returned
+        // stake — a 2.5% rake that is really 5%, levied on capital rather than on
+        // winnings, and levied identically on a break-even redemption.
+        //
+        // Taken BEFORE metabolism deliberately: the skim belongs to the window whose
+        // profit produced it, and an organism whose rent then finishes it off has its
+        // residue forfeited to the prize pool anyway, so this ordering cannot lose
+        // the house money — it only decides which book it lands in.
+        //
+        // Clamped to `treasury` for the same reason `charge` below is: the settlement
+        // may have CREDITED the winnings rather than transferred them (see
+        // `_sweepOwed`), so `collateralOut` can exceed what this organism custodies.
+        // A rake that could exceed the balance would revert the whole settlement.
+        if (rakeBps_ > 0 && collateralOut > staked) {
+            raked = ((collateralOut - staked) * rakeBps_) / 10_000;
+            if (raked > treasury) raked = treasury;
+            if (raked > 0) {
+                treasury -= raked;
+                if (!IERC20Like(collateral).transfer(population, raked)) revert TransferFailed();
+                emit Raked(prophetId, collateralOut - staked, raked);
+            }
+        }
+
         if (quantity == 0 || belief == Belief.Abstain || belief == Belief.None) {
             // No position was taken, so no forecast was graded — whether the
             // organism failed to think, or merely failed to find a counterparty.
@@ -448,6 +483,7 @@ contract Prophet {
         uint256 charge = treasury >= metabolicCost ? metabolicCost : treasury;
         starved = charge < metabolicCost;
         treasury -= charge;
+        charged = charge;
         if (charge > 0 && !IERC20Like(collateral).transfer(population, charge)) revert TransferFailed();
 
         emit Settled(prophetId, currentMarketId, won, collateralOut, treasury);

@@ -1483,6 +1483,31 @@ is the change that makes the arena a game rather than an exhibition.
 
 This is the change that removes the cost centre. `Prophet` already has `receive() external payable {}` (`:494`) and a native balance is `address(this).balance`, not storage, so this task adds **no** storage.
 
+> **CORRECTED WHILE IMPLEMENTING, 2026-08-30. Read this before Step 1, and before Task 4.**
+>
+> Shipped as `2915aeb`. Five things below are wrong, and Task 4 is written against the wrong ones — its Step 6 and Step 7 in particular. The shipped shape is what is described here.
+>
+> **1. `drawCognition` is ALL-OR-NOTHING. Its stated signature is a trap.**
+> The plan has it return "what it could actually afford", i.e. `min(amount, balance)`. That is unusable: `AgentRequester.createAdvancedRequest` reverts unless it is paid the full `requestDeposit`, so a partial draw would forward a short payment and revert the *whole* `think()` — one poor organism killing the window for all of them. It therefore sends `amount` or sends nothing, and returns `0` in the second case, which is what lets `think` skip that organism and charge it an abstain. **It also carries no `alive` modifier**, deliberately: `settleAll` must be able to sweep a corpse's unspent native.
+>
+> **2. `enter` is ENTRANT-funded and `payable`. The house does not grant cognition.**
+> The plan has `_spawn` endow every organism from `Population`'s float. For `enter` that is an unbounded free-inference faucet: entry is free and `retire` refunds the collateral, so enter → retire → repeat walks off with `cognitionEndowment` of the operator's STT per cycle, converted into LLM calls. So `enter(string genome, uint256 endowmentAmount)` is **`payable`** and reverts **`CognitionTooSmall()`** below the floor; every wei of `msg.value` is forwarded to the organism, the excess emitting `CognitionFunded`. `spawnGenesis` (owner-only) and `_hatch` (earned over four correct windows) stay house-funded because neither is farmable.
+>
+> **The check order inside `enter` is `EndowmentTooSmall` (`Population.sol:484`) then `CognitionTooSmall` (`:485`)**, collateral before native.
+>
+> **3. `retire` returns unspent cognition**, with the native send placed after every state write, and guarded by `NotEntrant` / `ProphetIsDead` / `PositionStillOpen`. `Retired` carries four fields.
+>
+> **4. `cognitionEndowment` defaults to `0.33 ether`, not `0`.** `Deploy.s.sol` never calls `setSeason`, so a zero default ships a population that is born unable to think and dies of nothing at all. The default is the deployed value, not a placeholder.
+>
+> **5. `Population.topUpCognition` takes the id and is `payable`** as stated — but the fund tooling calls it once per organism to reach a target window count, so it must stay idempotent and must not require the organism to be alive-and-solvent.
+>
+> **What Task 4 must not copy verbatim:**
+> - Task 4's tests call `population.enter("momentum", 10 * ONE)` with **no `{value:}`** (plan lines ~2061, ~2099). Under the shipped `payable enter` that reverts `CognitionTooSmall` before reaching the check the test exists to prove. Every `enter` in Task 4 needs a `{value:}`, and `EndowmentBelowAnte` belongs beside `EndowmentTooSmall` — in the collateral group, before the native check — so that no test depends on guard ordering to pass.
+> - Task 4 Step 7 quotes `setUp`'s line as `population.setSeason(10 * ONE, 0.1 ether)`. The shipped line (`Darwin.t.sol:138`) is **`population.setSeason(10 * ONE, 1 ether)`**.
+> - The harness helpers that actually exist are `_enter(who, genome, amount)` (which reads `cognitionEndowment` *before* the prank, because a `view` read is a call and `vm.prank` binds to the next one) and `_fundCognition(uint256 id)` at `Darwin.t.sol:180`, called by `_seed`.
+>
+> Storage: **unchanged, and the absence is the point** — re-derived from the compiler anyway and recorded in `STORAGE.md`. Task 4 is the next task that moves `__gap`.
+
 **Files:**
 - Modify: `contracts/src/Prophet.sol` — new `drawCognition`
 - Modify: `contracts/src/Population.sol` — `think` (`:381-405`), `_requestMutation` (`:608`), `_spawn`, `spawnGenesis`, new `topUpCognition`
@@ -1872,6 +1897,24 @@ sustainability reduces to metabolicCost * aliveCount > gas per window."
 ### Task 4: Escalating ante, seasons, prize pool, and explicit rake
 
 The largest task, and the one that adds declarations — so it is the one whose storage layout must be compiler-verified.
+
+> **CORRECTED WHILE IMPLEMENTING, 2026-08-30. Six things below are wrong; the shipped shape is what is described here.**
+>
+> Storage landed exactly as predicted — packed season group at slot 33, `baseAnte` 34, `rakeAccrued` 35, `prizePool` 36, `__gap uint256[10]` at 37, `Prophet` byte-identical — so Steps 3 and 10 need no correction and are the parts of this task to trust. The defects are all in Step 1's tests and Step 6's `endSeason`.
+>
+> **1. `test_ante_isFlatWithinALevelAndIgnoresTreasury` cannot pass as written.** It mints to `address(population)` and then calls `vm.prank(owner); population.fundProphet(...)`, but `fundProphet` pulls with `transferFrom(msg.sender, ...)` — so the pranked owner has neither the balance nor the allowance. The shipped test uses the pattern `_breedingCandidate` already uses: mint to `address(this)`, `approve`, and **no prank at all**.
+>
+> **2. `test_season_endsPermissionlesslyAndPaysTheEntrant` never asserted the payout its name promises** — only `seasonId`. The shipped version asserts the entrant's balance rose by 60% of the pot, that `seasonStartWindow == windowCount`, and that `prizePool` holds exactly the unawarded remainder. A test that would pass against an `endSeason` which paid nobody is not a test of a payout.
+>
+> **3. Step 9's `test_accounting_…` is near-vacuous.** `assertLe(booked, balance)` compares two books against a ~10,000 tUSDC harness float, so it passes for almost any bug. The shipped version brackets the three windows and asserts **`booked - bookedBefore == held - heldBefore`** plus an `assertGt` for non-vacuity — sound because pairing nets to zero through `Population` and redemption pays the organism directly, so the only thing that may move the arena's balance across those windows is income the books name.
+>
+> **4. `_topThree()` was split out from the start**, not as the stack-error contingency Step 6 describes. The search alone holds two fixed arrays and a signed score; splitting it is the remedy the plan already sanctions, and doing it up front avoids a build-fail cycle for nothing.
+>
+> **5. The rake forces a FIFTH winner-net assertion the plan does not list.** Step 9 names four; `test_creditedPayout_survivesAnUnavailableClaim` is the fifth. The skim is levied on **worth-based** profit (`collateralOut - staked`) and clamped to `treasury`, so a winner whose payout was credited rather than transferred still owes it — and the later `claimOwed` rescue is untaxed, which is what makes it rake-once rather than rake-twice. Any implementation that skims the balance delta instead would leave that assertion failing, which is the point of having it.
+>
+> **6. `Seed.s.sol` does not call the two-argument `setSeason`.** Recorded because it was an open risk while implementing: that file is unreadable to the implementing session, so a stale call site would have been a compile error in a file that could not be edited. It compiles clean against the struct form. No `.ts` script calls `setSeason` either — only the ABI in `scripts/lib/darwin.ts` declared it.
+>
+> **Process note:** an em dash inside a Solidity **string literal** is `Error (8936): Invalid character in string`. This codebase's comments use them everywhere and safely; an assertion message is a literal, and that is the one place they cannot go.
 
 **Files:**
 - Modify: `contracts/src/Population.sol` — storage, `initialize`, `_pair`/`_stakeOf` (`:477-536`), `settleAll` (`:551-577`), `setSeason`, new `withdrawRake`, new `endSeason`

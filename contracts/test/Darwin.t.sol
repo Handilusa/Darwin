@@ -134,8 +134,10 @@ contract DarwinTest is Test {
         // deposit (0.093), which matches what `_fundCognition` gives a founder — a
         // child that could only afford ONE thought would make every multi-window
         // breeding test depend on funding order rather than on what it asserts.
-        vm.prank(owner);
-        population.setSeason(10 * ONE, 1 ether);
+        Population.SeasonParams memory s = _season();
+        s.minEndowment = 10 * ONE;
+        s.cognitionEndowment = 1 ether;
+        _setSeason(s);
 
         _pushWindow();
     }
@@ -255,6 +257,42 @@ contract DarwinTest is Test {
         );
     }
 
+    /**
+     *  The season parameters, read and written as one value — the same footgun as
+     *  `_econ`, for the same reason.
+     *
+     *  `setSeason` takes eight fields, so a test that wants to change ONE of them
+     *  must not have to restate the other seven: a later change to a default in
+     *  `initialize` would then silently reset six unrelated parameters here. Every
+     *  read happens OUTSIDE the prank, which is the whole point — `vm.prank` binds
+     *  to the next call and a `view` read IS a call, so `population.setSeason(
+     *  _season())` would spend the prank on the first getter and send the real
+     *  transaction from the test contract, which is not the owner.
+     */
+    function _season() internal view returns (Population.SeasonParams memory s) {
+        s.minEndowment = population.minEndowment();
+        s.cognitionEndowment = population.cognitionEndowment();
+        s.baseAnte = population.baseAnte();
+        s.anteMultBps = population.anteMultBps();
+        s.levelWindows = population.levelWindows();
+        s.seasonWindows = population.seasonWindows();
+        s.rakeBps = population.rakeBps();
+        s.prizeShareBps = population.prizeShareBps();
+    }
+
+    function _setSeason(Population.SeasonParams memory s) internal {
+        vm.prank(owner);
+        population.setSeason(s);
+    }
+
+    /// @dev What the house skims from a winner whose profit was `profit`. Kept as a
+    ///      helper because four pre-existing tests assert a winner's exact net and
+    ///      would otherwise each hard-code the same arithmetic — and hard-coding it
+    ///      is how a rake silently stops being asserted when `rakeBps` changes.
+    function _skimOn(uint256 profit) internal view returns (uint256) {
+        return (profit * population.rakeBps()) / 10_000;
+    }
+
     /// @dev Metabolism alone, no market variance: makes one thought unaffordable.
     function _makeThinkingFatal() internal {
         Econ memory e = _econ();
@@ -270,8 +308,11 @@ contract DarwinTest is Test {
         assertEq(p.treasury(), collateral.balanceOf(address(p)), "ledger drifted from balance");
     }
 
+    /// @dev What every organism risks this window. One point every staking
+    ///      assertion reads through, which is what made replacing the proportional
+    ///      rule with the escalating ante survivable.
     function _stake() internal view returns (uint256) {
-        return (population.endowment() * population.stakeBps()) / 10_000;
+        return population.ante();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -472,8 +513,12 @@ contract DarwinTest is Test {
         address alice = address(0xA11CE);
         collateral.mint(alice, 100 * ONE);
 
-        vm.prank(owner);
-        population.setSeason(10 * ONE, 0);
+        // Cognition floor to zero so the revert under test is the collateral one and
+        // not `CognitionTooSmall` firing first on a valueless call.
+        Population.SeasonParams memory s = _season();
+        s.minEndowment = 10 * ONE;
+        s.cognitionEndowment = 0;
+        _setSeason(s);
 
         vm.startPrank(alice);
         collateral.approve(address(population), 100 * ONE);
@@ -1017,7 +1062,11 @@ contract DarwinTest is Test {
         _settle();
 
         uint256 metabolism = population.metabolicCost();
-        assertEq(_p(1).treasury(), endowment + stake - metabolism, "winner nets the loser's stake");
+        assertEq(
+            _p(1).treasury(),
+            endowment + stake - _skimOn(stake) - metabolism,
+            "winner nets the loser's stake, less the house's cut of the profit"
+        );
         assertEq(_p(2).treasury(), endowment - stake - metabolism, "loser forfeits its stake");
 
         assertEq(_p(1).correctCount(), 1);
@@ -1264,7 +1313,7 @@ contract DarwinTest is Test {
 
         assertEq(
             _p(1).treasury(),
-            endowment + stake - population.metabolicCost(),
+            endowment + stake - _skimOn(stake) - population.metabolicCost(),
             "the winner was paid with no live price available"
         );
         assertEq(_p(1).correctCount(), 1, "and it was graded");
@@ -1616,7 +1665,10 @@ contract DarwinTest is Test {
         _settle();
 
         assertEq(_p(1).correctCount(), 1, "graded on worth, not on custody");
-        assertEq(_p(1).treasury(), population.endowment() + _stake() - population.metabolicCost());
+        assertEq(
+            _p(1).treasury(),
+            population.endowment() + _stake() - _skimOn(_stake()) - population.metabolicCost()
+        );
         assertEq(settlement.owed(address(_p(1)), address(collateral)), 0, "claimed inside settlement");
         _assertLedgerMatchesBalance(1);
     }
@@ -1641,8 +1693,8 @@ contract DarwinTest is Test {
         assertEq(settlement.owed(address(_p(1)), address(collateral)), stake * 2, "stranded, not lost");
         assertEq(
             _p(1).treasury(),
-            population.endowment() - stake - population.metabolicCost(),
-            "unbooked until it actually arrives"
+            population.endowment() - stake - _skimOn(stake) - population.metabolicCost(),
+            "unbooked until it actually arrives, but the rake is still owed"
         );
         _assertLedgerMatchesBalance(1);
 
@@ -2076,7 +2128,11 @@ contract DarwinTest is Test {
 
         // Selection actually happened — this is not merely an event being emitted.
         uint256 metabolism = population.metabolicCost();
-        assertEq(_p(1).treasury(), endowment + stake - metabolism, "winner nets the loser's stake");
+        assertEq(
+            _p(1).treasury(),
+            endowment + stake - _skimOn(stake) - metabolism,
+            "winner nets the loser's stake, less the house's cut of the profit"
+        );
         assertEq(_p(2).treasury(), endowment - stake - metabolism, "loser forfeits its stake");
         assertFalse(_p(1).positionOpen(), "position must be cleared by the reactive path too");
     }
@@ -2139,5 +2195,307 @@ contract DarwinTest is Test {
         // The reactive path is unaffected by closing the fallback.
         vm.prank(REACTIVITY);
         e.onEvent(address(settlement), new bytes32[](0), "");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+              THE ARENA — ANTE, SEASONS, PRIZE POOL, RAKE
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  The ante is a climate, not a fraction of a bankroll.
+     *
+     *  Under the rule this replaces — `min(_stakeOf(up), _stakeOf(down))`, ten
+     *  percent of each treasury — capital bought immortality: a 1,000 tUSDC
+     *  organism against 10 tUSDC opponents risked ~1 tUSDC per window against 0.05
+     *  of rent, so it survived hundreds of windows while losing EVERY call. A flat
+     *  ante is the same number for everybody at a given level, so the only thing a
+     *  larger treasury buys is more windows of being wrong.
+     */
+    function test_ante_isFlatWithinALevelAndIgnoresTreasury() public {
+        _seed(2);
+
+        // `fundProphet` PULLS via `transferFrom`, so the CALLER must hold and
+        // approve the collateral. Minting to `address(population)` and pranking the
+        // owner would revert on balance and allowance both — and no prank belongs
+        // here at all, because funding an organism is permissionless by design.
+        collateral.mint(address(this), 1_000 * ONE);
+        collateral.approve(address(population), 1_000 * ONE);
+        population.fundProphet(1, 1_000 * ONE);
+        assertGt(_p(1).treasury(), _p(2).treasury() * 10, "the pair is not lopsided enough to prove anything");
+
+        uint256 expected = population.ante();
+        assertGt(expected, 0, "test is vacuous: the ante is zero");
+
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        assertEq(_p(1).currentStake(), expected, "rich organism did not risk the ante");
+        assertEq(_p(2).currentStake(), expected, "poor organism did not risk the ante");
+    }
+
+    /// @dev The climate escalates on a schedule nobody controls: every
+    ///      `levelWindows` the ante multiplies by `anteMultBps`. A genome that is
+    ///      merely break-even survives early and is squeezed out later, which is
+    ///      what makes a season terminate instead of drifting.
+    function test_ante_escalatesByLevel() public {
+        Population.SeasonParams memory s = _season();
+        s.baseAnte = 1 * ONE;
+        s.levelWindows = 2;
+        _setSeason(s);
+
+        assertEq(population.level(), 0, "level should start at 0");
+        uint256 l0 = population.ante();
+        assertEq(l0, 1 * ONE, "level 0 must be the base ante exactly");
+
+        // `windowCount` advances once per `think()`, and it does so BEFORE
+        // `commitAll` reads the ante — so window 1 pairs at level 0 and window 2 at
+        // level 1. Both sides stay solvent at 2 tUSDC out of a 10 tUSDC endowment,
+        // which is what keeps this a test about the ante and not about death.
+        _seed(2);
+        _upWins();
+        for (uint256 i; i < 2; ++i) {
+            _pushWindow();
+            _think();
+            _answer(1, "UP_MOMENTUM");
+            _answer(2, "DOWN_REVERSION");
+            _commit();
+            _settle();
+        }
+
+        assertEq(population.level(), 1, "level did not advance");
+        assertEq(population.ante(), l0 * 2, "ante did not double at level 1");
+        assertFalse(_p(1).dead(), "the escalation must not have killed the winner");
+        assertFalse(_p(2).dead(), "the escalation must not have killed the loser yet");
+    }
+
+    /**
+     *  Two revenue lines, one balance, and books that distinguish them.
+     *
+     *  Population's collateral balance holds the house float, every organism's rent,
+     *  the house's cut of every winner's profit, and the prize pool. Without an
+     *  explicit split, `withdrawRake` would be indistinguishable from the operator
+     *  helping themselves to the players' pot.
+     */
+    function test_rake_isBookedSeparatelyFromEntrantCollateral() public {
+        _seed(2);
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        uint256 rakeBefore = population.rakeAccrued();
+        uint256 poolBefore = population.prizePool();
+        uint256 staked = _p(1).currentStake(); // read before settlement zeroes it
+        _settle();
+
+        // Income this window is BOTH lines: rent from both organisms, plus the skim
+        // on the winner's profit — which under a flat ante is exactly the ante,
+        // because a paired mintSet lets the winner redeem 2x what it risked.
+        uint256 income = 2 * population.metabolicCost() + _skimOn(staked);
+        uint256 toPool = (income * population.prizeShareBps()) / 10_000;
+        assertGt(toPool, 0, "test is vacuous: prizeShareBps or income is zero");
+
+        assertEq(population.prizePool() - poolBefore, toPool, "pool did not take its share of income");
+        assertEq(population.rakeAccrued() - rakeBefore, income - toPool, "revenue not booked as rake");
+    }
+
+    /// @dev A paired `mintSet` gives each side `2 * staked` tokens for `staked`
+    ///      risked, so the winner's redemption is 2x and its PROFIT is exactly
+    ///      `staked`. Taxing the gross would take twice this and would tax the
+    ///      organism's own returned stake — a 2.5% rake that is really 5%, levied
+    ///      on capital rather than on winnings.
+    function test_rake_isTakenOnProfitNotOnGrossRedemption() public {
+        _seed(2);
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        uint256 staked = _p(1).currentStake();
+        uint256 held = _p(1).treasury(); // endowment minus the ante it just risked
+        _settle();
+
+        uint256 skim = _skimOn(staked);
+        assertGt(skim, 0, "test is vacuous: rakeBps or the ante is zero");
+        assertEq(
+            _p(1).treasury(),
+            held + 2 * staked - skim - population.metabolicCost(),
+            "winner's net is not redemption - skim - rent"
+        );
+        _assertLedgerMatchesBalance(1);
+    }
+
+    /// @dev The rake is a claim, not a balance. `withdrawRake` may only ever draw
+    ///      against what the books say the house earned — the house float, the
+    ///      organisms' endowments and the prize pool sit in the same contract, and
+    ///      an owner who can reach them is an owner who can rug the arena.
+    function test_rake_withdrawalCannotTouchEntrantCollateral() public {
+        _seed(2);
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        uint256 accrued = population.rakeAccrued();
+        assertGt(accrued, 0, "test is vacuous: nothing was raked");
+
+        vm.prank(owner);
+        vm.expectRevert(Population.RakeExceeded.selector);
+        population.withdrawRake(owner, accrued + 1);
+
+        uint256 held = collateral.balanceOf(address(population));
+        vm.prank(owner);
+        population.withdrawRake(owner, accrued);
+        assertEq(population.rakeAccrued(), 0, "rake not drawn down");
+        assertEq(collateral.balanceOf(owner), accrued, "the owner was not paid");
+        assertEq(collateral.balanceOf(address(population)), held - accrued, "more than the rake left the arena");
+        assertLe(population.prizePool(), collateral.balanceOf(address(population)), "the pot was drained with it");
+    }
+
+    /// @dev A corpse must not be a vault. What is left when an organism can no
+    ///      longer pay for cognition goes to the players, not to the house — and it
+    ///      must LEAVE the organism, because `stakeOut` carries the `alive` modifier
+    ///      and a corpse can never be emptied afterwards.
+    function test_death_residueForfeitsToThePrizePool() public {
+        _seed(2);
+        _makeThinkingFatal();
+
+        uint256 poolBefore = population.prizePool();
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        assertTrue(_p(1).dead(), "the winner could not afford the next thought either");
+        assertTrue(_p(2).dead(), "the loser survived a fatal metabolism");
+        assertGt(population.prizePool(), poolBefore, "residue did not reach the prize pool");
+
+        // And nothing is stranded in a dead organism.
+        assertEq(_p(1).treasury(), 0, "dead organism still holds a ledger balance");
+        assertEq(collateral.balanceOf(address(_p(1))), 0, "dead organism still holds collateral");
+        assertEq(_p(2).treasury(), 0, "dead organism still holds a ledger balance");
+        assertEq(collateral.balanceOf(address(_p(2))), 0, "dead organism still holds collateral");
+    }
+
+    /// @dev A season that only the operator can close is a season the operator can
+    ///      hold open until the standings suit them.
+    function test_season_endsPermissionlesslyAndPaysTheEntrant() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 10 * ONE);
+        _fundCognition(population.prophetCount());
+        assertEq(_p(id).entrant(), alice, "the payee must be the entrant, not the house");
+
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 1;
+        _setSeason(s);
+
+        _upWins();
+        _think();
+        _answer(id, "UP_MOMENTUM");
+        _commit();
+        _settle();
+
+        uint256 pot = population.prizePool();
+        assertGt(pot, 0, "test is vacuous: the season earned nothing to pay out");
+        uint256 aliceBefore = collateral.balanceOf(alice);
+        uint256 seasonBefore = population.seasonId();
+
+        // Season length is one window, so anyone may close it.
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        assertEq(population.seasonId(), seasonBefore + 1, "season did not roll over");
+        assertEq(population.seasonStartWindow(), population.windowCount(), "the new season starts here");
+        assertEq(collateral.balanceOf(alice), aliceBefore + (pot * 6_000) / 10_000, "first place was not paid 60%");
+        assertEq(population.prizePool(), pot - (pot * 6_000) / 10_000, "unawarded places must roll over, not vanish");
+    }
+
+    /// @dev Permissionless is not the same as unconditional.
+    function test_season_cannotBeEndedBeforeItIsOver() public {
+        _seed(2);
+        assertGt(population.seasonWindows(), 1, "the default season must be longer than one window");
+
+        vm.prank(address(0xDEAD));
+        vm.expectRevert(Population.SeasonNotOver.selector);
+        population.endSeason();
+    }
+
+    /**
+     *  The second entry floor, and the reason there are two.
+     *
+     *  `minEndowment` is a fixed number; the ante doubles every level. An entrant
+     *  who buys in late with exactly the minimum would be able to fund one window
+     *  and would be dead before the next, which is a worse experience than being
+     *  turned away at the door.
+     */
+    function test_enter_refusesAnEndowmentThatCannotCoverTheAnte() public {
+        // Put the OTHER floor out of the way so this test can only pass or fail on
+        // the ante floor.
+        Population.SeasonParams memory s = _season();
+        s.minEndowment = 1;
+        s.baseAnte = 10 * ONE;
+        _setSeason(s);
+
+        address bob = address(0xB0B);
+        collateral.mint(bob, 100 * ONE);
+        uint256 cognition = population.cognitionEndowment();
+        vm.deal(bob, cognition);
+
+        vm.startPrank(bob);
+        collateral.approve(address(population), 100 * ONE);
+        // Parameterized error, so the WHOLE revert data must be matched — a bare
+        // selector fails here for the reason CLAUDE.md documents.
+        vm.expectRevert(abi.encodeWithSelector(Population.EndowmentBelowAnte.selector, 20 * ONE, 40 * ONE));
+        population.enter{value: cognition}("dead on arrival", 20 * ONE);
+        vm.stopPrank();
+    }
+
+    /**
+     *  The invariant that makes the books trustworthy, asserted as an EQUALITY
+     *  rather than as `booked <= holdings`.
+     *
+     *  `<=` is nearly vacuous against a 10,000 tUSDC house float — it would pass on
+     *  an implementation that never booked anything at all. Equality of the DELTA is
+     *  the real claim, and it is sound because pairing nets to zero through this
+     *  contract (stake in, venue pulls it straight out) and redemption pays the
+     *  organism directly. So every tUSDC the arena's balance gains over a window is
+     *  rent, skim, or a corpse's residue — exactly the three things the books claim.
+     */
+    function test_accounting_rakeAndPoolAndTreasuriesNeverExceedHoldings() public {
+        _seed(4);
+        _upWins();
+
+        uint256 bookedBefore = population.rakeAccrued() + population.prizePool();
+        uint256 heldBefore = collateral.balanceOf(address(population));
+
+        for (uint256 w; w < 3; ++w) {
+            _pushWindow();
+            _think();
+            _answer(1, "UP_MOMENTUM");
+            _answer(2, "UP_MOMENTUM");
+            _answer(3, "DOWN_REVERSION");
+            _answer(4, "DOWN_REVERSION");
+            _commit();
+            _settle();
+        }
+
+        uint256 booked = population.rakeAccrued() + population.prizePool();
+        uint256 held = collateral.balanceOf(address(population));
+        assertLe(booked, held, "books claim more than the contract holds");
+        assertGt(booked - bookedBefore, 0, "test is vacuous: three windows booked no income");
+        assertEq(booked - bookedBefore, held - heldBefore, "the arena's balance moved by something the books do not name");
+
+        for (uint256 id = 1; id <= 4; ++id) {
+            _assertLedgerMatchesBalance(id);
+        }
     }
 }

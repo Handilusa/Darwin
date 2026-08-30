@@ -62,7 +62,12 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     uint256 public endowment; // collateral handed to a newborn
     uint256 public metabolicCost; // charged every window, win or lose
     uint256 public minStake; // below this, pairing is not worth the gas
-    uint16 public stakeBps; // share of treasury risked per window
+    /// @dev VESTIGIAL. Was the share of treasury risked per window; the flat escalating
+    ///      ante replaced it, and nothing reads this any more. It stays declared because
+    ///      this layout is append-only — deleting it would shift every slot below — and it
+    ///      stays settable because `setEconomics` takes it positionally. Writing it changes
+    ///      nothing; read `ante()` instead. See `STORAGE.md`, 2026-08-30.
+    uint16 public stakeBps;
     uint16 public breedSurplusBps; // surplus over endowment required to breed
     uint32 public breedStreak; // consecutive correct calls required to breed
     uint16 public maxPopulation; // gas bound, not a design limit
@@ -133,7 +138,49 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      organisms pay for their own cognition; set per-deploy after that.
     uint256 public cognitionEndowment;
 
-    uint256[14] private __gap;
+    // --- the arena's climate: escalating ante, seasons, and the two books ---
+    /**
+     *  ONE SLOT, SEVEN FIELDS, AND THE PACKING IS DELIBERATE.
+     *
+     *  Every one of these is read on the hot path — `ante()` is called once per
+     *  pairing and `level()` once per `ante()` — so a group that spans two slots
+     *  doubles the cold-read cost of every window for the lifetime of the run. They
+     *  are declared together, smallest last, so solc packs them into a single fresh
+     *  slot: 4 + 8 + 4 + 4 + 2 + 2 + 2 = 26 of 32 bytes.
+     *
+     *  The six spare bytes at the end of this slot are NOT free space. `STORAGE.md`
+     *  and `CLAUDE.md` both forbid filling the tail of a partially-used slot: it
+     *  changes nothing for a fresh deploy and corrupts nothing visibly until an
+     *  organism's counter starts reading someone else's bytes. A later field takes a
+     *  slot from `__gap`.
+     */
+    uint32 public seasonId;
+    uint64 public seasonStartWindow;
+    uint32 public seasonWindows;
+    uint32 public levelWindows;
+    uint16 public anteMultBps;
+    uint16 public rakeBps;
+    uint16 public prizeShareBps;
+
+    /// @dev What every organism risks per window at level 0. A `uint256` because it
+    ///      is denominated in collateral like `endowment` and `minStake`, and because
+    ///      that is what forces it onto a fresh slot rather than into the six spare
+    ///      bytes above.
+    uint256 public baseAnte;
+
+    /**
+     *  THE TWO BOOKS. Both are claims on this contract's collateral balance, which
+     *  also holds the house float and is the source of every organism's endowment —
+     *  so without an explicit split, `withdrawRake` would be indistinguishable from
+     *  the operator helping themselves to the players' pot.
+     *
+     *  `rakeAccrued` is the only thing `withdrawRake` may draw against.
+     *  `prizePool` is paid out by `endSeason` and is never withdrawable.
+     */
+    uint256 public rakeAccrued;
+    uint256 public prizePool;
+
+    uint256[10] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -175,6 +222,17 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      the two buy different things: collateral buys a bigger wager, native
     ///      buys more windows to live through.
     event CognitionFunded(uint256 indexed prophetId, address indexed from, uint256 amount);
+    /// @dev A corpse's remaining collateral, moved out of the organism and into the
+    ///      prize pool. Emitted from the reaping branch of `settleAll`, so a
+    ///      `Reaped` without one of these means the organism died with nothing left.
+    event ResidueForfeited(uint256 indexed prophetId, uint256 amount);
+    /// @dev `pot` is what the season had accumulated; `paid` is what the standings
+    ///      actually claimed. The difference rolls into the next season rather than
+    ///      being swept — an arena with fewer than three living organisms must not
+    ///      quietly hand the shortfall to the house.
+    event SeasonEnded(uint32 indexed season, uint256 pot, uint256 paid);
+    event SeasonPrizePaid(uint32 indexed season, uint256 indexed prophetId, address indexed to, uint256 amount);
+    event RakeWithdrawn(address indexed to, uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -194,6 +252,18 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     error CognitionTooSmall();
     error NotEntrant();
     error PositionStillOpen();
+    /// @dev The second entry floor. `minEndowment` is a fixed number and the ante
+    ///      doubles every level, so a late entrant paying the fixed minimum could
+    ///      fund one window and be dead before the next.
+    error EndowmentBelowAnte(uint256 supplied, uint256 required);
+    /// @dev `withdrawRake` may only ever draw against the house's own book. The
+    ///      float, the endowments and the prize pool share this balance.
+    error RakeExceeded();
+    error SeasonNotOver();
+    /// @dev A season whose parameters would brick the arena — a zero `levelWindows`
+    ///      divides by zero in `level()`, a `prizeShareBps` above 100% underflows
+    ///      `_book`, and an `anteMultBps` below 100% makes the climate get EASIER.
+    error BadSeason();
 
     /// @dev The reactivity precompile. Has no bytecode and does not exist on local
     ///      chains, so this is only ever a `msg.sender` comparison here.
@@ -288,6 +358,28 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         // `topUpCognition`. Override per season with `setSeason`; a demo season can
         // reasonably run it much lower.
         cognitionEndowment = 0.33 ether;
+
+        // THE CLIMATE. `stakeBps` above is no longer read by anything — the ante
+        // replaced `min(stakeOf(up), stakeOf(down))` — and survives only because
+        // storage is append-only. Do not reintroduce a proportional stake.
+        //
+        // baseAnte == minStake, so at level 0 the ante sits exactly on the floor
+        // below which `_pair` refuses to mint. Every organism risks 0.25 tUSDC of a
+        // 10 tUSDC endowment, and capital buys windows rather than immunity.
+        baseAnte = 250_000; // 0.25 tUSDC
+        anteMultBps = 20_000; // doubles
+        levelWindows = 72; // ~18 h at the 15-minute cadence
+        seasonWindows = 576; // ~6 days: eight levels, and a 256x ante by the end
+        seasonStartWindow = 0;
+        seasonId = 1;
+
+        // 2.5% of a winner's PROFIT, of which 40% funds the prize pool and 60% is
+        // the house's. Deliberately small: metered cognition is what is supposed to
+        // be selecting, and `npm run fee` exists to prove the venue is not taking a
+        // cut of its own. A rake large enough to matter would make this a casino
+        // with an edge rather than an arena with a scoreboard.
+        rakeBps = 250;
+        prizeShareBps = 4_000;
 
         subcommitteeSize = 3;
         threshold = 2;
@@ -482,6 +574,15 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      */
     function enter(string calldata genome, uint256 endowmentAmount) external payable returns (uint256 prophetId) {
         if (endowmentAmount < minEndowment) revert EndowmentTooSmall();
+        // FOUR ANTES, and the two floors are genuinely different checks: this one
+        // tracks the climate and `minEndowment` does not. Four is the smallest
+        // number that makes entering mid-season a wager rather than a formality —
+        // an organism that can cover one ante is dead within two windows and its
+        // entrant learns nothing about the genome they wrote. Grouped with the
+        // collateral check ABOVE the native one on purpose, so no test has to
+        // depend on guard ordering to see the error it is asserting.
+        uint256 required = 4 * ante();
+        if (endowmentAmount < required) revert EndowmentBelowAnte(endowmentAmount, required);
         if (msg.value < cognitionEndowment) revert CognitionTooSmall();
         if (!IERC20Like(collateral).transferFrom(msg.sender, address(this), endowmentAmount)) {
             revert TransferFailed();
@@ -504,9 +605,232 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         }
     }
 
-    function setSeason(uint256 minEndowment_, uint256 cognitionEndowment_) external onlyOwner {
-        minEndowment = minEndowment_;
-        cognitionEndowment = cognitionEndowment_;
+    /**
+     *  A season, as one value.
+     *
+     *  Eight positional arguments would be eight chances to transpose two `uint16`s
+     *  that the compiler cannot tell apart — `rakeBps` and `prizeShareBps` are both
+     *  `uint16` and swapping them turns a 2.5% rake into a 40% one. A struct makes
+     *  the call site name every field it sets. `Darwin.t.sol`'s `_season()` reads the
+     *  live values into one of these so a caller can change ONE field and write it
+     *  back without restating the other seven.
+     */
+    struct SeasonParams {
+        uint256 minEndowment;
+        uint256 cognitionEndowment;
+        uint256 baseAnte;
+        uint16 anteMultBps;
+        uint32 levelWindows;
+        uint32 seasonWindows;
+        uint16 rakeBps;
+        uint16 prizeShareBps;
+    }
+
+    /**
+     *  Recalibrate the whole climate in one owner transaction, no upgrade.
+     *
+     *  Deliberately does NOT touch `seasonStartWindow` or `seasonId`: a season's
+     *  clock is the players' and only `endSeason` may move it. An owner who could
+     *  reset the clock could hold a season open until the standings suited them.
+     *
+     *  Validated, unlike `setEconomics`, because three of these eight can brick the
+     *  arena rather than merely mistune it — see `BadSeason`.
+     */
+    function setSeason(SeasonParams calldata s) external onlyOwner {
+        if (s.levelWindows == 0 || s.seasonWindows == 0) revert BadSeason();
+        if (s.anteMultBps < 10_000) revert BadSeason();
+        if (s.rakeBps > 10_000 || s.prizeShareBps > 10_000) revert BadSeason();
+
+        minEndowment = s.minEndowment;
+        cognitionEndowment = s.cognitionEndowment;
+        baseAnte = s.baseAnte;
+        anteMultBps = s.anteMultBps;
+        levelWindows = s.levelWindows;
+        seasonWindows = s.seasonWindows;
+        rakeBps = s.rakeBps;
+        prizeShareBps = s.prizeShareBps;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        THE CLIMATE — ANTE AND LEVEL
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  How many times the ante has doubled since this season opened.
+     *
+     *  CAPPED AT 40. `2**40` of a 0.25 tUSDC base is already 275 billion tUSDC, so
+     *  the cap costs nothing any real season can reach — while an uncapped exponent
+     *  would overflow `ante()` after ~78 doublings and revert every pairing, every
+     *  entry and every settlement in a population nobody could rescue without an
+     *  upgrade. The bound also keeps `ante()`'s loop bounded for the gas estimator.
+     */
+    function level() public view returns (uint32) {
+        uint32 lw = levelWindows;
+        // A proxy upgraded from a build that predates these fields would divide by
+        // zero here and brick every window. Cheap insurance for a one-line guard.
+        if (lw == 0) return 0;
+
+        uint64 start = seasonStartWindow;
+        uint64 w = windowCount;
+        if (w <= start) return 0;
+
+        uint256 l = (w - start) / lw;
+        // casting to 'uint32' is safe because the ternary has already clamped `l` to
+        // 40 on this branch, and the cap is the whole point of the line above.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return l > 40 ? 40 : uint32(l);
+    }
+
+    /// @dev What every organism risks this window, identical for all of them. The
+    ///      loop rather than an exponentiation because `anteMultBps` is a rate in
+    ///      basis points and a bps power has to round at every step to stay honest;
+    ///      `level()` bounds it at 40 iterations.
+    function ante() public view returns (uint256 a) {
+        a = baseAnte;
+        uint256 l = level();
+        for (uint256 i; i < l; ++i) {
+            a = (a * anteMultBps) / 10_000;
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                        THE TWO BOOKS — RAKE AND POOL
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  Split a window's income between the players' pot and the house's.
+     *
+     *  The collateral is already here — `Prophet.settleWindow` transferred both the
+     *  rent and the skim before returning them — so this moves no tokens and only
+     *  decides which book claims them. That is why it is safe to call inside
+     *  `settleAll`'s per-organism loop: it cannot fail on a transfer and cannot
+     *  leave the two books disagreeing with the balance.
+     */
+    function _book(uint256 income) internal {
+        if (income == 0) return;
+        uint256 toPool = (income * prizeShareBps) / 10_000;
+        prizePool += toPool;
+        rakeAccrued += income - toPool;
+    }
+
+    /// @dev The house's book, and only the house's book. Reverts rather than
+    ///      clamping: an owner who asked for more than they earned has made an
+    ///      accounting error, and silently paying them less hides it.
+    function withdrawRake(address to, uint256 amount) external onlyOwner {
+        if (amount > rakeAccrued) revert RakeExceeded();
+        rakeAccrued -= amount;
+        if (!IERC20Like(collateral).transfer(to, amount)) revert TransferFailed();
+        emit RakeWithdrawn(to, amount);
+    }
+
+    /**
+     *  Close the season and open the next.
+     *
+     *  Permissionless once the season is over, so a season cannot be held open by
+     *  an absent owner. The payout is a promise made to entrants at the door, and a
+     *  promise that only pays while we are awake to authorise it is not one.
+     *
+     *  Pays 60/30/10 of the pool to the top three SURVIVING organisms by NET
+     *  correct calls, to each one's entrant. Net rather than gross because gross
+     *  rewards volume: an organism that called thirty windows and got sixteen right
+     *  is not a better forecaster than one that called twelve and got eleven, and
+     *  the arena's claim is forecasting rather than participation.
+     *
+     *  Survival is a condition, not a tiebreak. A corpse's collateral was forfeited
+     *  into this very pool by `settleAll`, so paying its entrant out of the pool
+     *  would refund the forfeit and make starvation free.
+     *
+     *  What the standings do not claim ROLLS INTO THE NEXT SEASON — an arena with
+     *  fewer than three survivors, or whose winner has no entrant to pay, must not
+     *  hand the shortfall to the house. The alternative gives the operator a
+     *  financial reason to prefer mass extinction, which is the one incentive an
+     *  evolutionary arena cannot afford to have.
+     */
+    function endSeason() external {
+        if (windowCount - seasonStartWindow < seasonWindows) revert SeasonNotOver();
+
+        uint256[3] memory bestId = _topThree();
+
+        // Read once: every place below must divide the SAME pot, or third place's
+        // share is computed against a pool the first two have already been paid
+        // out of, and the three shares no longer sum to the pot.
+        uint256 pot = prizePool;
+        uint16[3] memory splitBps = [uint16(6_000), 3_000, 1_000];
+        uint256 paid;
+
+        for (uint256 k; k < 3; ++k) {
+            if (bestId[k] == 0) continue;
+            uint256 cut = (pot * splitBps[k]) / 10_000;
+            if (cut == 0) continue;
+
+            // A founder has no entrant. Its winnings roll over rather than being
+            // swept: the founders are the house's own organisms, and paying
+            // ourselves a prize we are merely custodying would quietly turn the
+            // pool into a second rake account.
+            address to = Prophet(payable(prophetAt(bestId[k]))).entrant();
+            if (to == address(0)) continue;
+
+            if (!IERC20Like(collateral).transfer(to, cut)) revert TransferFailed();
+            paid += cut;
+            emit SeasonPrizePaid(seasonId, bestId[k], to, cut);
+        }
+
+        prizePool = pot - paid;
+
+        // The new season starts HERE, not at `seasonStartWindow + seasonWindows`:
+        // nobody is obliged to close a season on the exact window it ends, and
+        // dating the next one from a window already past would shorten it by
+        // however late the close was — far enough late, it would open already over.
+        seasonStartWindow = windowCount;
+        emit SeasonEnded(seasonId, pot, paid);
+        seasonId += 1;
+    }
+
+    /**
+     *  The standings: the three living organisms with the best net record.
+     *
+     *  Walks the LINEAGE rather than `living`. A season close is not a per-window
+     *  cost, and the dead have to be skipped either way — `living` exists to bound
+     *  the gas of the three functions that run inside the reactivity callback, and
+     *  this is not one of them.
+     *
+     *  Split out of `endSeason` rather than inlined: the search alone holds two
+     *  fixed-size arrays and a signed score, and `--via-ir` is already at its stack
+     *  limit in this contract (see `think`'s scoped block). Zero in a slot means
+     *  "nothing placed here", which is sound only because ids are 1-based.
+     */
+    function _topThree() internal view returns (uint256[3] memory bestId) {
+        int256[3] memory bestScore;
+        bestScore[0] = type(int256).min;
+        bestScore[1] = type(int256).min;
+        bestScore[2] = type(int256).min;
+
+        uint256 n = prophets.length;
+        for (uint256 i; i < n; ++i) {
+            Prophet p = Prophet(payable(prophets[i]));
+            if (p.dead()) continue;
+
+            // Signed on purpose: an organism can be net-wrong, and clamping that to
+            // zero would make it indistinguishable from one that never called.
+            int256 score = int256(uint256(p.correctCount())) - int256(uint256(p.wrongCount()));
+
+            if (score > bestScore[0]) {
+                bestScore[2] = bestScore[1];
+                bestId[2] = bestId[1];
+                bestScore[1] = bestScore[0];
+                bestId[1] = bestId[0];
+                bestScore[0] = score;
+                bestId[0] = p.prophetId();
+            } else if (score > bestScore[1]) {
+                bestScore[2] = bestScore[1];
+                bestId[2] = bestId[1];
+                bestScore[1] = score;
+                bestId[1] = p.prophetId();
+            } else if (score > bestScore[2]) {
+                bestScore[2] = score;
+                bestId[2] = p.prophetId();
+            }
+        }
     }
 
     /**
@@ -757,10 +1081,29 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         phase = 2;
     }
 
+    /**
+     *  Issue one pair at the ante.
+     *
+     *  FLAT, NOT PROPORTIONAL. This used to be `min(_stakeOf(up), _stakeOf(down))` —
+     *  ten percent of each treasury — and that rule let capital buy immortality: a
+     *  1,000 tUSDC organism against 10 tUSDC opponents risked ~1 tUSDC per window
+     *  against 0.05 of rent, so it survived hundreds of windows while losing EVERY
+     *  call, and its genome's terrible record cost it nothing. A flat ante is the
+     *  same number for everybody at a given level, so a larger treasury buys more
+     *  windows of being wrong and nothing else.
+     */
     function _pair(Prophet up, Prophet down) internal {
-        uint256 want = _stakeOf(up);
-        uint256 other = _stakeOf(down);
-        if (other < want) want = other;
+        uint256 want = ante();
+
+        // The ante is flat but it is not conjured: each side pays out of its own
+        // treasury and `stakeOut` clamps to what is there. Clamping HERE keeps the
+        // two legs equal — unequal legs would mint a set nobody can redeem 1:1 —
+        // and an organism too poor to cover the ante is one metabolism charge from
+        // death anyway, which is the intended way for a losing genome to exit.
+        uint256 have = up.treasury();
+        if (have < want) want = have;
+        have = down.treasury();
+        if (have < want) want = have;
 
         if (want < minStake) {
             _openEmpty(up, activeUpId);
@@ -831,10 +1174,6 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         }
     }
 
-    function _stakeOf(Prophet p) internal view returns (uint256) {
-        return (p.treasury() * stakeBps) / 10_000;
-    }
-
     /*//////////////////////////////////////////////////////////////
                              3. SELECTION
     //////////////////////////////////////////////////////////////*/
@@ -862,11 +1201,33 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             Prophet p = Prophet(payable(prophets[living[i - 1] - 1]));
             if (p.dead() || !p.positionOpen()) continue;
 
-            try p.settleWindow(v, collateral, metabolicCost) returns (uint256, bool starved) {
+            try p.settleWindow(v, collateral, metabolicCost, rakeBps) returns (
+                uint256, bool starved, uint256 charged, uint256 raked
+            ) {
+                // Both amounts are already in this contract — the organism moved
+                // them before returning — so this only decides which book claims
+                // them. It must happen for every organism, including one that dies
+                // in the same breath: the rent was paid, and rent is income.
+                _book(charged + raked);
+
                 // DEATH: it can no longer afford to think. Not a health bar
                 // reaching zero — an organism that cannot pay for cognition in a
                 // world where cognition is metered is simply over.
                 if (starved || p.treasury() < metabolicCost) {
+                    // FORFEIT THE RESIDUE BEFORE `die()`, not after. `stakeOut`
+                    // carries the `alive` modifier, so a corpse can never be
+                    // emptied — collateral left in one is stranded for the lifetime
+                    // of the deploy, claimed by a ledger nobody can spend against.
+                    // It goes to the PLAYERS rather than the house: the pot is what
+                    // the survivors are competing for, and a house that profits
+                    // directly from each death has an incentive nobody should have
+                    // to trust it to ignore.
+                    uint256 residue = p.treasury();
+                    if (residue > 0) {
+                        prizePool += p.stakeOut(address(this), residue, collateral);
+                        emit ResidueForfeited(p.prophetId(), residue);
+                    }
+
                     p.die(windowCount);
                     aliveCount -= 1;
                     _removeLiving(p.prophetId());
