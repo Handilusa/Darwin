@@ -1,0 +1,1000 @@
+/*
+ *  One stylesheet, no framework, no build.
+ *
+ *  Dark by default because this is an operations view that will sit open on a second monitor
+ *  for days, and because the thing it displays is mostly text. `prefers-color-scheme: light`
+ *  is honoured at the bottom by swapping the tokens only.
+ *
+ *  The colour vocabulary is small and load-bearing rather than decorative:
+ *    --up / --down       the two beliefs an organism can hold, so a grid reads at a glance
+ *    --ok / --warn/--bad claim strength and severity, used NOWHERE decoratively — a red row
+ *                        means a death or a failed read, never emphasis
+ */
+
+:root {
+  --bg: #0b0f14;
+  --bg-2: #111823;
+  --bg-3: #17202d;
+  --line: #223044;
+  --line-2: #2c3d55;
+  --fg: #dbe4ef;
+  --fg-2: #93a4bb;
+  --fg-3: #6a7d96;
+
+  --up: #58d68d;
+  --down: #f1737f;
+  --abstain: #d9b45b;
+  --none: #6a7d96;
+
+  --ok: #58d68d;
+  --warn: #d9b45b;
+  --bad: #f1737f;
+  --accent: #6ea8fe;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
+
+  --radius: 10px;
+  --pad: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+  padding-bottom: 48px;
+}
+
+code,
+.mono,
+kbd {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+h1 {
+  font-size: 20px;
+  letter-spacing: 0.16em;
+}
+h2 {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-2);
+}
+h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-3);
+  margin-bottom: 6px;
+}
+
+.sub {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+  text-transform: none;
+  margin-left: 8px;
+}
+
+.muted {
+  color: var(--fg-3);
+}
+.ok {
+  color: var(--ok);
+}
+.warn {
+  color: var(--warn);
+}
+.bad {
+  color: var(--bad);
+}
+
+.dot::before {
+  content: "·";
+  margin: 0 6px;
+  color: var(--fg-3);
+}
+
+/*//////////////////////////////  BANNERS  //////////////////////////////*/
+
+.banner {
+  padding: 10px 20px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+.banner-demo {
+  background: #3a2d0c;
+  color: #f4e2b0;
+  border-bottom-color: #5c4713;
+}
+.banner-demo a {
+  color: #ffd772;
+}
+.banner-error {
+  background: #3a1420;
+  color: #ffd7dd;
+  border-bottom-color: #5c1e2c;
+}
+
+/*//////////////////////////////  TOPBAR  //////////////////////////////*/
+
+.topbar {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--bg-2), var(--bg));
+  display: grid;
+  gap: 14px;
+}
+
+.topbar-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.topbar-meta {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.stat {
+  background: var(--bg-2);
+  padding: 9px 12px;
+  display: grid;
+  gap: 1px;
+}
+.stat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-3);
+}
+.stat-value {
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--fg);
+}
+.stat-note {
+  font-size: 10px;
+  color: var(--fg-3);
+}
+
+/* Phase is the one stat that changes colour, because it is the only one that tells an operator
+   whether the cadence is stuck. */
+.stat-phase .stat-value {
+  color: var(--accent);
+}
+.stat-phase.phase-1 .stat-value {
+  color: var(--warn);
+}
+.stat-phase.phase-2 .stat-value {
+  color: var(--up);
+}
+
+.price {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.price-main {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 20px;
+}
+.price-open {
+  color: var(--fg-3);
+}
+/* The last price is the live number and the open is the reference, so the emphasis has to run
+   that way round — without this they render identically and the pair reads as ambiguous. */
+.price-last {
+  color: var(--fg);
+  font-weight: 600;
+}
+.price-arrow {
+  color: var(--fg-3);
+}
+.price-move {
+  font-size: 14px;
+  padding: 1px 7px;
+  border-radius: 20px;
+  background: var(--bg-3);
+}
+.price-move.up {
+  color: var(--up);
+}
+.price-move.down {
+  color: var(--down);
+}
+.price-meta {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.price-none {
+  display: grid;
+  gap: 2px;
+}
+.price-none strong {
+  color: var(--warn);
+}
+.price-why {
+  font-size: 12px;
+  color: var(--fg-3);
+  font-family: var(--mono);
+}
+
+/*//////////////////////////////  LAYOUT  //////////////////////////////*/
+
+#body {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1000px) {
+  .split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--pad);
+}
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.panel-head .muted {
+  font-size: 12px;
+}
+
+.empty {
+  color: var(--fg-3);
+  margin: 0;
+  font-style: italic;
+}
+.lede {
+  color: var(--fg-2);
+  margin: 0 0 14px;
+  max-width: 62ch;
+}
+.note {
+  font-size: 12px;
+  color: var(--warn);
+  margin: 8px 0 0;
+}
+
+.panel-warn {
+  border-color: #5c4713;
+  background: #241d0d;
+}
+.error-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: var(--fg-2);
+  display: grid;
+  gap: 4px;
+}
+
+/*//////////////////////////////  CLAIM  //////////////////////////////*/
+
+.panel-claim {
+  border-left: 3px solid var(--warn);
+}
+.panel-claim.claim-strong {
+  border-left-color: var(--ok);
+}
+.claim-line {
+  margin: 0 0 6px;
+  max-width: 80ch;
+}
+.claim-line q {
+  color: var(--fg);
+  font-style: italic;
+}
+.claim-not {
+  color: var(--fg-2);
+  font-size: 13px;
+}
+.claim-evidence {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 3px 9px;
+  border-radius: 20px;
+  border: 1px solid var(--line-2);
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.pill-ok {
+  color: var(--ok);
+  border-color: #2c5a3f;
+  background: #10251a;
+}
+.pill-warn {
+  color: var(--warn);
+  border-color: #5c4713;
+  background: #241d0d;
+}
+
+/*//////////////////////////////  FIELDS  //////////////////////////////*/
+
+.field {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.field-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-3);
+}
+.field-value {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+/* `dom.js field()` takes an `opts.tone` and emits `tone-<tone>`; these are the rules behind that
+   affordance. Same three-colour vocabulary as everywhere else — a red field means a real problem
+   (a starved treasury, a failed read), never emphasis. */
+.field-value.tone-ok {
+  color: var(--ok);
+}
+.field-value.tone-warn {
+  color: var(--warn);
+}
+.field-value.tone-bad {
+  color: var(--bad);
+}
+.field-value.tone-muted {
+  color: var(--fg-3);
+}
+.detail-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px 16px;
+}
+
+/*//////////////////////////////  GRID  //////////////////////////////*/
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  background: var(--bg-3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 11px;
+  display: grid;
+  gap: 7px;
+  cursor: pointer;
+  transition: border-color 0.12s, transform 0.12s;
+}
+.card:hover {
+  border-color: var(--line-2);
+  transform: translateY(-1px);
+}
+.card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.card-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+/* Dead organisms stay on the page and stay legible. Death is the primary signal here, not an
+   error to be hidden, so they are dimmed rather than removed. */
+.card-dead {
+  opacity: 0.5;
+}
+
+.card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.card-id {
+  font-family: var(--mono);
+  font-weight: 600;
+}
+.card-name {
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.card-gen {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--fg-3);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+/* Paid entry is the one thing in the grid worth an accent: it is evidence the arena is open, not
+   a population the operator hand-picked. */
+.card-entrant {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-family: var(--sans);
+}
+.card-treasury {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.card-treasury .amount {
+  font-family: var(--mono);
+  font-size: 17px;
+}
+.card-treasury .unit {
+  font-size: 10px;
+  color: var(--fg-3);
+}
+.card-stats {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-2);
+}
+.card-foot {
+  font-size: 10px;
+  color: var(--fg-3);
+  border-top: 1px solid var(--line);
+  padding-top: 5px;
+}
+.streak {
+  color: var(--warn);
+}
+
+.tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.tag-sub {
+  opacity: 0.7;
+  margin-left: 5px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.tag-dead {
+  margin-left: auto;
+  background: #2a1a20;
+  color: var(--down);
+}
+.belief-up {
+  background: #10251a;
+  color: var(--up);
+}
+.belief-down {
+  background: #2a1a20;
+  color: var(--down);
+}
+.belief-abstain {
+  background: #241d0d;
+  color: var(--abstain);
+}
+.belief-none {
+  background: var(--bg-2);
+  color: var(--none);
+}
+
+/*//////////////////////////////  DETAIL  //////////////////////////////*/
+
+.panel-detail {
+  position: sticky;
+  top: 16px;
+}
+.position {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.prose {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+/* The genome and the reasoning are shown whole, wrapped, never truncated: the genome IS the
+   organism, and cutting it would hide the only thing distinguishing one row from another. */
+blockquote.genome,
+blockquote.reasoning {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border-left: 2px solid var(--line-2);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+blockquote.genome {
+  border-left-color: var(--accent);
+  color: var(--fg);
+}
+blockquote.reasoning {
+  border-left-color: var(--up);
+  color: var(--fg-2);
+  font-style: italic;
+}
+
+/*//////////////////////////////  TREE  //////////////////////////////*/
+
+.tree-scroll {
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.tree {
+  display: block;
+  min-width: 100%;
+}
+.tree-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 2 4;
+}
+.tree-gen {
+  fill: var(--fg-3);
+  font: 10px var(--mono);
+  text-anchor: middle;
+}
+.tree-edge {
+  fill: none;
+  stroke: var(--line-2);
+  stroke-width: 1.5;
+}
+.tree-edge.is-dead {
+  stroke: #3a2630;
+  stroke-dasharray: 3 3;
+}
+.tree-node {
+  cursor: pointer;
+}
+.tree-node circle {
+  stroke: var(--bg-2);
+  stroke-width: 2;
+}
+.tree-node circle.belief-up {
+  fill: var(--up);
+}
+.tree-node circle.belief-down {
+  fill: var(--down);
+}
+.tree-node circle.belief-abstain {
+  fill: var(--abstain);
+}
+.tree-node circle.belief-none {
+  fill: var(--none);
+}
+.tree-node.is-dead {
+  opacity: 0.4;
+}
+.tree-node.is-selected circle {
+  stroke: var(--accent);
+}
+.tree-node:focus-visible circle {
+  stroke: var(--accent);
+}
+.tree-label {
+  fill: var(--fg-2);
+  font: 11px var(--mono);
+}
+.tree-node.is-selected .tree-label {
+  fill: var(--fg);
+}
+
+.legend {
+  font-size: 11px;
+  color: var(--fg-3);
+  margin: 10px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.swatch.belief-up {
+  background: var(--up);
+}
+.swatch.belief-down {
+  background: var(--down);
+}
+.swatch.belief-abstain {
+  background: var(--abstain);
+}
+.swatch.belief-none {
+  background: var(--none);
+}
+
+/*//////////////////////////////  CENSUS  //////////////////////////////*/
+
+.census {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.census th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-3);
+  font-weight: 500;
+  padding: 0 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.census td {
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  font-family: var(--mono);
+}
+.thesis-pill {
+  display: inline-block;
+  font-family: var(--sans);
+  font-size: 11px;
+  padding: 1px 7px;
+  margin: 0 4px 2px 0;
+  border-radius: 20px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+}
+
+/*//////////////////////////////  FEED  //////////////////////////////*/
+
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.feed-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 32px;
+  gap: 10px;
+  padding: 8px 11px;
+  background: var(--bg-2);
+  align-items: baseline;
+  font-size: 13px;
+}
+.feed-row.sev-bad {
+  background: #1d1216;
+}
+.feed-row.sev-warn {
+  background: #1d1a10;
+}
+.feed-row.sev-good {
+  background: #101d16;
+}
+.feed-when {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.feed-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 8px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+/* Origin is worth a colour: it says whether the population, an organism, or the selection
+   engine emitted the line, which is the difference between arena bookkeeping and evidence. */
+.feed-name.origin-organism {
+  color: var(--accent);
+}
+.feed-name.origin-selection {
+  color: var(--up);
+}
+.feed-body {
+  color: var(--fg);
+}
+.feed-what {
+  min-width: 0;
+}
+.feed-where {
+  text-align: right;
+  font-size: 11px;
+}
+blockquote.feed-reasoning {
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  background: var(--bg);
+  border-left: 2px solid var(--line-2);
+  font-size: 12px;
+  font-style: italic;
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  color: var(--fg);
+  border-radius: 4px;
+  padding: 0 5px;
+  cursor: pointer;
+}
+.chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.chip-name {
+  color: var(--fg-3);
+  margin-left: 4px;
+}
+
+/*//////////////////////////////  SETUP  //////////////////////////////*/
+
+.panel-setup {
+  max-width: 660px;
+  margin: 32px auto;
+}
+.setup-form {
+  display: grid;
+  gap: 6px;
+}
+.setup-form label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-3);
+  margin-top: 6px;
+}
+.input {
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  color: var(--fg);
+  padding: 9px 11px;
+  font-size: 13px;
+  width: 100%;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.setup-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.setup-note {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.setup-note p {
+  color: var(--fg-2);
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.btn {
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 15px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-3);
+  color: var(--fg);
+  cursor: pointer;
+}
+.btn:hover {
+  border-color: var(--accent);
+}
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #08121f;
+  font-weight: 600;
+}
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+.btn-ghost {
+  background: transparent;
+  color: var(--fg-2);
+}
+.btn-inline {
+  padding: 2px 9px;
+  font-size: 12px;
+}
+
+/*//////////////////////////////  WIRING / FOOTER  //////////////////////////////*/
+
+.panel-wiring summary,
+.panel-warn summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-2);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.panel-wiring[open] summary,
+.panel-warn[open] summary {
+  margin-bottom: 12px;
+}
+
+.footer {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px 20px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.footer p {
+  margin: 0 0 6px;
+}
+
+/*//////////////////////////////  LIGHT  //////////////////////////////*/
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f7f9fc;
+    --bg-2: #ffffff;
+    --bg-3: #f0f4f9;
+    --line: #dde5ee;
+    --line-2: #c3d0e0;
+    --fg: #16202e;
+    --fg-2: #4a5a70;
+    --fg-3: #75859b;
+
+    --up: #1a8b52;
+    --down: #c8384a;
+    --abstain: #9a7413;
+    --none: #75859b;
+    --ok: #1a8b52;
+    --warn: #9a7413;
+    --bad: #c8384a;
+    --accent: #2563eb;
+  }
+  .banner-demo {
+    background: #fdf3d6;
+    color: #6b520c;
+    border-bottom-color: #e8d49a;
+  }
+  .banner-demo a {
+    color: #8a6a10;
+  }
+  .banner-error {
+    background: #fdeaee;
+    color: #8c1f2f;
+    border-bottom-color: #f0c2cb;
+  }
+  .belief-up {
+    background: #e6f6ec;
+  }
+  .belief-down {
+    background: #fdeaee;
+  }
+  .belief-abstain {
+    background: #fdf3d6;
+  }
+  .panel-warn {
+    background: #fdf9ec;
+    border-color: #e8d49a;
+  }
+  .pill-ok {
+    background: #e6f6ec;
+    border-color: #b7e0c6;
+  }
+  .pill-warn {
+    background: #fdf3d6;
+    border-color: #e8d49a;
+  }
+  .feed-row.sev-bad {
+    background: #fdf5f6;
+  }
+  .feed-row.sev-warn {
+    background: #fdfaf1;
+  }
+  .feed-row.sev-good {
+    background: #f3fbf6;
+  }
+  .btn-primary {
+    color: #ffffff;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

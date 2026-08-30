@@ -440,7 +440,21 @@ When code is uncertain about an external surface, it is marked `UNVERIFIED` at t
 
 ## Notes on the docs
 
-- `README.md`'s repo layout lists a `web/` directory; it does not exist yet.
+- `web/` now exists: a zero-build static dashboard (ES modules + viem from a pinned CDN, no
+  bundler, no install, no backend, no wallet). It configures **only** the `Population` address and
+  discovers `collateral`, `priceSource`, `venue`, `selectionEngine`, `marketsModule` and `symbol`
+  on-chain, because `venue` is repointable and a stale config could aim the page at an abandoned
+  arena. `?demo=1` renders `web/js/fixture.js` through the identical renderer, so the frontend is
+  reviewable before Season 0 exists. See `web/README.md`; the invariant most worth preserving is
+  that there is **no `innerHTML`** anywhere in it — `Population.enter` is permissionless, so every
+  genome the page displays is untrusted input from a public write path.
+- `npm test --prefix web` runs the real renderer against the fixture under a 60-line fake DOM
+  (`web/test/smoke.mjs`) — twenty render calls, thirty-one assertions, no network and no browser.
+  Run it after touching anything under `web/js/`. It is the only executable check this repo has on
+  the frontend, and it exists because everything else about `web/` had only ever been verified by
+  reading. `web/package.json` is there solely to tell Node these `.js` files are ES modules; it
+  declares no dependencies, so "no install, no build" still holds.
+
 - `README.md` still mentions a `REACTIVITY_CALLBACK_SIG` env var. The handler selector
   `onEvent(address,bytes32[],bytes)` was verified on 2026-08-29 against `SomniaEventHandlerABI` in
   `@somnia-chain/reactivity@0.2.1`, and `SelectionEngine` no longer has that escape hatch. The
