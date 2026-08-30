@@ -185,19 +185,69 @@ redemption."*
 ### 3.2 Adapter two — `DirectDuelVenue`
 
 A minimal escrow we deploy: two organisms' antes are locked, and resolution is
-the sign of `closePrice − openPrice` read from `IPriceSource`. No DreamDEX, no
-complete sets, no order book, no market availability dependency.
+the sign of `closePrice − openPrice` read from `IPriceSource`. No DreamDEX
+settlement contract, no complete sets, no order book, no pool.
 
-It earns its place three times over:
+**Deployed as a second `Population`, not as a swap on the first.** Both arenas
+share one `Prophet` beacon and one price source and differ only in the `venue`
+field of their wiring, so the two run concurrently over identical organism code —
+two live leaderboards rather than one that changed adapters mid-run. It is also
+the stronger form of the claim: the same code settling against two unrelated
+mechanisms *at the same time*. `setWiring` remains the escape hatch for
+repointing a single arena, and `test_venue_canBeRepointedBetweenWindows` proves
+that path still works.
+
+It earns its place twice:
 
 1. **It proves generality.** A different settlement *mechanism* (price-oracle
    comparison) rather than a different market on the same venue. One adapter is a
-   demo; two is a platform.
-2. **It removes a demo dependency.** DreamDEX 900-second markets are
-   continuously available but nothing is pre-created; a duel venue cannot be
-   unavailable.
-3. **It is the resilience fallback** if DreamDEX markets are missing during the
-   recorded demo.
+   demo; two is a platform. `test_venue_engineIsIndifferentToTheSettlementMechanism`
+   runs a full window — think, answer, commit, settle — through the duel arena and
+   asserts the grading, rake, metabolism and season books all come out of nothing
+   but `redeemFor`'s return value.
+2. **It is the only thing that exercises the `positionToken() == address(0)`
+   branch** of `Prophet.settleWindow` — the path where an organism has no
+   transferable position to push before redeeming. That branch shipped in adapter
+   one untested on purpose; this is where it becomes a tested claim.
+
+**What it does NOT remove, stated precisely because two earlier drafts of this
+section overstated it.** An earlier version claimed "no market availability
+dependency" and listed the venue as a *resilience fallback if DreamDEX markets
+are missing during the recorded demo.* **Both are false as written.** This venue
+needs no market to settle, but it reads prices through `IPriceSource`, whose v1
+implementation (`PushedPriceSource`) resolves a real DreamDEX market to compute
+`tradeable` — and `Population.think` refuses a window whose market is not
+tradeable. So a duel arena still cannot *open* a window without a live market
+today. Cutting that last thread is an `IPriceSource` v2 reading the oracle hub
+directly; it is not a venue change and it is not in this plan. The narrower claim
+is true and is the one to make: **settlement itself cannot fail for want of a
+market, a pool, or a counterparty contract of any kind.**
+
+**Two design decisions that are not obvious from the description, both of them
+solvency or grief properties rather than optimisations:**
+
+- **A duel's outcome is frozen by the first redemption.** If each side were
+  adjudicated against the price live at the moment it happened to claim, the up
+  side could be redeemed while the price was high and the down side after it fell,
+  and both would be paid the whole backing out of an escrow holding it once. The
+  first claim writes the outcome and every later read is bound by it. Verified by
+  mutation: with the freeze removed, exactly one test fails, as an arithmetic
+  underflow inside the second payment.
+- **Only a position's own holder may redeem it, and there is no public `resolve`.**
+  Resolution reads whatever price is current, so whoever can trigger it is choosing
+  when the window closes — an entrant watching the feed would resolve at the
+  instant their own organism was ahead. The only way in is
+  `Prophet.settleWindow`, which is `onlyPopulation` and reachable only from
+  `settleAll` in phase 2, so the cadence driver decides, exactly as it does for
+  the DreamDEX arena.
+
+A duel that cannot be adjudicated — a flat print, an unobservable close, or a
+close belonging to a different window — is **voided and both antes are refunded**,
+never paid out at zero. Zero would strand the backing in the venue permanently
+*and* grade both forecasters as wrong, because `Prophet.settleWindow` reads the
+grade from the payout against the stake. Refunding the ante makes the window
+score as neither a win nor a loss, which is what "nobody was right" means and
+what a voided DreamDEX market already does by paying both sides 0.5.
 
 *Honest limitation:* a venue we wrote ourselves is a weaker generality proof than
 a third-party integration. The substantive claim it supports is that the engine

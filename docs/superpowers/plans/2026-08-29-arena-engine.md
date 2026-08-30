@@ -2771,6 +2771,30 @@ graded lineage worth selling.
 
 ### Task 5: `DirectDuelVenue` — the second settlement mechanism
 
+> **CORRECTED WHILE IMPLEMENTING, 2026-08-30. The sketch in Steps 1–4 does not survive contact with the codebase; nine things below are wrong. The shipped shape is what is described here.**
+>
+> The framing is right and needed no change: two `Population` deployments sharing one beacon, the `positionToken() == address(0)` branch owned by this task, and a full window through the engine rather than direct venue calls. Every defect is in the sketch of the contract itself, and four of them are the same mistake seen from different sides — **the sketch adjudicates each redemption against the price live at the moment of that redemption.**
+>
+> **1. The sketch omits `positionToken()`, so it does not compile as `IArenaVenue`.** The one function this whole task exists to exercise is the one the sketch forgot to declare.
+>
+> **2. Its `redeemFor` reads `priceSource.currentWindow`, which the codebase forbids in two places** — `DreamDEXVenue`'s header and `Population.settleAll`'s docblock (`Population.sol:1188-1189`). It is not a style rule: `PushedPriceSource.currentWindow` reverts `StalePrice(age, 180)`, and on the reactive path nobody pushes a price between resolution and the callback. The sketch's settlement therefore reverts in production with the ante already escrowed and the position still open. The shipped venue **records** the opening level at `openOpposing` — where a `StalePrice` revert is the correct outcome, and `Population._pair` already unwinds both antes into a `CommitFailed` — and at settlement reads the close through a `try`/`catch` that turns absence into a void.
+>
+> **3. Its flat-print branch returns 0 to both sides, which strands the entire backing in the venue forever and grades both organisms WRONG** — the opposite of its own comment that a flat print is "scored as neither a win nor a loss." `Prophet.settleWindow` derives the grade from `collateralOut` against `staked`, so zero reads as a loss for both. The shipped venue pays each side `backing / 2`, which is exactly one ante because `Population._pair` clamps both legs equal before opening, and an equal number is what makes the grading neutral.
+>
+> **4. Adjudicating per redemption is a solvency bug, not just an inefficiency.** Redeem the up side while the price is high and the down side after it falls, and both are paid the whole backing out of an escrow holding one. The shipped venue **freezes the outcome on the first claim**. This is verified by mutation rather than by argument: with `_resolve`'s `Pending` guard commented out, `test_directDuel_cannotPayBothSidesWhenThePriceMovesBetweenClaims` is the only test in the file that fails, and it fails as `panic: arithmetic underflow` inside the collateral transfer — the double payment itself.
+>
+> **5. The sketch's `redeemFor` is callable by anyone, which hands the choice of closing price to a bystander.** Resolution reads whatever price is current, so whoever triggers it decides when the window closes; an entrant watching the feed would resolve at the instant their own organism was ahead. The shipped venue requires `msg.sender == organism` and reverts `NotHolder` otherwise. The only path in is `Prophet.settleWindow`, which is `onlyPopulation` and reachable only from `settleAll` in phase 2 — so the cadence driver decides, exactly as it does for the DreamDEX arena.
+>
+> **6. The `Produces:` line below promises `DirectDuelVenue.resolve(bytes32 duelId)`, which the sketch's own code does not contain.** The shipped contract deliberately has **no public `resolve` at all**, for the reason in item 5. Read-only `outcomeOf(uint256)` and `positionIdsOf(uint256)` are what it exposes instead; note also that duel ids are `uint256`, not `bytes32`.
+>
+> **7. "No market availability dependency" is overstated, here and in the spec.** This venue needs no market to settle — but it reads prices through `IPriceSource`, whose v1 implementation resolves a real DreamDEX market to compute `tradeable`, and `Population.think` refuses a window whose market is not tradeable. So a duel arena still cannot **open** a window without a live market today. Removing that last thread is an `IPriceSource` v2, not a venue change. The claim that is true and still worth having is narrower: settlement itself cannot fail for want of a market, a pool, or a counterparty contract. §3.2 is written to say that and nothing more.
+>
+> **8. It reuses `NotOpen()` as a transfer-failure error.** Shipped errors are `NothingStaked`, `NoOpenPrice`, `UnknownDuel`, `NotHolder`, `TransferFailed` — a revert should read as a sentence about what actually happened.
+>
+> **9. The "Deferred, deliberately" bullet claiming `_requestMutation` keeps paying from `Population` is stale.** Task 3 changed it to draw from the parent, for the reason recorded in that task's banner: a house-paid breeding inference puts the recurring bill back on the growth curve.
+>
+> **The test block is six tests, not the two the plan lists**, because four of the defects above are only visible as behaviour: the flat-print refund, the first-claim freeze, the bystander refusal, and a settlement whose close cannot be observed at all. The last of these is reachable in production — `settleAll` reads no price of its own — so it is asserted at the engine level, where `outcomeOf(1)` reverts `UnknownDuel` if the duel never opened, which is what keeps that test from passing vacuously.
+
 **Refinement of the spec:** the spec says "the same population against two settlement sources." Implement it instead as **two `Population` deployments sharing one codebase and beacon, one per venue, running concurrently.** Two arenas are simpler to operate and a stronger demo — two live leaderboards rather than one that changed adapters — while exercising exactly the same claim. `setWiring`'s fourth argument remains the escape hatch for repointing a single arena, and Task 1's `test_venue_canBeRepointedBetweenWindows` proves it works. Update the spec's §3.2 to match.
 
 *(An earlier draft of this paragraph justified two deployments by claiming a venue swap "invalidates every organism's operator grant and needs a batched `regrantVenue` walk." That is void — see Task 1's correction banner. There is no grant and no walk, because organisms push their positions rather than the venue pulling them. Two deployments remain the right call on the demo argument alone.)*
@@ -2784,7 +2808,7 @@ graded lineage worth selling.
 
 **Interfaces:**
 - Consumes: `IArenaVenue` from Task 1.
-- Produces: `DirectDuelVenue` implementing `IArenaVenue`, plus `DirectDuelVenue.resolve(bytes32 duelId)`.
+- Produces: `DirectDuelVenue` implementing `IArenaVenue`, plus the read-only `outcomeOf(uint256 duelId)` and `positionIdsOf(uint256 duelId)`. ~~plus `DirectDuelVenue.resolve(bytes32 duelId)`~~ — **there is deliberately no public `resolve`; see item 5 of the correction banner.**
 
 - [ ] **Step 1: Write the failing test**
 
@@ -3080,7 +3104,7 @@ npm run prove   # AFTER the Season 0 deploy — see below
 ## Deferred, deliberately
 
 - **`fundProphet` stays permissionless.** With a flat escalating ante, funding an organism no longer buys immortality — the exploit's payoff is gone, so patching it is unnecessary. It remains what its comment says: a spectator putting backing behind an organism they believe in.
-- **`_requestMutation` keeps paying from Population.** Breeding is rare relative to thinking, and draining a parent mid-settlement is a worse trade than the subsidy.
+- **~~`_requestMutation` keeps paying from Population.~~** **Reversed in Task 3** — it draws from the parent, like `think`. Breeding *is* rare relative to thinking, but that is what makes the subsidy affordable rather than what makes it right: a house-paid inference of any kind puts the recurring bill back on the growth curve, which is the dynamic this rework exists to remove. See Task 3's correction banner and the F3 row above.
 - **`Prophet.sol:209`'s hard-coded `agree >= 2`** is independent of `threshold`, so raising `subcommitteeSize` does not raise the consensus floor. Out of scope; do not let it be forgotten.
 - **The `think` refund leak** (Task 3, Step 4): up to one deposit per failed request stays in Population. Bounded, observable via `ThinkFailed`, and not worth the stack pressure to fix inside that loop.
 - **`web/` frontend.** Task #6 in the tracker, not in this plan. It is the largest schedule risk after this rework and a running population with a thin UI beats a polished UI over a dead one.

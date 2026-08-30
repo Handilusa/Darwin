@@ -10,6 +10,7 @@ import {Prophet} from "../src/Prophet.sol";
 import {PushedPriceSource} from "../src/PushedPriceSource.sol";
 import {SelectionEngine} from "../src/SelectionEngine.sol";
 import {DreamDEXVenue} from "../src/venues/DreamDEXVenue.sol";
+import {DirectDuelVenue} from "../src/venues/DirectDuelVenue.sol";
 import {IArenaVenue} from "../src/interfaces/IArenaVenue.sol";
 import {IPriceSource} from "../src/interfaces/IPriceSource.sol";
 import {Genome, Belief, Thesis} from "../src/Genome.sol";
@@ -2497,5 +2498,313 @@ contract DarwinTest is Test {
         for (uint256 id = 1; id <= 4; ++id) {
             _assertLedgerMatchesBalance(id);
         }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+             THE SECOND VENUE — SETTLEMENT AS A REPLACEABLE PART
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  A second arena, wired to `DirectDuelVenue` and to nothing else new.
+     *
+     *  Deliberately a second `Population` rather than a `setWiring` on the first:
+     *  the two then run side by side in one test process over one price source and
+     *  one beacon, which is the actual platform claim — the same organism code
+     *  settling against two unrelated mechanisms. Only the `venue` field differs
+     *  from `setUp`'s wiring, so anything that breaks here is the venue.
+     *
+     *  No season is set on it, ON PURPOSE. This arena runs the parameters a fresh
+     *  proxy initializes with — the ones a real deploy gets, since `Deploy.s.sol`
+     *  never calls `setSeason` — so the numbers these tests assert are the numbers
+     *  the live system would produce. Note that `_season`/`_econ` are bound to the
+     *  `population` field and must not be used against this one.
+     */
+    function _duelArena() internal returns (Population arena, DirectDuelVenue duel) {
+        duel = new DirectDuelVenue(address(collateral), IPriceSource(address(priceSource)), "BTC");
+
+        Population impl = new Population();
+        bytes memory init = abi.encodeCall(
+            Population.initialize,
+            (
+                owner,
+                Population.Wiring({
+                    agentRequester: address(requester),
+                    settlement: address(settlement),
+                    marketsModule: address(module),
+                    outcomeToken: address(outcomeToken),
+                    collateral: address(collateral),
+                    prophetBeacon: address(beacon),
+                    priceSource: address(priceSource),
+                    venue: address(duel),
+                    llmAgentId: 1,
+                    symbol: "BTC"
+                })
+            )
+        );
+        arena = Population(payable(address(new ERC1967Proxy(address(impl), init))));
+
+        vm.deal(address(arena), 100 ether);
+        collateral.mint(address(arena), 10_000 * ONE);
+
+        string[] memory genomes = new string[](2);
+        genomes[0] = "duel momentum";
+        genomes[1] = "duel reversion";
+        vm.prank(owner);
+        arena.spawnGenesis(genomes);
+
+        vm.deal(arena.prophetAt(1), 1 ether);
+        vm.deal(arena.prophetAt(2), 1 ether);
+    }
+
+    function _dp(Population arena, uint256 id) internal view returns (Prophet) {
+        return Prophet(payable(arena.prophetAt(id)));
+    }
+
+    /// @dev Phases 0 and 1 on a duel arena: organism 1 says up, organism 2 says down,
+    ///      so `commitAll` has exactly one pair to open. Left as its own helper
+    ///      because every test below has to manipulate the price BETWEEN commit and
+    ///      settle — which is the only place a duel's closing price can come from.
+    function _duelOpen(Population arena) internal {
+        vm.prank(owner);
+        arena.think();
+        requester.deliver(_dp(arena, 1).pendingBeliefRequestId(), "UP_MOMENTUM");
+        requester.deliver(_dp(arena, 2).pendingBeliefRequestId(), "DOWN_REVERSION");
+        vm.prank(owner);
+        arena.commitAll();
+    }
+
+    function _duelSettle(Population arena) internal {
+        vm.prank(owner);
+        arena.settleAll();
+    }
+
+    /// @dev A duel venue holding both antes of a single hand-opened duel, with no
+    ///      `Population` involved. Used by the unit tests below, where routing
+    ///      through the engine would only obscure which contract is being asserted.
+    function _openDuel(uint256 amount)
+        internal
+        returns (DirectDuelVenue duel, address up, address down, uint256 upId, uint256 downId)
+    {
+        duel = new DirectDuelVenue(address(collateral), IPriceSource(address(priceSource)), "BTC");
+        up = makeAddr("duelUp");
+        down = makeAddr("duelDown");
+
+        collateral.mint(address(this), amount);
+        collateral.approve(address(duel), amount);
+        (upId, downId,) = duel.openOpposing(up, down, amount);
+    }
+
+    /// @dev The close the duel will be judged against. `openPrice` is deliberately
+    ///      restated at `_pushWindow`'s level: a duel compares the close against the
+    ///      level it RECORDED at open, so moving the opening price here would prove
+    ///      nothing about the comparison.
+    function _pushClose(uint256 closePrice) internal {
+        vm.prank(owner);
+        priceSource.pushWindow("BTC", MARKET_ID, 100_000 * ONE, closePrice, 6);
+    }
+
+    /**
+     *  The mechanism itself: a duel is decided by the sign of a price change, and the
+     *  loser is paid zero rather than reverting.
+     *
+     *  That last clause is the interface's hardest rule (`IArenaVenue.redeemFor`) and
+     *  the reason a losing organism does not abort the whole window's settlement.
+     */
+    function test_directDuel_settlesFromAPriceComparison() public {
+        (DirectDuelVenue duel, address up, address down, uint256 upId, uint256 downId) = _openDuel(10 * ONE);
+
+        // The branch that only this venue reaches: no transferable position exists, so
+        // `Prophet.settleWindow` must skip the ERC-6909 push entirely.
+        assertEq(duel.positionToken(), address(0), "a duel issues no transferable position");
+        assertEq(duel.collateral(), address(collateral));
+        assertTrue(upId != downId, "the two sides must hold distinct positions");
+        assertEq(collateral.balanceOf(address(duel)), 10 * ONE, "both antes should be escrowed");
+
+        _pushClose(101_000 * ONE); // it rose, so UP was right
+
+        vm.prank(up);
+        uint256 won = duel.redeemFor(up, upId, 10 * ONE);
+        vm.prank(down);
+        uint256 lost = duel.redeemFor(down, downId, 10 * ONE);
+
+        assertEq(won, 10 * ONE, "the winner takes the whole backing, not its own ante back");
+        assertEq(lost, 0, "the loser must be paid zero, not reverted");
+        assertEq(collateral.balanceOf(up), 10 * ONE, "the winner was not actually paid");
+        assertEq(collateral.balanceOf(down), 0);
+        assertEq(collateral.balanceOf(address(duel)), 0, "the escrow must be empty once both sides have claimed");
+    }
+
+    /**
+     *  A flat print pays each side its ante back and grades nobody.
+     *
+     *  Two things are being asserted at once and both matter: that the collateral is
+     *  returned rather than stranded in the venue forever, and that half the backing
+     *  is exactly one ante — which is only true because `Population._pair` clamps
+     *  both legs to the same number before opening. Paying zero instead would delete
+     *  the collateral AND book both forecasters as wrong.
+     */
+    function test_directDuel_refundsBothSidesWhenThePriceDidNotMove() public {
+        (DirectDuelVenue duel, address up, address down, uint256 upId, uint256 downId) = _openDuel(10 * ONE);
+
+        // `setUp`'s window already has last == open, so this is a flat print with no
+        // further push. Asserting the outcome by name, because a void that arrives
+        // via the unadjudicable path would pay identically and prove something else.
+        vm.prank(up);
+        assertEq(duel.redeemFor(up, upId, 10 * ONE), 5 * ONE, "up should get its ante back");
+        assertEq(uint8(duel.outcomeOf(1)), uint8(DirectDuelVenue.Outcome.Void), "a flat print is a void");
+
+        vm.prank(down);
+        assertEq(duel.redeemFor(down, downId, 10 * ONE), 5 * ONE, "down should get its ante back");
+
+        assertEq(collateral.balanceOf(address(duel)), 0, "a void must not strand the backing in the venue");
+    }
+
+    /**
+     *  THE SOLVENCY PROPERTY: the outcome is frozen by the first claim, so a price
+     *  that moves between the two redemptions cannot pay both sides.
+     *
+     *  Without the freeze, each side would be judged against whatever price was live
+     *  when it happened to claim — and redeeming up while the price was high and down
+     *  after it fell would pay the whole backing twice out of an escrow holding it
+     *  once. This test is the reason `_resolve` writes `outcome` instead of just
+     *  reading the feed.
+     *
+     *  VERIFIED BY MUTATION, not by argument: with `_resolve`'s `Pending` guard
+     *  commented out, this is the ONLY test in the file that fails, and it fails as
+     *  `panic: arithmetic underflow` inside the collateral transfer — the venue
+     *  attempting to pay the backing a second time out of an empty escrow. That the
+     *  other five still pass is the point: nothing else here covers this.
+     */
+    function test_directDuel_cannotPayBothSidesWhenThePriceMovesBetweenClaims() public {
+        (DirectDuelVenue duel, address up, address down, uint256 upId, uint256 downId) = _openDuel(10 * ONE);
+
+        _pushClose(101_000 * ONE);
+        vm.prank(up);
+        assertEq(duel.redeemFor(up, upId, 10 * ONE), 10 * ONE, "up won on the price current at the first claim");
+
+        // Now it is below the open. If resolution were re-read per claim, down would
+        // also be the winner.
+        _pushClose(99_000 * ONE);
+        vm.prank(down);
+        assertEq(duel.redeemFor(down, downId, 10 * ONE), 0, "the second claim re-adjudicated the duel");
+
+        assertEq(uint8(duel.outcomeOf(1)), uint8(DirectDuelVenue.Outcome.Up), "the frozen outcome was overwritten");
+        assertEq(collateral.balanceOf(address(duel)), 0);
+        assertEq(
+            collateral.balanceOf(up) + collateral.balanceOf(down),
+            10 * ONE,
+            "the venue paid out more or less than the backing"
+        );
+    }
+
+    /**
+     *  Only the holder may redeem, and there is no public `resolve`.
+     *
+     *  Resolution reads whatever price is current, so whoever can trigger it chooses
+     *  when the window closes — an entrant watching the feed would resolve at the
+     *  instant their own organism was ahead. Closing that is a grief fix, not a
+     *  formality, which is why it is asserted rather than left to the docblock.
+     */
+    function test_directDuel_refusesToBeResolvedByABystander() public {
+        (DirectDuelVenue duel, address up,, uint256 upId,) = _openDuel(10 * ONE);
+
+        _pushClose(101_000 * ONE);
+
+        vm.prank(address(0xBADBAD));
+        vm.expectRevert(DirectDuelVenue.NotHolder.selector);
+        duel.redeemFor(up, upId, 10 * ONE);
+
+        assertEq(uint8(duel.outcomeOf(1)), uint8(DirectDuelVenue.Outcome.Pending), "a bystander pinned the close");
+    }
+
+    /**
+     *  THE CLAIM, EXECUTABLE: a full window — think, answer, commit, settle — through
+     *  a `Population` that has never heard of DreamDEX's settlement contract.
+     *
+     *  Calling the venue directly would prove far less. Routed through the engine,
+     *  this also exercises the `positionToken() == address(0)` branch of
+     *  `Prophet.settleWindow`, which no other test in this file reaches, and shows
+     *  that grading, rake, metabolism and the season books all work off nothing but
+     *  `redeemFor`'s return value.
+     *
+     *  Every expected number is derived from the arena's own parameters rather than
+     *  hard-coded, so this keeps asserting the same property after a default changes.
+     */
+    function test_venue_engineIsIndifferentToTheSettlementMechanism() public {
+        (Population arena, DirectDuelVenue duel) = _duelArena();
+
+        uint256 ante = arena.ante();
+        uint256 endowment = arena.endowment();
+        uint256 metabolism = arena.metabolicCost();
+        assertGt(ante, 0, "test would be vacuous with a zero ante");
+
+        _duelOpen(arena);
+        assertEq(collateral.balanceOf(address(duel)), 2 * ante, "both antes should be escrowed with the venue");
+
+        _pushClose(101_000 * ONE); // it rose, so organism 1 (up) was right
+        _duelSettle(arena);
+
+        Prophet winner = _dp(arena, 1);
+        Prophet loser = _dp(arena, 2);
+
+        assertEq(winner.correctCount(), 1, "the winner was not graded correct");
+        assertEq(loser.wrongCount(), 1, "the loser was not graded wrong");
+        assertEq(winner.abstainCount(), 0);
+        assertEq(loser.abstainCount(), 0);
+
+        // Won the loser's ante, paid the skim on that profit, then paid rent.
+        uint256 skim = (ante * arena.rakeBps()) / 10_000;
+        assertGt(skim, 0, "rake is not being exercised");
+        assertEq(winner.treasury(), endowment + ante - skim - metabolism, "winner's net is wrong");
+        assertEq(loser.treasury(), endowment - ante - metabolism, "loser's net is wrong");
+
+        assertEq(winner.treasury(), collateral.balanceOf(address(winner)), "winner's ledger drifted from its balance");
+        assertEq(loser.treasury(), collateral.balanceOf(address(loser)), "loser's ledger drifted from its balance");
+
+        // The house booked exactly two rents and one skim, and the venue kept nothing.
+        assertEq(arena.rakeAccrued() + arena.prizePool(), 2 * metabolism + skim, "the season books do not add up");
+        assertEq(collateral.balanceOf(address(duel)), 0, "the venue is still holding collateral after settlement");
+    }
+
+    /**
+     *  A settlement the venue cannot observe a closing price for voids and refunds —
+     *  it does not misgrade, and it does not abort the window.
+     *
+     *  This path is REACHABLE IN PRODUCTION, not a contrivance: `settleAll` reads no
+     *  price of its own, and on the reactive path nobody pushes one between
+     *  resolution and the callback, so `currentWindow` reverting `StalePrice` is an
+     *  ordinary condition at settlement time. Letting it propagate would leave the
+     *  organism's position open with its ante already escrowed; grading against a
+     *  stale price would book a forecast as right or wrong on no evidence. Both
+     *  organisms must come out with their ante back and their counters untouched.
+     */
+    function test_venue_voidsRatherThanMisgradingWhenTheCloseCannotBeObserved() public {
+        (Population arena, DirectDuelVenue duel) = _duelArena();
+
+        uint256 endowment = arena.endowment();
+        uint256 metabolism = arena.metabolicCost();
+
+        // Opened while the feed was fresh — `openOpposing` demands that. The staleness
+        // arrives afterwards, which is exactly the production shape.
+        _duelOpen(arena);
+        vm.warp(block.timestamp + 181);
+        _duelSettle(arena);
+
+        assertEq(uint8(duel.outcomeOf(1)), uint8(DirectDuelVenue.Outcome.Void), "an unobservable close must void");
+
+        for (uint256 id = 1; id <= 2; ++id) {
+            Prophet p = _dp(arena, id);
+            assertEq(p.correctCount(), 0, "a void was graded as a win");
+            assertEq(p.wrongCount(), 0, "a void was graded as a loss");
+            assertEq(p.abstainCount(), 0, "the organism answered; it did not abstain");
+            assertEq(p.streak(), 0);
+            assertEq(p.treasury(), endowment - metabolism, "the ante was not refunded");
+            assertEq(p.treasury(), collateral.balanceOf(address(p)), "ledger drifted from balance");
+        }
+
+        // Rent was still due — thinking is not free just because the window decided
+        // nothing — but there was no profit, so nothing was skimmed.
+        assertEq(arena.rakeAccrued() + arena.prizePool(), 2 * metabolism, "a void booked something other than rent");
+        assertEq(collateral.balanceOf(address(duel)), 0, "the voided backing is stranded in the venue");
     }
 }
