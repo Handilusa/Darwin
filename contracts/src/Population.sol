@@ -144,16 +144,37 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event Paired(uint256 indexed upId, uint256 indexed downId, uint256 amount);
     event Unpaired(uint256 indexed prophetId, Belief belief);
     event Reaped(uint256 indexed prophetId, uint64 window, uint256 aliveRemaining);
-    /// @dev An entrant left voluntarily and took what the organism still held.
+    /// @dev An entrant left voluntarily and took what the organism still held —
+    ///      both currencies, because they funded both. `cognitionReturned` is what
+    ///      actually landed, so a zero there against a live organism means the
+    ///      refund bounced and a `CognitionUnspent` log names the amount to sweep.
     ///      Distinct from `Reaped`, which is death by starvation and forfeits.
-    event Retired(uint256 indexed prophetId, address indexed entrant, uint256 returned);
+    event Retired(
+        uint256 indexed prophetId, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned
+    );
     event BreedingRequested(uint256 indexed parentId, uint256 requestId);
+    /// @dev Bred on merit, could not afford the thought. Not a failure — the
+    ///      organism keeps its streak and its surplus, and may breed in a later
+    ///      window once someone tops its cognition up.
+    event BreedingUnaffordable(uint256 indexed prophetId);
     event WindowClosed(uint64 indexed window, uint256 aliveCount);
     /// @dev An unattended run must never be stalled by one bad organism. Each of
     ///      these is a caught revert, kept as a log so the monitor can see it.
     event ThinkFailed(uint256 indexed prophetId);
     event CommitFailed(uint256 indexed prophetId);
     event SettleFailed(uint256 indexed prophetId);
+    /// @dev A drawn cognition deposit that bought no inference: the request was
+    ///      already paid for when `createAdvancedRequest` reverted, so the native
+    ///      stays in this contract and belongs, morally, to the organism. Emitted
+    ///      rather than refunded because `think`'s loop is at the --via-ir stack
+    ///      limit; reconciled by the operator, not on chain. Bounded by one
+    ///      deposit per failed request.
+    event CognitionUnspent(uint256 indexed prophetId, uint256 amount);
+    /// @dev Someone paid for an organism's thinking — at birth, or as a sponsor.
+    ///      The counterpart of the collateral funding path, kept separate because
+    ///      the two buy different things: collateral buys a bigger wager, native
+    ///      buys more windows to live through.
+    event CognitionFunded(uint256 indexed prophetId, address indexed from, uint256 amount);
 
     /*//////////////////////////////////////////////////////////////
                                  ERRORS
@@ -169,6 +190,8 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     error TransferFailed();
     error NothingToHatch();
     error EndowmentTooSmall();
+    /// @dev An entrant must fund their own organism's thinking. See `enter`.
+    error CognitionTooSmall();
     error NotEntrant();
     error PositionStillOpen();
 
@@ -252,7 +275,19 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         maxPopulation = 24;
 
         minEndowment = 10_000_000; // 10 tUSDC — the same as a house endowment
-        cognitionEndowment = 0; // set per-deploy; Task 3 makes it load-bearing
+
+        // TEN WINDOWS OF THINKING, and it must not be zero. Once cognition is paid
+        // by the organism, a newborn with an empty native balance is skipped by
+        // `think`, abstains, is charged metabolism anyway, and starves without ever
+        // having had an opinion — so a zero here does not mean "off", it means the
+        // population is born brain-dead. The arithmetic is the measured live price:
+        // `requestDeposit() = 3 x (0.01 + 0.001) = 0.033 STT` per inference, so
+        // 0.33 STT buys exactly ten, and a newborn's lifespan at the 15-minute
+        // cadence is legible rather than notional. `_spawn` degrades to an unfunded
+        // birth if the house cannot cover it, and a sponsor can close the gap with
+        // `topUpCognition`. Override per season with `setSeason`; a demo season can
+        // reasonably run it much lower.
+        cognitionEndowment = 0.33 ether;
 
         subcommitteeSize = 3;
         threshold = 2;
@@ -352,7 +387,12 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /// @dev Generation 0. Each genome is a distinct English strategy; the founders
     ///      must actually disagree with each other or there is nothing for
     ///      selection to act on and no counterparty for pairing.
-    function spawnGenesis(string[] calldata genomes) external onlyOwner {
+    ///
+    ///      `payable` so a deploy can seed the founders' cognition in the same
+    ///      transaction that creates them — `_spawn` forwards `cognitionEndowment`
+    ///      out of this contract's balance, and without the value attached here the
+    ///      first window would have to wait on a separate funding tx.
+    function spawnGenesis(string[] calldata genomes) external payable onlyOwner {
         for (uint256 i; i < genomes.length; ++i) {
             _spawn(0, 0, genomes[i], msg.sender, endowment);
         }
@@ -400,6 +440,19 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             Prophet(payable(p)).fund(endow);
         }
 
+        // A newborn that cannot think is a newborn that abstains its way to death
+        // without ever having had an opinion, so the house stakes it enough native
+        // to start. Scoped, and guarded on the balance rather than reverting: an
+        // underfunded house must still be able to bear children, and a sponsor can
+        // top the child up afterwards through `topUpCognition`. `from` is this
+        // contract because the native is this contract's, whoever triggered the
+        // birth.
+        if (cognitionEndowment > 0 && address(this).balance >= cognitionEndowment) {
+            (bool ok,) = p.call{value: cognitionEndowment}("");
+            if (!ok) revert TransferFailed();
+            emit CognitionFunded(prophets.length, address(this), cognitionEndowment);
+        }
+
         emit Spawned(prophets.length, p, parentId, generation);
     }
 
@@ -415,14 +468,40 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  rake on settlement) rather than from a toll. What the entrant must supply
      *  is their own organism's backing — they are not paying the house, they are
      *  funding their player.
+     *
+     *  Two currencies, and both come from the entrant. `endowmentAmount` is
+     *  collateral: how large a wager the organism can make. `msg.value` is native:
+     *  how many windows it can afford to think through. `cognitionEndowment` is the
+     *  floor on the second, and requiring it HERE rather than granting it from the
+     *  house is a griefing fix, not a style choice — entry is free and `retire`
+     *  refunds the collateral, so a house-funded grant would be an unbounded free
+     *  inference faucet: enter, retire, repeat, and every cycle walks off with
+     *  `cognitionEndowment` of the operator's STT converted into LLM calls. The
+     *  founders (`spawnGenesis`, owner-only) and children (`_hatch`, earned over
+     *  four correct windows) are house-funded because neither is farmable.
      */
-    function enter(string calldata genome, uint256 endowmentAmount) external returns (uint256 prophetId) {
+    function enter(string calldata genome, uint256 endowmentAmount) external payable returns (uint256 prophetId) {
         if (endowmentAmount < minEndowment) revert EndowmentTooSmall();
+        if (msg.value < cognitionEndowment) revert CognitionTooSmall();
         if (!IERC20Like(collateral).transferFrom(msg.sender, address(this), endowmentAmount)) {
             revert TransferFailed();
         }
+
+        // `msg.value` is already in this contract's balance, so `_spawn` forwards
+        // `cognitionEndowment` out of the entrant's own payment rather than out of
+        // the house float.
         _spawn(0, 0, genome, msg.sender, endowmentAmount);
         prophetId = prophets.length;
+
+        // Anything above the floor is forwarded too, so `msg.value` lands in the
+        // organism to the wei and nothing accrues here. An entrant who wants a
+        // long-lived organism funds it once, at the door.
+        uint256 extra = msg.value - cognitionEndowment;
+        if (extra > 0) {
+            (bool ok,) = prophets[prophetId - 1].call{value: extra}("");
+            if (!ok) revert TransferFailed();
+            emit CognitionFunded(prophetId, msg.sender, extra);
+        }
     }
 
     function setSeason(uint256 minEndowment_, uint256 cognitionEndowment_) external onlyOwner {
@@ -444,6 +523,11 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  under the counterparty it is already paired 1:1 with. Between windows,
      *  leaving is free — an organism nobody wants to keep funding should stop
      *  costing its entrant money.
+     *
+     *  BOTH currencies come back, because the entrant put both in. Returning the
+     *  collateral while stranding the unspent cognition in a dead organism would
+     *  make this a partial exit and quietly turn `enter`'s native requirement into
+     *  a one-way ratchet on the entrant's STT.
      */
     function retire(uint256 prophetId) external {
         Prophet p = Prophet(payable(prophetAt(prophetId)));
@@ -459,10 +543,34 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 remaining = p.treasury();
         if (remaining > 0) p.stakeOut(msg.sender, remaining, collateral);
 
+        // Drawn here for symmetry with the collateral, though `drawCognition`
+        // deliberately carries no `alive` modifier and so would work after die()
+        // too. All-or-nothing means asking for the whole balance always succeeds.
+        uint256 cognition = p.drawCognition(address(p).balance);
+
         p.die(windowCount);
         aliveCount -= 1;
         _removeLiving(prophetId);
-        emit Retired(prophetId, msg.sender, remaining);
+
+        // LAST, and deliberately after every state write. This is the only call in
+        // `retire` that can hand control to arbitrary code — an entrant contract's
+        // `receive` — and a reentrant `retire` reaching `_removeLiving` a second
+        // time would run the swap-remove twice and corrupt `living`. Placed after
+        // the writes, a reentrant call simply reverts on `ProphetIsDead`.
+        uint256 cognitionReturned;
+        if (cognition > 0) {
+            (bool ok,) = msg.sender.call{value: cognition}("");
+            if (ok) {
+                cognitionReturned = cognition;
+            } else {
+                // NOT a revert. An entrant whose address cannot receive native must
+                // still be able to leave: the collateral, the end of metabolism and
+                // the freed arena slot all matter more than the refund. Logged so
+                // the owner can `sweep` it to them instead.
+                emit CognitionUnspent(prophetId, cognition);
+            }
+        }
+        emit Retired(prophetId, msg.sender, remaining, cognitionReturned);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -473,9 +581,18 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  Open a window and pay for every living organism to think about it.
      *
      *  One `createAdvancedRequest` per organism, each naming the ORGANISM as the
-     *  callback target while this contract funds the deposit. That asymmetry —
-     *  `callbackAddress` need not be the payer — is what keeps a ten-day unattended
-     *  run down to a single native balance to monitor.
+     *  callback target while this contract is the payer of record. That asymmetry —
+     *  `callbackAddress` need not be the payer — is what lets the answer land
+     *  directly on the organism that asked.
+     *
+     *  THE ORGANISM FUNDS IT. This contract is only the conduit: it draws the
+     *  deposit out of the organism's own native balance immediately before each
+     *  request and forwards exactly that, keeping nothing. It used to pay out of its
+     *  own float, which made the protocol's bill grow linearly with the number of
+     *  living organisms — that is, linearly with evolutionary success, the one thing
+     *  the whole system is trying to maximise. An organism that cannot afford the
+     *  deposit is skipped, abstains, and is still charged metabolism at settlement:
+     *  running out of cognition is how selection is supposed to feel.
      *
      *  Every request is wrapped in try/catch. A population that a single
      *  malformed organism can halt is not a population.
@@ -532,6 +649,17 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             Prophet p = Prophet(payable(prophets[living[i] - 1]));
             if (p.dead()) continue;
 
+            // THE ORGANISM PAYS. Population is a conduit, not a patron: it forwards
+            // exactly what it drew and keeps nothing. A short draw takes nothing at
+            // all (see Prophet.drawCognition), so an organism that cannot afford to
+            // think simply does not think — it will abstain in commitAll, open an
+            // empty position, and still be charged metabolism at settlement. That is
+            // the selection pressure working, not a fault.
+            if (p.drawCognition(dep) < dep) {
+                emit ThinkFailed(living[i]);
+                continue;
+            }
+
             bytes memory payload =
                 abi.encodeCall(ILLMAgent.inferString, (context, p.systemPrompt(), chainOfThought, allowed));
 
@@ -551,6 +679,11 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                 // id, so emitting `i + 1` would blame a different organism and
                 // `monitor.ts` would chase the wrong one.
                 emit ThinkFailed(living[i]);
+                // The deposit was already drawn and the request did not happen, so
+                // `dep` of an ENTRANT's native is now sitting in this contract. Not
+                // refunded here: this loop is the scope that overflows the --via-ir
+                // stack limit. Emitted so it is reconcilable off chain instead.
+                emit CognitionUnspent(living[i], dep);
             }
         }
 
@@ -785,8 +918,26 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  the prompt, so variation is informed by measured fitness rather than random
      *  — Lamarckian rather than strictly Darwinian, which is the honest description
      *  and also the only one that converges over the ~1,000 windows available.
+     *
+     *  THE PARENT PAYS FOR IT. Breeding is an inference like any other, so leaving
+     *  it house-funded would have left the protocol with a recurring bill that grows
+     *  in proportion to evolutionary success — precisely the dynamic organism-paid
+     *  cognition exists to remove. Note that this does not endanger the settlement
+     *  it runs inside: `settleWindow` moves COLLATERAL and `drawCognition` moves
+     *  NATIVE, and the two balances do not interact.
      */
     function _requestMutation(Prophet p) internal {
+        uint256 dep = requestDeposit();
+
+        // Unaffordable breeding is a skip, never a revert: reverting here would
+        // abort an entire settlement over one organism's empty pocket. The parent
+        // keeps its streak and its surplus and may breed in a later window, so the
+        // merit it earned is deferred rather than destroyed.
+        if (p.drawCognition(dep) < dep) {
+            emit BreedingUnaffordable(p.prophetId());
+            return;
+        }
+
         bytes memory payload = abi.encodeCall(
             ILLMAgent.inferString,
             (
@@ -799,7 +950,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             )
         );
 
-        try IAgentRequester(agentRequester).createAdvancedRequest{value: requestDeposit()}(
+        try IAgentRequester(agentRequester).createAdvancedRequest{value: dep}(
             llmAgentId,
             address(p),
             Prophet.handleMutation.selector,
@@ -812,7 +963,11 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             p.noteMutating(requestId);
             emit BreedingRequested(p.prophetId(), requestId);
         } catch {
+            // `ThinkFailed` is kept as-is because `monitor.ts` filters on its
+            // topic0; `CognitionUnspent` is the accounting for the deposit that was
+            // drawn from the parent and bought nothing.
             emit ThinkFailed(p.prophetId());
+            emit CognitionUnspent(p.prophetId(), dep);
         }
     }
 
@@ -864,6 +1019,26 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         if (Prophet(payable(p)).dead()) revert ProphetIsDead();
         if (!IERC20Like(collateral).transferFrom(msg.sender, p, amount)) revert TransferFailed();
         Prophet(payable(p)).fund(amount);
+    }
+
+    /**
+     *  Pay for an organism's thinking.
+     *
+     *  The native sibling of `fundProphet`, and permissionless for the same reason:
+     *  it can only ever move value INTO an organism, and buying someone else's
+     *  cognition confers no control whatsoever over what they conclude — the genome
+     *  is fixed and the inference is the platform's.
+     *
+     *  This is the sponsorship surface. `fundProphet` buys an organism a bigger
+     *  wager; this one buys it more windows to live through, which is the scarcer
+     *  of the two.
+     */
+    function topUpCognition(uint256 prophetId) external payable {
+        address p = prophetAt(prophetId);
+        if (Prophet(payable(p)).dead()) revert ProphetIsDead();
+        (bool ok,) = p.call{value: msg.value}("");
+        if (!ok) revert TransferFailed();
+        emit CognitionFunded(prophetId, msg.sender, msg.value);
     }
 
     /// @dev Spend a qualifying survivor's surplus to breed it now, rather than
@@ -961,9 +1136,20 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      or the run stops — `monitor.ts` watches exactly this balance.
     receive() external payable {}
 
-    /// @dev Recover collateral or native that is not owed to an organism. Cannot
-    ///      touch a Prophet's treasury: this contract holds nothing between
-    ///      transactions except accumulated metabolic reimbursement.
+    /**
+     *  Recover collateral or native that is not owed to an organism.
+     *
+     *  Cannot touch a `Prophet`'s treasury — an organism custodies its own
+     *  collateral and its own cognition balance, and this contract holds only the
+     *  accumulated metabolic reimbursement plus any cognition deposit that was
+     *  drawn for a request that then reverted.
+     *
+     *  Which makes this the reconciliation path for `CognitionUnspent`: pass
+     *  `address(0)` and the organism's address to return the native to the organism
+     *  it was drawn from. Doing it here rather than inside `think`'s loop is forced
+     *  by the --via-ir stack limit, so the event is the record and this is the
+     *  remedy.
+     */
     function sweep(address token, address to, uint256 amount) external onlyOwner {
         if (token == address(0)) {
             (bool ok,) = to.call{value: amount}("");

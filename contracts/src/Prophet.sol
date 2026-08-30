@@ -501,6 +501,37 @@ contract Prophet {
         treasury += amount;
     }
 
+    /**
+     *  Hand Population the native value for one inference this organism is about
+     *  to be charged for.
+     *
+     *  Reports failure by returning less than `amount` instead of reverting: the
+     *  caller compares the two and skips the organism, so an empty pocket becomes
+     *  an abstention rather than a revert that would take the whole window down
+     *  with it.
+     *
+     *  ALL OR NOTHING, and that is the correctness-relevant part. An earlier shape
+     *  sent `min(amount, balance)` and let the caller reject the short draw — which
+     *  moved the organism's entire remaining balance into Population and bought it
+     *  no inference, so one entrant's residual STT quietly funded other entrants'
+     *  thinking with no event to reconcile against. Sending nothing when the
+     *  balance is short leaves the residue where it belongs, and makes a top-up
+     *  cumulative instead of a payment into a leak.
+     *
+     *  Note there is no `alive` modifier. A dead organism is never in `living`, so
+     *  `think` cannot reach it, and any native it still holds should stay drainable
+     *  by the same path that funded it rather than being stranded behind a
+     *  liveness check.
+     */
+    function drawCognition(uint256 amount) external onlyPopulation returns (uint256 sent) {
+        if (amount > address(this).balance) return 0;
+        sent = amount;
+        if (sent > 0) {
+            (bool ok,) = population.call{value: sent}("");
+            if (!ok) revert TransferFailed();
+        }
+    }
+
     /*//////////////////////////////////////////////////////////////
                                 INTERNAL
     //////////////////////////////////////////////////////////////*/

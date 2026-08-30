@@ -74,6 +74,10 @@ contract DarwinTest is Test {
 
     address owner = address(0xB0B);
 
+    /// @dev What a freshly initialized proxy sets `cognitionEndowment` to, recorded
+    ///      before `setUp` overrides it with a season.
+    uint256 defaultCognitionEndowment;
+
     function setUp() public {
         collateral = new MockERC20("Test USDC", "tUSDC", 6);
         outcomeToken = new MockOutcomeToken();
@@ -120,6 +124,19 @@ contract DarwinTest is Test {
         vm.deal(address(population), 100 ether);
         collateral.mint(address(population), 10_000 * ONE);
 
+        // Captured BEFORE the season overrides it, because the value a fresh proxy
+        // initializes with is the value the live deploy gets — `Deploy.s.sol` never
+        // calls `setSeason`. See `test_cognition_freshDeployIsNotBornBrainDead`.
+        defaultCognitionEndowment = population.cognitionEndowment();
+
+        // A season with a real cognition floor, so newborns can afford to think and
+        // entrants are held to funding their own. 1 ether is ~10 windows at the mock
+        // deposit (0.093), which matches what `_fundCognition` gives a founder — a
+        // child that could only afford ONE thought would make every multi-window
+        // breeding test depend on funding order rather than on what it asserts.
+        vm.prank(owner);
+        population.setSeason(10 * ONE, 1 ether);
+
         _pushWindow();
     }
 
@@ -153,6 +170,17 @@ contract DarwinTest is Test {
         }
         vm.prank(owner);
         population.spawnGenesis(genomes);
+        _fundCognition(population.prophetCount());
+    }
+
+    /// @dev Cognition is paid by each organism now, so seeding a population means
+    ///      funding its thinking too. Kept a separate helper, and called with an
+    ///      explicit count, so a test can deliberately leave an organism unable to
+    ///      afford a thought — which is the selection pressure, not a fault.
+    function _fundCognition(uint256 n) internal {
+        for (uint256 id = 1; id <= n; ++id) {
+            vm.deal(population.prophetAt(id), 1 ether);
+        }
     }
 
     function _p(uint256 id) internal view returns (Prophet) {
@@ -420,9 +448,12 @@ contract DarwinTest is Test {
     ///      tests below assert about ownership rather than about ERC20 approval.
     function _enter(address who, string memory genome, uint256 amount) internal returns (uint256 id) {
         collateral.mint(who, amount);
+        // Read and deal BEFORE the prank: a view read consumes it (see `_econ`).
+        uint256 cognition = population.cognitionEndowment();
+        vm.deal(who, who.balance + cognition);
         vm.startPrank(who);
         collateral.approve(address(population), amount);
-        id = population.enter(genome, amount);
+        id = population.enter{value: cognition}(genome, amount);
         vm.stopPrank();
     }
 
@@ -449,6 +480,50 @@ contract DarwinTest is Test {
         vm.expectRevert(Population.EndowmentTooSmall.selector);
         population.enter("underfunded", 9 * ONE);
         vm.stopPrank();
+    }
+
+    /**
+     *  The house grant must not be farmable.
+     *
+     *  Entry is free at the door and `retire` gives the collateral back, so if the
+     *  arena funded an entrant's cognition, enter → retire → repeat would convert
+     *  the operator's STT into free inference indefinitely, against a documented
+     *  1-STT/day faucet. The entrant brings it instead. Founders and children are
+     *  house-funded because neither is farmable — one is owner-only, the other
+     *  takes four consecutive correct windows to earn.
+     */
+    function test_entry_requiresTheEntrantToFundTheirOwnCognition() public {
+        address alice = address(0xA11CE);
+        collateral.mint(alice, 100 * ONE);
+        uint256 floorNeeded = population.cognitionEndowment();
+        // Guards the revert below against being vacuous: with a zero floor there is
+        // nothing to be short of and the test would pass while asserting nothing.
+        assertGt(floorNeeded, 0, "the season must have a cognition floor");
+        vm.deal(alice, floorNeeded);
+
+        vm.startPrank(alice);
+        collateral.approve(address(population), 100 * ONE);
+        vm.expectRevert(Population.CognitionTooSmall.selector);
+        population.enter{value: floorNeeded - 1}("thinks for free", 10 * ONE);
+        vm.stopPrank();
+    }
+
+    /// @dev Every wei of `msg.value` must reach the organism, the floor and the
+    ///      excess alike. The arena is a conduit for cognition, not a toll booth —
+    ///      and an entrant who wants a long-lived organism funds it once, at entry.
+    function test_entry_forwardsEveryWeiOfCognitionToTheOrganism() public {
+        address alice = address(0xA11CE);
+        collateral.mint(alice, 100 * ONE);
+        vm.deal(alice, 3 ether);
+        uint256 popBefore = address(population).balance;
+
+        vm.startPrank(alice);
+        collateral.approve(address(population), 100 * ONE);
+        uint256 id = population.enter{value: 3 ether}("well funded", 10 * ONE);
+        vm.stopPrank();
+
+        assertEq(address(_p(id)).balance, 3 ether, "the organism did not receive the whole payment");
+        assertEq(address(population).balance, popBefore, "the arena kept part of the payment");
     }
 
     /**
@@ -508,6 +583,52 @@ contract DarwinTest is Test {
         assertEq(population.livingCount(), livingBefore - 1, "living count did not fall");
         assertEq(population.aliveCount(), population.livingCount(), "aliveCount drifted from the index");
         assertEq(population.prophetCount(), 1, "a retired organism must stay in the lineage");
+    }
+
+    /**
+     *  Exiting must return BOTH currencies.
+     *
+     *  The entrant funded the collateral and the cognition, so leaving the unspent
+     *  native in a dead organism would turn `enter`'s native requirement into a
+     *  one-way ratchet: nothing can ever move it again, because a dead organism
+     *  never thinks and `retire` cannot be called twice.
+     */
+    function test_retire_returnsUnspentCognitionToo() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 10 * ONE);
+
+        uint256 stranded = address(_p(id)).balance;
+        // Vacuity guard: with no cognition to return, the delta below is 0 == 0.
+        assertGt(stranded, 0, "the organism must hold cognition for this to mean anything");
+        uint256 before = alice.balance;
+
+        vm.prank(alice);
+        population.retire(id);
+
+        assertEq(alice.balance - before, stranded, "unspent cognition was not returned");
+        assertEq(address(_p(id)).balance, 0, "the dead organism kept native it can never spend");
+    }
+
+    /// @dev A partly-spent organism returns exactly the remainder — the windows it
+    ///      already thought through are paid for and gone, which is the same rule
+    ///      the collateral follows.
+    function test_retire_returnsOnlyTheCognitionNotYetSpent() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 10 * ONE);
+
+        uint256 dep = population.requestDeposit();
+        uint256 funded = address(_p(id)).balance;
+        _think();
+        _answer(id, "UP_MOMENTUM");
+        _commit();
+        _upWins();
+        _settle();
+
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        population.retire(id);
+
+        assertEq(alice.balance - before, funded - dep, "the refund did not net off the thought it bought");
     }
 
     function test_retire_isEntrantOnly() public {
@@ -708,6 +829,164 @@ contract DarwinTest is Test {
         population.forcePhase(0);
         _think();
         assertGt(_p(1).pendingBeliefRequestId(), 0, "cognition recovered");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                       COGNITION — WHO PAYS FOR IT
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev The whole point of the change: the protocol stops subsidising thought.
+    ///      Note `_seed` funds cognition, so the balance moved here is the
+    ///      organism's own and Population is only a conduit.
+    function test_cognition_organismPaysItsOwnInference() public {
+        _seed(1);
+        Prophet p = _p(1);
+
+        uint256 popBefore = address(population).balance;
+        uint256 orgBefore = address(p).balance;
+        uint256 dep = population.requestDeposit();
+
+        _think();
+
+        assertEq(orgBefore - address(p).balance, dep, "organism did not pay its own deposit");
+        // Population forwarded exactly what it drew, so its balance is unchanged.
+        assertEq(address(population).balance, popBefore, "population subsidised the request");
+        assertGt(p.pendingBeliefRequestId(), 0, "no request was made");
+    }
+
+    /// @dev Dying because you can no longer afford to think is the intended
+    ///      selection pressure, not a failure mode — so it must degrade into an
+    ///      abstention that still pays metabolism, and must not halt the window.
+    function test_cognition_brokeOrganismAbstainsAndStillPaysMetabolism() public {
+        _seed(2);
+        Prophet broke = _p(1);
+        Prophet solvent = _p(2);
+
+        vm.deal(address(broke), 0);
+
+        uint256 treasuryBefore = broke.treasury();
+        _think();
+
+        assertEq(broke.pendingBeliefRequestId(), 0, "broke organism should not have a request");
+        assertGt(solvent.pendingBeliefRequestId(), 0, "solvent organism should have thought");
+
+        _answer(2, "UP_MOMENTUM");
+        _commit();
+        _upWins();
+        _settle();
+
+        assertEq(broke.abstainCount(), 1, "failure to afford thought is an abstention");
+        assertEq(treasuryBefore - broke.treasury(), population.metabolicCost(), "metabolism was not charged");
+    }
+
+    /// @dev Buying someone else's cognition confers no control over what they
+    ///      conclude, which is why this can be permissionless.
+    function test_cognition_topUpIsPermissionless() public {
+        _seed(1);
+        address stranger = address(0x51A5);
+        vm.deal(stranger, 1 ether);
+        uint256 orgBefore = address(_p(1)).balance;
+
+        vm.prank(stranger);
+        population.topUpCognition{value: 0.5 ether}(1);
+
+        assertEq(address(_p(1)).balance - orgBefore, 0.5 ether, "top-up did not land");
+    }
+
+    /**
+     *  The one assertion that catches the deploy-day version of this mistake.
+     *
+     *  `initialize` set `cognitionEndowment = 0` while cognition was house-funded,
+     *  which was harmless then and became fatal the moment the organism started
+     *  paying: `Deploy.s.sol` never calls `setSeason`, so a zero default ships to
+     *  Shannon, `think` skips every organism for want of native, and the whole
+     *  population abstains its way to extinction while emitting nothing but
+     *  `ThinkFailed`. It fails silently and looks like an inference outage.
+     */
+    function test_cognition_freshDeployIsNotBornBrainDead() public view {
+        assertGt(defaultCognitionEndowment, 0, "a fresh deploy would birth organisms that cannot think");
+        // Enough for more than one thought, at the deposit this deploy would pay.
+        assertGt(defaultCognitionEndowment, population.requestDeposit(), "one inference is not a lifespan");
+    }
+
+    /// @dev Breeding is an inference too. If the house kept paying for it, the
+    ///      recurring bill would still grow with evolutionary success — the exact
+    ///      dynamic this change exists to remove.
+    function test_cognition_breedingIsPaidByTheParent() public {
+        Prophet winner = _p(_breedingCandidate());
+
+        uint256 popBefore = address(population).balance;
+        uint256 orgBefore = address(winner).balance;
+        uint256 dep = population.requestDeposit();
+
+        _settle();
+
+        assertGt(winner.pendingMutationRequestId(), 0, "the winner should be breeding");
+        assertEq(orgBefore - address(winner).balance, dep, "the parent did not pay for the mutation");
+        assertEq(address(population).balance, popBefore, "population subsidised the breeding");
+    }
+
+    /// @dev A parent that bred on merit but cannot pay for the thought keeps its
+    ///      streak and its surplus. Reverting instead would abort the entire
+    ///      settlement over one organism's empty pocket.
+    function test_cognition_unaffordableBreedingIsSkippedNotFatal() public {
+        Prophet winner = _p(_breedingCandidate());
+
+        // Drained AFTER thinking is paid for, so this isolates the breeding draw.
+        vm.deal(address(winner), 0);
+        uint256 treasuryBefore = winner.treasury();
+
+        _settle();
+
+        // VACUITY GUARD, and the reason this test has a helper behind it: a parent
+        // that was never eligible also has no pending mutation, so without proving
+        // eligibility from the post-settlement numbers `settleAll` itself compared,
+        // the assertion below passes for the wrong reason. It did once.
+        assertGe(winner.streak(), population.breedStreak(), "the parent was not eligible: streak");
+        assertGe(winner.treasury(), _breedThreshold(), "the parent was not eligible: surplus");
+
+        assertEq(winner.pendingMutationRequestId(), 0, "it could not afford to breed");
+        assertEq(winner.streak(), 1, "the streak survives an unaffordable breeding");
+        assertGt(winner.treasury(), treasuryBefore, "and it kept the surplus it won");
+        assertFalse(winner.dead(), "settlement completed for everyone else");
+    }
+
+    /// @dev The breeding surplus is measured against the HOUSE endowment, not the
+    ///      organism's own stake, so a founder that wins one window off a
+    ///      same-sized opponent does not clear it. Mirrors what `Population`
+    ///      computes internally.
+    function _breedThreshold() internal view returns (uint256) {
+        uint256 endowment = population.endowment();
+        return endowment + ((endowment * population.breedSurplusBps()) / 10_000);
+    }
+
+    /**
+     *  Two organisms, one window, and a winner that is eligible to breed the moment
+     *  `settleAll` grades it — returns that winner's id with the window committed
+     *  and settlement not yet called.
+     *
+     *  The surplus is funded rather than won because the pair is capped at the
+     *  smaller side's stake, so no single window can lift a founder from its
+     *  starting treasury over the breeding threshold. Funding it keeps the
+     *  cognition assertions about the mutation deposit alone.
+     */
+    function _breedingCandidate() internal returns (uint256 winnerId) {
+        _seed(2);
+        winnerId = 1;
+
+        Econ memory e = _econ();
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        collateral.mint(address(this), 100 * ONE);
+        collateral.approve(address(population), 100 * ONE);
+        population.fundProphet(winnerId, 100 * ONE);
+
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
     }
 
     /*//////////////////////////////////////////////////////////////
