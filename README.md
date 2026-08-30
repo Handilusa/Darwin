@@ -34,8 +34,8 @@ The headline number is **generation**, not PnL.
     │   ①  THINK                     ②  COMMIT                             │
     │   Population.think()           Population.commitAll()                │
     │   one AgentRequester call      Up-sayers paired against              │
-    │   per living organism;         Down-sayers via                       │
-    │   3 validators run the         pool.mintSet(yesTo, noTo, amt)        │
+    │   per living organism;         Down-sayers by the venue —            │
+    │   3 validators run the         IArenaVenue.openOpposing(up, down)    │
     │   model, attest on-chain       — independent recipients, so the      │
     │        │                         population is its own counterparty  │
     │        ▼                                │                            │
@@ -47,7 +47,7 @@ The headline number is **generation**, not PnL.
     │   streak ≥ 4 and surplus?      BinarySettlement resolves the window  │
     │   mutate the genome via        → reactivity precompile 0x0100 fires  │
     │   a second inference call        a synthetic tx IN THE SAME BLOCK    │
-    │   → child contract, gen+1      → finalizeAndRedeem + fitness + death │
+    │   → child contract, gen+1      → venue.redeemFor + fitness + death   │
     │        └───────────────────────────────┘                             │
     └──────────────────────────────────────────────────────────────────────┘
                       metabolism is charged in ③, unconditionally
@@ -57,18 +57,47 @@ The headline number is **generation**, not PnL.
 
 ## Why this is built on DreamDEX and Somnia specifically
 
-Four primitives, none of them incidental:
+Four primitives. Two of them turned out to be replaceable and two did not, and the difference
+is worth stating precisely — it is the difference between a demo that happens to sit on this
+chain and one that could not exist anywhere else.
+
+**Irreplaceable. Remove either and there is no project:**
 
 | Primitive | Why the design collapses without it |
 |---|---|
-| `mintSet(yesTo, noTo, amount)` with **independent recipients** | Two organisms that disagree become each other's counterparty. No order book, no market maker, no cold start — which on a quiet testnet is the difference between a live population and a stalled one. |
-| `finalizeAndRedeem(...) → collateralOut` | Resolution and consequence are one call, so an organism's death is *atomic* with the settlement that caused it rather than a follow-up transaction. |
-| `AgentRequester` + `ILLMAgent.inferString` | A contract can call a language model and receive a validator-consensus answer with per-validator attestations. The organism's reasoning is on-chain because it was *produced* on-chain, not uploaded afterwards. |
+| `AgentRequester` + `ILLMAgent.inferString` | A contract can call a language model and receive a validator-consensus answer with per-validator attestations. The organism's reasoning is on-chain because it was *produced* on-chain, not uploaded afterwards. There is no way to fake this from off-chain and no other chain to move it to. |
 | Reactivity precompile `0x0100` | Validators insert a synthetic transaction in the same block as a matching log. Settlement *causes* selection with no keeper in the causal chain. |
+
+**Replaceable, and now demonstrably so:**
+
+| Primitive | What it gives, and what replaced it |
+|---|---|
+| `mintSet(yesTo, noTo, amount)` with **independent recipients** | Two organisms that disagree become each other's counterparty. No order book, no market maker, no cold start — which on a quiet testnet is the difference between a live population and a stalled one. Reached only through `IArenaVenue.openOpposing`; `DirectDuelVenue` gets the same property from a two-party escrow with no market at all. |
+| `finalizeAndRedeem(...) → collateralOut` | Resolution and consequence are one call, so an organism's death is *atomic* with the settlement that caused it rather than a follow-up transaction. Reached only through `IArenaVenue.redeemFor`, which the duel venue satisfies from the sign of a price change. |
+
+Both organisms' contracts talk only to `IArenaVenue` (`openOpposing`, `redeemFor`,
+`positionToken`, `collateral`) — `Population` and `Prophet` never touch a market, a pool or a
+settlement contract directly, and an adapter can be swapped in with one `setWiring` call.
+
+The duel arena runs as a **second `Population` proxy over the same `Prophet` beacon and the same
+price source**, with only the `venue` field differing — so the same organism code settles against
+two unrelated mechanisms, and anything that breaks between them is the venue. That is asserted
+end-to-end in the test suite (`_duelArena`, `test_venue_*`). Be precise about where it stops:
+`Deploy.s.sol` deploys **one** `Population` on **one** `DreamDEXVenue`, so a second live arena is
+a second deploy, not a flag — and no test migrates a population *across* adapters.
+`test_venue_canBeRepointedBetweenWindows` repoints to a fresh instance of the same adapter and
+proves the seam (the new venue issues the pair, and the organism is graded through both), which
+is a weaker claim than cross-adapter migration and is deliberately the only one made.
+
+Note the limit of the replaceability claim too, because it is easy to overstate. A duel arena
+settles without a market, but `PushedPriceSource` still resolves a real DreamDEX market to
+compute `tradeable` and `think` refuses an untradeable window — so *opening* a window still needs
+one. Cutting that last thread is an `IPriceSource` v2, not a venue change, and it is not built.
 
 Zero maker, taker and settlement fees are what make the metabolic thesis load-bearing rather
 than decorative: with no house edge, random forecasting has zero expected drift, so the only
-thing that can kill a bad organism is the cost of having thought.
+thing that can kill a bad organism is the cost of having thought. Measured, not assumed —
+`settlementFeeBpsTimes1k` is **0 across 398 of 398 finalized markets** over 80,000 blocks.
 
 ---
 
@@ -85,12 +114,19 @@ and true.
 - Beliefs are produced by on-chain inference with per-validator attestations, and the verbatim
   model output is stored on the organism.
 - Every belief carries a **thesis** as well as a direction — `UP_MOMENTUM`, `DOWN_REVERSION`,
-  `ABSTAIN`, nine allowed answers in total, constrained by `inferString`'s `allowedValues` so
-  a language model's output is safe to act on inside a contract. Because the thesis is on
-  chain too, selection over *ideas* is readable straight from the event log: if momentum
-  organisms die out while reversion organisms survive, the log says so.
-- Positions are real, fully collateralised DreamDEX binary positions on the live 15-minute
-  market, opened via `mintSet` and redeemed via `finalizeAndRedeem`.
+  `ABSTAIN`, nine allowed answers in total, requested through `inferString`'s `allowedValues`.
+  Note where the safety actually comes from: not from trusting the platform to enforce the
+  constraint, but from `Genome.parseAnswer` mapping anything unrecognised to
+  `(Abstain, Unknown)` — never a coin flip — so a language model's output is safe to act on
+  inside a contract even if the constraint is ignored. Because the thesis is on chain too,
+  selection over *ideas* is readable straight from the event log: if momentum organisms die out
+  while reversion organisms survive, the log says so.
+- Positions are real and fully collateralised, and *how* they are held is a replaceable part.
+  On the DreamDEX arena they are binary positions on the live 15-minute market, opened via
+  `mintSet` and redeemed via `finalizeAndRedeem`. On the duel arena they are a two-party escrow
+  resolved by the sign of the price change. Both are reached only through `IArenaVenue`, and the
+  duel arena is exercised end-to-end as a second `Population` over the same beacon — same
+  organism code, unrelated settlement mechanism.
 - Death is irreversible. There is no revival path — not from the owner, not from a beacon
   upgrade. `test_death_isIrreversible` and `test_upgrade_cannotRevive` assert it.
 - Fitness, death, mutation and lineage are computed on-chain.
@@ -123,31 +159,73 @@ and true.
   this document.
 - **No order-book routing.** `placeBinaryOrder` *is* callable from a contract — that was the
   Day-0 blocking question and the answer is in `SPIKE.md` — but this build does not use it.
-  Organisms take positions only by being paired against each other through `mintSet`. An
+  Organisms take positions only by being paired against each other through the venue. An
   organism whose belief nobody contradicted takes no position that window and emits
   `Unpaired`. That is a deliberate trade (deterministic, no book dependency, no cold start)
   with a real cost: in a window where all eight agree, nothing is at stake. `monitor.ts`
   alerts on exactly that, because it is also the signature of genomes converging.
+- **Not two live arenas out of one deploy, and not a migration.** `Deploy.s.sol` deploys one
+  `Population` on one `DreamDEXVenue`; the duel arena is a second proxy over the same beacon, so
+  running both on chain is a second deploy. And no test moves a population *across* adapters —
+  `test_venue_canBeRepointedBetweenWindows` swaps in a fresh instance of the same one. Repointing
+  across adapters mid-run would also be genuinely unsafe: `Population.setWiring` has no phase
+  guard, and the two fail in opposite directions on a position the new venue never issued.
+  `DreamDEXVenue` reverts `UnknownPosition` — loud, isolated as `SettleFailed`. `DirectDuelVenue`
+  correctly returns `0`, because `IArenaVenue` requires a loser to be paid rather than to revert,
+  which would grade both duellists as total losses and leave the escrow in the abandoned venue
+  with no path out short of a beacon upgrade. So a repoint is safe only in phase 0 with no
+  position open — an operator rule the code does not enforce, and saying otherwise would be the
+  second-easiest lie in this document.
 
-**Still unverified** (marked `UNVERIFIED` at each site in the code, and listed in `SPIKE.md`):
+**Still unverified** (marked `UNVERIFIED` at each site in the code; `SPIKE.md` carries the full
+table, including what closed and how):
 
 - The DreamDEX REST response shape used to discover the live window and its opening price
   (`scripts/lib/market.ts`). `PRICE_MODE=manual` exists so nothing is blocked on it.
-- The external entrypoint the reactivity precompile invokes, and the 11-parameter
-  `subscribe(...)` signature. Isolated in `SelectionEngine` and behind
-  `REACTIVITY_CALLBACK_SIG` so the unverified part is one adapter and one env var.
-- `settlementFeeBpsTimes1k` on a finalized market. **`npm run fee` measures it.** The
-  zero-fee premise is what makes metered cognition the only selection pressure; if it is
-  non-zero, the economics need recalibrating, not renarrating — and that script does the
-  arithmetic rather than leaving it to a judgement call.
-- The exact agent ids and current per-agent inference prices (`agents.somnia.network`).
+- Whether the validators **honour** a non-empty `allowedValues`. The request *shape* is
+  confirmed — a payload carrying all nine values with `chainOfThought = true` was simulated
+  against the live `AgentRequester` and accepted — but that only proves it is not rejected.
+  It degrades safely (`Genome.parseAnswer` maps anything unrecognised to `(Abstain, Unknown)`,
+  never a coin flip) and it is the most consequential open item here, because a constraint that
+  is silently ignored does not break the contract, it silences selection.
 - What `Response.receipt` commits to, and what happens when validators disagree on an LLM
   output. Non-`Success` is handled as an abstain either way, so this is a question about
   what the attestation *means*, not about whether the contract survives it.
+- Whether tUSDC's `faucet(uint256)` takes raw units or whole tokens (`scripts/fund.ts`).
+  Raw units are assumed; the failure mode is a funding call that mints ~0, which is visible
+  immediately in a balance read.
 - Whether an earlier Somnia reactivity project already shipped population/evolution
   mechanics. This is the most exposed novelty claim in the pitch, and WebSearch was
   unavailable throughout the research phase, so it is unchecked. Nothing in the submission
   claims to be the first.
+
+**Closed by measurement on 2026-08-29**, and listed because a README that leaves resolved
+unknowns on the page is understating itself as surely as one that overstates:
+
+- `settlementFeeBpsTimes1k` is **0 across 398 of 398 finalized markets** over 80,000 blocks,
+  all collateralised in tUSDC, none voided. `npm run fee` re-measures it against a live market
+  on demand — and if it is ever non-zero, it computes the fee drag against the metabolic cost
+  per window and says which of the two is doing the selecting. A measured number changes the
+  claim, not the narration.
+- The reactivity handler selector is **`onEvent(address,bytes32[],bytes)`**, read out of
+  `SomniaEventHandlerABI` in the installed `@somnia-chain/reactivity@0.2.1`. This repo's
+  earlier placeholder `onSomniaEvent` does not exist anywhere in the SDK. The 11-field
+  subscription tuple decodes cleanly against live `getSubscriptionInfo` reads on Shannon, and
+  `SelectionEngine` no longer carries a selector escape hatch (`subscribe.ts` keeps one env
+  override, which should not normally be set).
+- The agent id is **`12847293847561029384`**, of three in 6,236 request-creation logs the only
+  one carrying `inferString`'s selector — 96 of 96 times — and decoding one of its live payloads
+  yields an English oracle prompt. It is a correlation, not a published fact, which is why the
+  Quickstart also says where to re-derive it.
+- Inference prices are measured, not quoted: the deposit floor is exactly `0.01 STT ×
+  subcommitteeSize` (swept `getAdvancedRequestDeposit(n)` for n = 0..21), and five real
+  single-request transactions cost **0.0309 STT net with nothing refunded**. The deposit is not
+  escrow. p50 latency 0.6 s, p99 4.3 s, max 5.3 s over 6,231 completed lifecycles, and
+  6,232 creations produced 6,232 terminal-status events — so `requestTimeout = 300` has ~50×
+  headroom.
+- There is no minimum inference timeout — only `0` is rejected. Swept 1 → 86,400 s by
+  `eth_call` with a balance `stateOverride`, which simulates a payable call with no private key
+  and no funds, so nothing was broadcast and no STT was spent to establish it.
 
 ---
 
@@ -162,8 +240,9 @@ darwin/
 │  │  ├─ SelectionEngine.sol     Reactive adapter: settlement → selection, same block
 │  │  ├─ Genome.sol              Prompt assembly, the 9 allowed answers, answer parsing
 │  │  ├─ PushedPriceSource.sol   Two pushed prices; everything else read on-chain
-│  │  └─ interfaces/             IDreamDEX, ISomnia, IPriceSource
-│  ├─ test/Darwin.t.sol          ~40 tests; mocks for AgentRequester and 0x0100
+│  │  ├─ interfaces/             IArenaVenue, IDreamDEX, ISomnia, IPriceSource
+│  │  └─ venues/                 DreamDEXVenue, DirectDuelVenue — swappable settlement
+│  ├─ test/Darwin.t.sol          98 tests; mocks for AgentRequester and 0x0100
 │  ├─ script/                    Deploy.s.sol, Seed.s.sol
 │  └─ deployments/               <chainid>.json — read by every script and the frontend
 ├─ genomes/genesis.json          The eight founders. They must DISAGREE — see the file.
@@ -205,32 +284,45 @@ npm run cadence
 npm run monitor      # in another terminal
 ```
 
-Then wire reactivity, in this order — and do not skip the middle step:
+Then wire reactivity, in this order — and pass `--topic0` yourself rather than letting
+`--discover` choose it:
 
 ```bash
-npm run subscribe -- --discover              # measure the settlement topic0 from the chain
-npm run subscribe -- --topic0 0x… --create
+npm run subscribe -- --discover              # tallies the candidates; READ it, do not obey it
+npm run subscribe -- --topic0 0xb1884334e955f8d8727678d4fa52dd9fc7140ff5e4ad38d358453bd400ada178 --create
 CADENCE_USE_REACTIVITY=true npm run cadence  # wait for one settlement
 npm run prove                                # only if this passes:
                                              #   SelectionEngine.disableFallback()
 ```
 
+`--discover` ranks candidate topics by frequency, and `BinarySettlement` emits two events: it
+would pick **redeem** (`0xe31682dd…`, 281 occurrences) over **finalize** (`0xb1884334…`, 130).
+Subscribing to redeem triggers the population on its own redemption — circular, and it never
+fires first. The two also land in different transactions: an oracle driver batch-finalizes, and
+`finalizeAndRedeem` then only redeems. That gap is precisely what makes the central claim work,
+so getting this one argument wrong does not fail loudly — it builds a subscription that quietly
+never fires.
+
 Until `npm run prove` passes, the strong claim is not licensed and the README's
 "Not claimed" section is the accurate description of the system.
 
-`LLM_AGENT_ID` is not optional and not guessable — fetch it from
-[agents.somnia.network](https://agents.somnia.network). `Deploy.s.sol` refuses to run without
-it, because a population that cannot think abstains every window, pays metabolism anyway, and
-dies of nothing at all.
+`LLM_AGENT_ID` is not optional and not guessable. It was measured from Shannon on 2026-08-29 —
+`12847293847561029384` — and `Deploy.s.sol` refuses to run without it, because a population that
+cannot think abstains every window, pays metabolism anyway, and dies of nothing at all. If it
+ever needs re-deriving, the roster UI is
+[agents.testnet.somnia.network](https://agents.testnet.somnia.network) — **not** the bare
+`agents.somnia.network`, which is mainnet.
 
 ## Verifying the claims yourself
 
 ```bash
-forge test --root contracts -vv     # death irreversible, void pays both sides 0.5,
-                                    # abstain still pays, upgrade preserves lineage
+forge test --root contracts -vv     # 98 tests: death irreversible, void pays both sides 0.5,
+                                    # abstain still pays, upgrade preserves lineage, and both
+                                    # venues graded through one shared organism codebase
+npm test --prefix web               # the real renderer against a fixture, no network, no browser
 npm run fee                         # asserts settlementFeeBpsTimes1k == 0 on a real
                                     # finalized market — the economic premise, measured
-npm run subscribe -- --status        # is reactivity wired, and is its gas payer funded?
+npm run subscribe -- --status       # is reactivity wired, and is its gas payer funded?
 npm run prove                       # same-block settlement → selection
 ```
 

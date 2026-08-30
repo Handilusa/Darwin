@@ -51,7 +51,10 @@ forge inspect Population storage-layout --root contracts
 # then diff slot-by-slot against the tables in STORAGE.md
 ```
 
-Both layouts were diffed on 2026-08-29 with **zero discrepancies** — see `STORAGE.md`.
+Both layouts were re-derived from a clean build and diffed on **2026-08-30** with **zero
+discrepancies** — 29 `Prophet` rows, 47 `Population` rows, and `agentRequester` still alone at
+slot 0 with nothing inherited ahead of it, so OZ v5 namespaced storage still holds. Same result
+on 2026-08-29. See the changelog at the bottom of `STORAGE.md`.
 
 Deploy and seed generation 0:
 
@@ -237,8 +240,12 @@ union is why cadence can migrate from a script to on-chain ticks without a code 
 
 `Population` and `Prophet` never touch a market, a pool or a settlement contract directly. All of it
 goes through **`IArenaVenue`** (`openOpposing`, `redeemFor`, `positionToken`, `collateral`), and two
-adapters implement it. Both are plain and non-upgradeable, and either can be repointed with one
-`setWiring` call — `test_venue_canBeRepointedBetweenWindows`.
+adapters implement it. Both are plain and non-upgradeable, and the venue field is repointable with
+one `setWiring` call — but read `test_venue_canBeRepointedBetweenWindows` before citing it: it
+repoints to a **fresh instance of the same adapter**, and asserts the seam (the new venue issues the
+pair; the organism is graded through both windows). Nothing tests migrating a population *across*
+adapters, and doing it mid-run is unsafe — see the repoint hazard in `STORAGE.md`'s "Contracts with
+no storage constraint": **repoint only in phase 0, with no position open.**
 
 - **`venues/DreamDEXVenue.sol`** — 1:1-backed complete sets on a DreamDEX binary pool, redeemed
   through `BinarySettlement.finalizeAndRedeem`. Holds no value between transactions.
@@ -260,12 +267,15 @@ read it back at settlement through a `try`/`catch`. `positionToken() == address(
 no transferable position — the ERC-6909 surface has no `transferFrom`, so a venue can never *pull* a
 position; the organism pushes.
 
-The demo runs **two `Population` deployments sharing one `Prophet` beacon**, one per venue, rather
-than swapping the venue under a live population — two concurrent leaderboards over identical
-organism code. Note the limit of the claim: a duel arena settles without a market, but
-`PushedPriceSource` still resolves a real market to compute `tradeable` and `think` refuses an
-untradeable window, so *opening* a window still needs one. Cutting that thread is an `IPriceSource`
-v2, not a venue change.
+The duel arena is a **second `Population` proxy over the same `Prophet` beacon and price source**,
+with only the `venue` field differing (`_duelArena` in the test file, plus two end-to-end tests) —
+two concurrent leaderboards over identical organism code, rather than swapping the venue under a
+live population. **In the test suite only:** `Deploy.s.sol` deploys one `Population` on one
+`DreamDEXVenue`, so a second live arena is a second deploy, not a flag. Do not describe it as
+shipped until that script grows the second one. Note the limit of the claim too: a duel arena
+settles without a market, but `PushedPriceSource` still resolves a real market to compute
+`tradeable` and `think` refuses an untradeable window, so *opening* a window still needs one.
+Cutting that thread is an `IPriceSource` v2, not a venue change.
 
 ### The on-chain / off-chain seam
 
@@ -457,8 +467,11 @@ When code is uncertain about an external surface, it is marked `UNVERIFIED` at t
   `web/package.json` is there solely to tell Node these `.js` files are ES modules; it declares no
   dependencies, so "no install, no build" still holds.
 
-- `README.md` still mentions a `REACTIVITY_CALLBACK_SIG` env var. The handler selector
-  `onEvent(address,bytes32[],bytes)` was verified on 2026-08-29 against `SomniaEventHandlerABI` in
-  `@somnia-chain/reactivity@0.2.1`, and `SelectionEngine` no longer has that escape hatch. The
-  `fallbackEnabled` path remains, because a subscription can still be unfunded or unfired.
+- The handler selector `onEvent(address,bytes32[],bytes)` was verified on 2026-08-29 against
+  `SomniaEventHandlerABI` in `@somnia-chain/reactivity@0.2.1`, and `SelectionEngine` no longer
+  has a selector escape hatch. `subscribe.ts:132` keeps `REACTIVITY_CALLBACK_SIG` as an env
+  override against a future SDK change; it should not normally be set, and setting it wrongly is
+  the one remaining way to build a subscription that can never fire. `README.md` no longer
+  advertises it (corrected 2026-08-30). The `fallbackEnabled` path remains, because a
+  subscription can still be unfunded or unfired.
 </content>
