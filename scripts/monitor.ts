@@ -5,11 +5,16 @@
  *    npm run monitor -- --once    # one check; exit code 1 if anything is wrong (cron)
  *
  *  WHAT IT IS ACTUALLY WATCHING FOR. The dangerous failures in this system are all
- *  quiet. A population out of native SOMI does not crash — every organism fails to
- *  think, abstains, pays metabolism, and dies on schedule, producing a beautifully
- *  consistent record of nothing happening. A wedged phase does not crash either; it just
- *  stops advancing. Nothing here alerts on an exception, because the exceptions are not
- *  the problem: it alerts on the absence of progress.
+ *  quiet. An organism out of native STT does not crash — it fails to think, abstains,
+ *  pays metabolism, and dies on schedule, producing a beautifully consistent record of
+ *  nothing happening. A wedged phase does not crash either; it just stops advancing.
+ *  Nothing here alerts on an exception, because the exceptions are not the problem: it
+ *  alerts on the absence of progress.
+ *
+ *  AND IT WATCHES THE ORGANISMS' BALANCES, NOT POPULATION'S. Since organisms pay for
+ *  their own cognition, the contract's own native balance is not the runway — it only
+ *  funds births. A monitor pointed at it would have reported months of runway while
+ *  every organism starved, which is the exact failure this file exists to catch.
  */
 import {
   BELIEF,
@@ -83,12 +88,13 @@ async function main(): Promise<void> {
 async function check(m: Manifest, names: Map<number, string>, seen: Seen | undefined) {
   const now = Math.floor(Date.now() / 1000);
 
-  const [phaseRaw, windowRaw, alive, deposit, native, coll, snapRaw] = await Promise.all([
+  const [phaseRaw, windowRaw, alive, deposit, native, endow, coll, snapRaw] = await Promise.all([
     publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "phase" }),
     publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "windowCount" }),
     publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "aliveCount" }),
     publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "requestDeposit" }),
     publicClient.getBalance({ address: m.population }),
+    publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "cognitionEndowment" }),
     publicClient.readContract({
       address: m.collateral,
       abi: erc20Abi,
@@ -103,13 +109,28 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
   const snap = snapRaw as readonly Snapshot[];
   const living = snap.filter((o) => !o.dead);
 
-  const perWindow = (deposit as bigint) * (alive === 0n ? 1n : (alive as bigint));
-  const runway = perWindow === 0n ? 0n : native / perWindow;
+  // RUNWAY IS PER ORGANISM, NOT PER POPULATION. Each organism pays its own inference
+  // deposits out of its own native balance, so Population's balance says nothing about
+  // whether anybody can think — it only says whether the next CHILD can. Averaging
+  // across organisms would hide the failure too: the population does not stop when the
+  // total runs low, it stops one organism at a time, and the minimum is the one that
+  // is about to go quiet. So poll the organisms and rank them.
+  const dep = deposit as bigint;
+  const runways = await Promise.all(
+    living.map(async (o) => {
+      const bal = await publicClient.getBalance({ address: o.addr });
+      return { o, bal, windows: dep === 0n ? 0n : bal / dep };
+    }),
+  );
+  const runwayOf = new Map(runways.map((r) => [r.o.addr, r.windows]));
+  const cognition = runways.reduce((sum, r) => sum + r.bal, 0n);
+  const worstRunway = runways.reduce((lo, r) => (r.windows < lo ? r.windows : lo), runways[0]?.windows ?? 0n);
   const generations = snap.length === 0 ? 0 : Math.max(...snap.map((o) => o.generation));
 
   log(
     `phase ${PHASE[phase] ?? phase} · window #${window} · alive ${living.length}/${snap.length} · ` +
-      `gen ${generations} · runway ${runway}w · ${fmt(coll, m.collateralDecimals, 2)} tUSDC`,
+      `gen ${generations} · runway ${worstRunway}w worst / ${fmt(cognition, 18, 3)} STT held · ` +
+      `${fmt(coll, m.collateralDecimals, 2)} tUSDC`,
   );
 
   let alerts = 0;
@@ -137,11 +158,34 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
     alert(`window #${window} has not advanced in ${now - seen.at}s — no new forecasts are being made.`);
   }
 
-  /* 3. Cognition runway. The quiet killer. */
-  if (runway < BigInt(MIN_RUNWAY)) {
+  /* 3. Cognition runway. The quiet killer — now per organism, because that is who pays. */
+  const starving = runways.filter((r) => r.windows < BigInt(MIN_RUNWAY));
+  if (starving.length > 0) {
+    const who = starving
+      .sort((a, b) => (a.windows < b.windows ? -1 : 1))
+      .map((r) => `#${r.o.id}${label(names, r.o.id)} ${r.windows}w`)
+      .join(", ");
     alert(
-      `only ${runway} windows of inference runway (${fmt(native, 18, 4)} SOMI). Organisms that ` +
-        `cannot think still pay metabolism. Run: npm run fund -- --windows 400`,
+      `${starving.length} organism(s) under ${MIN_RUNWAY} windows of inference runway: ${who}. ` +
+        `An organism that cannot think abstains and still pays metabolism, so this is a death ` +
+        `sentence on a timer. Run: npm run fund -- --windows 400`,
+    );
+  }
+
+  /* 3b. The house float. Not what pays for thinking — what pays for being BORN. */
+  if (native < (endow as bigint)) {
+    alert(
+      `Population holds ${fmt(native, 18, 4)} STT, under one cognitionEndowment ` +
+        `(${fmt(endow as bigint, 18, 4)}). The next child is born brain-dead and needs a manual ` +
+        `topUpCognition. Run: npm run fund -- --house 5`,
+    );
+  }
+
+  /* 3c. The two population counters must agree. A drift is a bookkeeping bug, not attrition. */
+  if ((alive as bigint) !== BigInt(living.length)) {
+    alert(
+      `aliveCount is ${alive} but snapshot shows ${living.length} undead organisms. The counter ` +
+        `and the living index have drifted — settleAll's reap path is the only place both move.`,
     );
   }
 
@@ -190,7 +234,7 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
     alert(`Population holds less collateral than one endowment — the next birth will revert. Run: npm run fund -- --collateral 200`);
   }
 
-  if (alerts === 0) roll(snap, names, m.collateralDecimals);
+  if (alerts === 0) roll(snap, names, m.collateralDecimals, runwayOf);
 
   const advanced = seen === undefined || seen.phase !== phase || seen.window !== window;
   return {
@@ -200,14 +244,23 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
 }
 
 /** One compact line per organism, only when nothing is wrong. */
-function roll(snap: readonly Snapshot[], names: Map<number, string>, decimals: number): void {
+function roll(
+  snap: readonly Snapshot[],
+  names: Map<number, string>,
+  decimals: number,
+  runwayOf: Map<Address, bigint>,
+): void {
   for (const o of snap) {
     const id = Number(o.id);
     const state = o.dead ? `dead@${o.deathWindow}` : `${BELIEF[o.belief] ?? "?"}/${THESIS[o.thesis] ?? "?"}`;
+    // Two currencies, two lifelines: treasury is what it stakes and eats, runway is how
+    // many more times it can afford to think. Either hitting zero ends the organism, so
+    // the roll shows both or it is not a health check.
+    const runway = o.dead ? "  —" : `${runwayOf.get(o.addr) ?? 0n}w`;
     console.log(
       `    #${String(id).padStart(2)}${label(names, o.id).padEnd(11)} gen${o.generation} ` +
         `${o.correctCount}-${o.wrongCount}-${o.abstainCount} streak${o.streak} ` +
-        `${fmt(o.treasury, decimals, 2).padStart(8)}  ${state}`,
+        `${fmt(o.treasury, decimals, 2).padStart(8)} ${runway.padStart(5)}  ${state}`,
     );
   }
 }

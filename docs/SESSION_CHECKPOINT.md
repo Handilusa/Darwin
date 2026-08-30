@@ -870,3 +870,135 @@ nothing but a backup protects it. Worth knowing before relying on it as the sour
 Phase 1 is done. Next is Task 2 (`Prophet.entrant`, `Population.enter()`, `minEndowment` /
 `cognitionEndowment`) — and its `entrant` declaration needs the same `uint256` pad for the same
 reason, which the plan now says explicitly.
+
+---
+
+## 2026-08-30 — Task 3 (organism-paid cognition): written, green, NOT committed
+
+### State of the tree
+
+Three files modified, **nothing committed**. `git status --short` from `darwin/`:
+
+```
+ M contracts/src/Population.sol
+ M contracts/src/Prophet.sol
+ M contracts/test/Darwin.t.sol
+```
+
+Last commit is `479db96 feat(arena): give every organism an entrant, and a way out` (Task 2).
+Branch `master`, no remote — **do not push**.
+
+**`forge test --root . -vv` from `contracts/`: 81 passed, 0 failed** — measured after the
+`initialize` default change, so the whole change set compiles and the suite is green. The count
+grew 56 → 81 over Tasks 1–3.
+
+### The one thing left unverified
+
+The very last edit — `test_cognition_freshDeployIsNotBornBrainDead` in `Darwin.t.sol`, plus the
+`defaultCognitionEndowment` state variable it reads and the `setUp` line that captures it — **was
+added after that run and has never been compiled.** Resume with:
+
+```bash
+cd darwin/contracts && /c/Users/Handi/.foundry/bin/forge test --root . -vv
+```
+
+Expect 82 tests. If anything fails it will be that one test, and the fix is local to it.
+
+### What the task did
+
+The protocol stopped subsidising thought. `think()` used to spend `requestDeposit()` per living
+organism out of `Population`'s own native balance with nothing refunded, so the recurring bill grew
+linearly with the number of living organisms — linearly with evolutionary success, the one thing the
+system exists to maximise. Now the organism pays and `Population` is a conduit that keeps nothing.
+
+Zero new storage: a native balance is `address(this).balance`, and both contracts already had
+`receive() external payable {}`. **`STORAGE.md` needs no new slot entry for this task** — but see
+the stale-docs list below.
+
+- **`Prophet.drawCognition(uint256) returns (uint256 sent)`**, `onlyPopulation`, deliberately no
+  `alive` modifier (a dead organism is never in `living`, and its residue should stay drainable by
+  the same path that funded it).
+- **`Population.think`** draws per organism and skips on a short draw (`ThinkFailed`, then
+  `continue`). **`_requestMutation`** draws the parent's deposit and skips on a short draw
+  (`BreedingUnaffordable` — the parent keeps its streak and its surplus and may breed later).
+- **`_spawn`** stakes `cognitionEndowment` to every newborn, guarded on the house balance so an
+  underfunded house can still bear children. **`spawnGenesis` is now `payable`.**
+- **`topUpCognition(uint256) payable`** — permissionless sponsorship of any living organism.
+- New events: `CognitionFunded`, `CognitionUnspent`, `BreedingUnaffordable`. `Retired` gained a
+  fourth field: `(prophetId, entrant, collateralReturned, cognitionReturned)`.
+
+### Five deliberate deviations from the plan — each is a defect the plan would have shipped
+
+1. **`drawCognition` is all-or-nothing.** The plan sent `min(amount, balance)` and let the caller
+   reject the short draw — which moved the organism's entire remaining balance into `Population` and
+   bought it no inference, so one entrant's residual STT quietly funded other entrants' thinking
+   with no event to reconcile against. Sending nothing when the balance is short leaves the residue
+   where it belongs and makes a top-up cumulative instead of a payment into a leak.
+2. **`enter` is `payable` and entrant-funded** (`CognitionTooSmall`), forwarding every wei to the
+   organism. The plan had the house grant `cognitionEndowment` at entry — but entry is free and
+   `retire` refunds the collateral, so that is an unbounded free-inference faucet: enter, retire,
+   repeat, against a documented 1-STT/day funding reality. Founders (owner-only) and children
+   (earned over four correct windows) stay house-funded because neither is farmable.
+3. **`retire` returns unspent cognition too.** The plan left it stranded in a dead organism, which
+   turned `enter`'s native requirement into a one-way ratchet. The native send is placed **after**
+   every state write: it is the only call in `retire` that hands control to arbitrary code, and a
+   reentrant `retire` reaching `_removeLiving` twice would run the swap-remove twice and corrupt
+   `living`. A bounced refund is non-fatal — logged as `CognitionUnspent` for the owner to `sweep`.
+4. **`cognitionEndowment` defaults to `0.33 ether`, not the plan's `0` / `0.1 ether`.**
+   `Deploy.s.sol` never calls `setSeason`, so a zero default ships to Shannon and `think` skips
+   **every** organism for want of native: the population abstains its way to extinction while
+   emitting nothing but `ThinkFailed`, which looks exactly like an inference outage. 0.33 STT is ten
+   windows at the measured live price of `3 x (0.01 + 0.001) = 0.033`. Tests use
+   `setSeason(10 * ONE, 1 ether)` in `setUp` because the mock deposit is 0.093 and a child that
+   could afford exactly one thought would make every multi-window breeding test depend on funding
+   order rather than on what it asserts.
+5. **`test_cognition_unaffordableBreedingIsSkippedNotFatal` was vacuous and is not any more.** It
+   asserted `pendingMutationRequestId() == 0`, which is also true of a parent that was never
+   eligible — and that is exactly what was happening: `_breedThreshold()` is measured against the
+   HOUSE `endowment`, and a founder that wins one window off a same-sized opponent does not clear it
+   (the pair is capped at the smaller side's stake). Both breeding tests now go through a
+   `_breedingCandidate()` helper that funds a real surplus, and the skip test asserts eligibility
+   from the post-settlement numbers `settleAll` itself compared before asserting the skip.
+
+### Docs made stale by this task — not yet updated
+
+- **`CLAUDE.md`** — the `Population.sol` bullet still says it "Holds nothing between transactions
+  except accumulated metabolic reimbursement" (`sweep`'s docstring was corrected in the source, the
+  architecture section was not), and the funding-reality paragraph now describes a bill the
+  organisms pay.
+- **`STORAGE.md`** — the Task 2 changelog entry documents `Retired` with three fields; it has four.
+- **`README.md`** — its cost narration predates organism-paid cognition.
+- **`docs/superpowers/plans/2026-08-29-arena-engine.md`** — Task 3's step text still contains the
+  five shapes listed above, and Task 4 is written against them.
+
+### `script/Seed.s.sol` EXISTS — the earlier "it is missing" finding was wrong
+
+`Glob`, `Read` and even `test -f` report nothing, but **`forge fmt --check` lists a diff in
+`contracts/script/Seed.s.sol`**, and forge does its own filesystem walk. The file is on disk and is
+simply **denied to this session by permission rules** — which is also why `Read` refused it. Task
+#15 in the task list is therefore mis-framed: nothing needs writing, but nobody in this session can
+see or amend it. **Someone must check by hand that the seeder now (a) calls `setSeason` before
+`spawnGenesis` and (b) attaches STT to the `spawnGenesis` call, which is `payable` as of this
+task.** A seeder that predates Task 3 will produce a generation 0 that cannot think.
+
+Also note **`forge fmt --check` reports diffs in all ten Solidity files**, including ones this
+session never touched. The repo has never been `forge fmt`-clean, so do not run `forge fmt` before
+committing — it would bury this change set in a whole-repo reformat.
+
+### Resume here
+
+1. Run the suite (command above); expect 82 green.
+2. Run the `npm test && npm run build` gate from `darwin/`.
+3. Re-verify the storage layout per `CLAUDE.md` (`forge clean` → build with
+   `--extra-output storageLayout` → `forge inspect`). Task 3 adds no declarations, so this is a
+   confirmation rather than a diff — and it is worth having the compiler say so rather than a
+   document.
+4. Commit locally, with a message recording the five deviations. **Local only — no push.**
+5. Then Task 4: escalating ante, seasons, `prizePool`, `rakeAccrued`, `prizeShareBps`, the
+   profit-based `rakeBps` skim, `withdrawRake`, `endSeason`, and `SeasonParams` replacing
+   `setSeason(uint256, uint256)`. Task 4 must re-verify storage for real — it adds slots — and its
+   Step 6 is where `enter` becomes ante-aware (plan defect F5).
+
+Still open beyond the plan: the live reactivity subscription and `npm run prove` (blocked on the
+deploy, which is the user's call), and `web/`, which does not exist and is the largest schedule
+risk.

@@ -130,11 +130,17 @@ export const populationAbi = parseAbi([
   "function windowCount() view returns (uint64)",
   "function aliveCount() view returns (uint256)",
   "function prophetCount() view returns (uint256)",
+  "function livingCount() view returns (uint256)",
   "function prophetAt(uint256 prophetId) view returns (address)",
   "function requestDeposit() view returns (uint256)",
   "function endowment() view returns (uint256)",
   "function metabolicCost() view returns (uint256)",
   "function minStake() view returns (uint256)",
+  // Season floors. `cognitionEndowment` is the one an operator reads most: it is the
+  // native STT an organism is born or admitted with, and since organisms pay for their
+  // own inference it is the unit every runway number in `fund.ts`/`monitor.ts` is in.
+  "function minEndowment() view returns (uint256)",
+  "function cognitionEndowment() view returns (uint256)",
   "function collateral() view returns (address)",
   "function priceSource() view returns (address)",
   // Where positions live and how a resolved position becomes collateral. Readable
@@ -151,10 +157,26 @@ export const populationAbi = parseAbi([
   // writes a human might make
   "function fundProphet(uint256 prophetId, uint256 amount)",
   "function breedProphet(uint256 prophetId)",
+  // Arena entry and exit. `enter` and `topUpCognition` are both payable and the value
+  // is native STT for cognition, NOT collateral — the collateral half of `enter` is
+  // pulled with transferFrom, so it needs an allowance first, exactly like fundProphet.
+  "function enter(string genome, uint256 endowmentAmount) payable returns (uint256)",
+  "function retire(uint256 prophetId)",
+  "function topUpCognition(uint256 prophetId) payable",
+  "function setSeason(uint256 minEndowment_, uint256 cognitionEndowment_)",
+  "function sweep(address token, address to, uint256 amount)",
   // events
   "event WindowOpened(uint64 indexed window, bytes32 indexed marketId, address pool, uint256 openPrice)",
-  "event ThinkFailed(uint256 prophetId)",
-  "event Spawned(uint256 indexed prophetId, address prophet, uint256 parentId, uint32 generation)",
+  "event ThinkFailed(uint256 indexed prophetId)",
+  "event Spawned(uint256 indexed prophetId, address prophet, uint256 indexed parentId, uint32 generation)",
+  "event Reaped(uint256 indexed prophetId, uint64 window, uint256 aliveRemaining)",
+  "event Retired(uint256 indexed prophetId, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned)",
+  // The cognition ledger. `CognitionUnspent` is the one to alert on: it means a deposit
+  // was drawn from an organism for a request that then reverted, so the native is sitting
+  // in Population and `sweep(address(0), organism, amount)` is how it goes home.
+  "event CognitionFunded(uint256 indexed prophetId, address indexed from, uint256 amount)",
+  "event CognitionUnspent(uint256 indexed prophetId, uint256 amount)",
+  "event BreedingUnaffordable(uint256 indexed prophetId)",
   // errors, so a revert reads as a sentence instead of a hex blob
   "error NotDriver()",
   "error WrongPhase(uint8 expected, uint8 actual)",
@@ -165,6 +187,10 @@ export const populationAbi = parseAbi([
   "error NotEligibleToBreed()",
   "error TransferFailed()",
   "error NothingToHatch()",
+  "error EndowmentTooSmall()",
+  "error CognitionTooSmall()",
+  "error NotEntrant()",
+  "error PositionStillOpen()",
 ]);
 
 export const prophetAbi = parseAbi([
@@ -188,6 +214,11 @@ export const prophetAbi = parseAbi([
   "function correctCount() view returns (uint32)",
   "function wrongCount() view returns (uint32)",
   "function abstainCount() view returns (uint32)",
+  // Who admitted this organism, and therefore the only address `retire` pays out.
+  // Founders carry the owner (`spawnGenesis` passes msg.sender) and a CHILD INHERITS
+  // its parent's entrant, so a lineage stays with whoever seeded it — winning a window
+  // and breeding grows the entrant's position rather than handing it to the house.
+  "function entrant() view returns (address)",
   "function claimOwed() returns (uint256)",
 ]);
 

@@ -63,8 +63,17 @@ Deploy and seed generation 0:
 forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia -vv
 
 forge script script/Deploy.s.sol --root contracts --rpc-url somnia --broadcast
-npm run fund -- --faucet --collateral 200 --windows 400
+
+# ORDER IS LOAD-BEARING. `spawnGenesis` is payable and `_spawn` endows each newborn out of
+# `address(this).balance`, so the house float must already be there when Seed runs — 8
+# founders x 0.33 STT = 2.64. Fund it FIRST and a Seed script that attaches no value of its
+# own still produces a generation 0 that can think.
+npm run fund -- --faucet --collateral 200 --house 3
 forge script script/Seed.s.sol --root contracts --rpc-url somnia --broadcast
+
+# And --windows only AFTER seeding: it tops up living organisms one by one, so before
+# generation 0 exists there is nobody to top up and it warns instead of acting.
+npm run fund -- --windows 400
 ```
 
 The deploy was dry-run clean against live Shannon on 2026-08-29: **~11.9M gas, ~0.143 STT**. Note the
@@ -112,7 +121,7 @@ The other inference parameters were measured on the same day and are **not** gue
 |---|---|---|
 | minimum `timeout` | **none** — only `0` is rejected (`InvalidTimeout()`) | swept 1 → 86,400 s by `eth_call`; `defaultTimeout() = 600` is a default, not a floor |
 | deposit floor | **exactly `0.01 STT x subcommitteeSize`**, linear | `getAdvancedRequestDeposit(n)` read for n = 0..21; 0.03 passes at n=3, 0.03 minus one wei reverts |
-| what `Population` sends | 0.033 STT = 3 x (0.01 + 0.001) | 3.3x the reward live traffic pays, see below |
+| what each request sends | 0.033 STT = 3 x (0.01 + 0.001) | 3.3x the reward live traffic pays, see below |
 | observed latency | p50 0.6 s, p99 4.3 s, **max 5.3 s** | n = 6,231 completed request lifecycles |
 | completion rate | 6,232 creations → 6,232 terminal-status events | 60,000 blocks of `AgentRequester` logs |
 | **net cost per request, live traffic** | **0.0309 STT, nothing refunded** | 5 real single-request txs; payer's balance fell 0.0315 of which 0.00065 was gas |
@@ -121,11 +130,24 @@ The two measurements corroborate each other exactly: `0.0309 = 3 x (0.01 + 0.000
 requests run a subcommittee of 3 and pay **0.0003 per validator** on top of the floor. That is
 the empirical price of an inference on this platform.
 
-**The deposit is not escrow.** Nothing comes back. So the run's budget is
-`0.01 x subcommitteeSize x alive x windows`, plus reward, plus cadence gas — and because the
-floor is two thirds of what we pay, **the number of requests, not the reward, is the lever
-that matters.** 8 organisms at a 15-minute cadence is 32 requests/hour; the population grows
-toward `maxPopulation = 24` as organisms breed, so cost grows with evolutionary success.
+**The deposit is not escrow.** Nothing comes back. So a window costs
+`0.01 x subcommitteeSize x alive`, plus reward, plus cadence gas — and because the floor is
+two thirds of what we pay, **the number of requests, not the reward, is the lever that
+matters.** 8 organisms at a 15-minute cadence is 32 requests/hour, and the population grows
+toward `maxPopulation = 24` as organisms breed.
+
+**Since 2026-08-30 that bill is not the house's.** Each organism holds native STT of its own
+and `think()` draws the deposit out of *its* balance via `Prophet.drawCognition`, so an
+organism that cannot afford to think abstains, opens an empty position, and pays metabolism
+anyway. Running out of STT is a way to die, and it is meant to be. What the house still pays
+for is bounded and does not grow with success: `cognitionEndowment` per founder at
+`spawnGenesis`, and `cognitionEndowment` per child at birth — `_spawn` funds a newborn only
+if `address(this).balance` covers it, and an underfunded house still bears the child, just
+brain-dead until someone calls `topUpCognition`. Entrants fund their own organisms at
+`enter`, which is `payable` and reverts `CognitionTooSmall` below `cognitionEndowment`, and
+get the unspent remainder back at `retire`. `_requestMutation` draws from the parent for the
+same reason `think` does: breeding is an inference, and a house-paid one would have put the
+recurring bill back on the growth curve.
 
 `perAgentReward` was lowered 0.01 → **0.001** on 2026-08-29 for exactly this reason: 0.01 was
 ~33x the observed rate and made every window 45% more expensive than it needed to be. 0.001
@@ -144,6 +166,15 @@ Plan the run around the STT actually in hand, and note that **pausing the cadenc
 nothing on chain**: metabolism is charged per settled window, not per unit of wall-clock
 time, so a paused population starves no faster than a running one and resumes with its
 generation count, lineage and treasuries intact.
+
+Organism-paid cognition does not conjure STT, and it is worth being precise about what it
+changes: while the operator is the only funder, the aggregate arithmetic above is unchanged.
+What changes is that the bill is now **prepaid and bounded per organism** instead of drawn
+from a house balance for as long as it lasts. So the shortfall shows up as one organism
+starving — an event, an `alive` flag, a selection outcome — rather than as a whole population
+silently abstaining when the paymaster empties. It also makes the demo's cost a *parameter*:
+`cognitionEndowment` is windows-per-organism priced at 0.033 STT, so 0.33 STT buys ten
+windows each and `setSeason` sizes a season to the STT actually in hand.
 
 So `requestTimeout = 300` has roughly 50x headroom and needs no change — see `SPIKE.md` row 8.
 Note the technique, because it is reusable: **`eth_call` with a `stateOverride` on `balance`
@@ -182,10 +213,13 @@ union is why cadence can migrate from a script to on-chain ticks without a code 
 
 ### Contracts
 
-- **`Population.sol`** — UUPS proxy. Registry, paymaster, matchmaker. Holds nothing between
-  transactions except accumulated metabolic reimbursement. Every economic parameter lives here (not
-  in `Prophet`) so the whole run is recalibrable from one `setEconomics` call without a beacon
-  upgrade.
+- **`Population.sol`** — UUPS proxy. Registry, matchmaker, and the arena's treasury. It holds
+  accumulated metabolic reimbursement in collateral, and a native STT float it uses to endow
+  founders and newborns with cognition (plus any `CognitionUnspent` residue left by a failed
+  inference, which `sweep` reconciles). It is **no longer the paymaster for thinking** — since
+  2026-08-30 each organism pays its own inference deposits out of its own native balance.
+  Every economic parameter lives here (not in `Prophet`) so the whole run is recalibrable from
+  one `setEconomics` call without a beacon upgrade.
 - **`Prophet.sol`** — `BeaconProxy` clone, one per organism. Owns its own collateral and ERC-6909
   outcome tokens; it is a *party*, not a registry row. Reads addresses back from `Population` via
   `IPopulationConfig` so a redeployed system contract is one write, not N beacon upgrades.
@@ -236,8 +270,10 @@ or insert between existing variables. Every change gets a dated changelog entry 
 - `Population` slots 13, 18, 21, 23, 26 have free bytes. **Do not fill them.** Packing into a
   partially-used slot changes nothing for a fresh deploy and corrupts nothing visibly until an
   organism's counter starts reading someone else's bytes. Take a fresh slot from `__gap`.
-- Layout freezes at the day-2 deploy (**2026-08-30**). Until then changes are allowed but still
-  logged.
+- Layout freezes at the deploy, moved to **2026-09-02** so the storage-affecting half of the
+  arena-engine rework lands before the freeze rather than after it. Phases 1, 2, 2A and 3 are in;
+  phase 4 (escalating ante, seasons, prize pool, rake) is the last change that can still take
+  slots, and it takes four. Until the deploy, changes are allowed but still logged.
 
 ### Do not "tidy" the stack-limit workarounds
 

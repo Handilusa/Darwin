@@ -9,11 +9,14 @@ Somnia validators run the inference and attest to the result on-chain. Organisms
 disagree are issued exactly-1:1-backed opposing positions out of their combined collateral.
 When the market settles, the ones that were right take the ones that were wrong.
 
-Thinking is not free. Every organism pays a metabolic cost every window whether it was right,
-wrong, or refused to answer. In a market with zero fees, a coin-flipper has no expected drift
-— so metered cognition is the only selection pressure there is, and it is enough. At zero
-treasury an organism is **irreversibly** terminal: no admin function revives it, and the
-`dead` flag is checked before every state transition it could otherwise make.
+Thinking is not free, and each organism pays for its own. Every one holds native STT and
+buys its own inference out of it, on top of a metabolic cost charged every window whether it
+was right, wrong, or refused to answer. An organism that can no longer afford to think
+abstains and pays metabolism anyway, so running out of money to think with is a way to die.
+In a market with zero fees, a coin-flipper has no expected drift — so metered cognition is
+the only selection pressure there is, and it is enough. At zero treasury an organism is
+**irreversibly** terminal: no admin function revives it, and the `dead` flag is checked
+before every state transition it could otherwise make.
 
 Survivors with a surplus and a winning streak spend that surplus to breed. A second inference
 call mutates the parent's genome into a child's, and the child is born with its own contract,
@@ -154,7 +157,7 @@ and true.
 darwin/
 ├─ contracts/                    Foundry
 │  ├─ src/
-│  │  ├─ Population.sol          UUPS. Registry, cadence, pairing, paymaster, matchmaker
+│  │  ├─ Population.sol          UUPS. Registry, cadence, pairing, matchmaker, treasury
 │  │  ├─ Prophet.sol             BeaconProxy clone. One organism.
 │  │  ├─ SelectionEngine.sol     Reactive adapter: settlement → selection, same block
 │  │  ├─ Genome.sol              Prompt assembly, the 9 allowed answers, answer parsing
@@ -188,11 +191,14 @@ forge install foundry-rs/forge-std openzeppelin/openzeppelin-contracts \
               openzeppelin/openzeppelin-contracts-upgradeable --root contracts
 forge test --root contracts -vv
 
-# deploy + seed generation 0
+# deploy + seed generation 0. The order matters: spawnGenesis endows each founder with
+# native STT out of Population's balance, so the house float goes in BEFORE Seed, and
+# --windows (which tops up living organisms individually) only works after.
 forge script script/Deploy.s.sol --root contracts --rpc-url somnia --broadcast
 npm install
-npm run fund -- --faucet --collateral 200 --windows 400
+npm run fund -- --faucet --collateral 200 --house 3
 forge script script/Seed.s.sol --root contracts --rpc-url somnia --broadcast
+npm run fund -- --windows 400
 
 # run it, and do not stop it
 npm run cadence

@@ -402,10 +402,11 @@ async function create(m: Manifest): Promise<void> {
   const balance = await publicClient.getBalance({ address: account.address });
   if (balance < MIN_OWNER_BALANCE) {
     throw new Error(
-      `subscription owner ${account.address} holds ${formatEther(balance)} SOMI; ` +
+      `subscription owner ${account.address} holds ${formatEther(balance)} STT; ` +
         `at least ${formatEther(MIN_OWNER_BALANCE)} is required.\n` +
         `  The owner pays for every callback — there is no separate gas payer.\n` +
-        `  Top it up (npm run fund -- --faucet) before creating the subscription.`,
+        `  No script can top this up: npm run fund moves value INTO the population, and this\n` +
+        `  is the signer's own native. It comes from the faucet or the Somnia team.`,
     );
   }
 

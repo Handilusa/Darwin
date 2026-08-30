@@ -1132,8 +1132,11 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                               HOUSEKEEPING
     //////////////////////////////////////////////////////////////*/
 
-    /// @dev Native funds the cognition of the entire population. Keep it topped up
-    ///      or the run stops — `monitor.ts` watches exactly this balance.
+    /// @dev Native here endows FOUNDERS and NEWBORNS with cognition — it is not what
+    ///      pays for thinking, which each organism now funds from its own balance.
+    ///      Keep it above `cognitionEndowment` or children are born brain-dead and
+    ///      have to be revived with `topUpCognition`; `monitor.ts` watches both this
+    ///      balance and the organisms'.
     receive() external payable {}
 
     /**

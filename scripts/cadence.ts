@@ -164,13 +164,23 @@ async function doThink(m: Manifest, client: WalletLike): Promise<boolean> {
     return false;
   }
 
+  // PRE-FLIGHT ON THE ORGANISMS' BALANCES, NOT POPULATION'S. Each organism pays its own
+  // inference deposit, so Population's balance does not tell us whether this window will
+  // produce any forecasts — it only funds births. Checking the wrong balance here would
+  // have been worse than checking nothing: the warning would stay silent through a
+  // population that abstains its way to extinction.
   const deposit = await read(m, "requestDeposit");
-  const balance = await publicClient.getBalance({ address: m.population });
-  const needed = deposit * alive;
-  if (balance < needed) {
+  const snap = await read(m, "snapshot");
+  const broke: string[] = [];
+  for (const o of snap.filter((x) => !x.dead)) {
+    const bal = await publicClient.getBalance({ address: o.addr });
+    if (bal < deposit) broke.push(`#${o.id} (${fmt(bal, 18, 4)})`);
+  }
+  if (broke.length > 0) {
     warn(
-      `Population holds ${fmt(balance, 18, 4)} native but this window costs ${fmt(needed, 18, 4)}. ` +
-        `Some organisms will fail to think and will still pay metabolism. Fund it: npm run fund`,
+      `${broke.length}/${alive} organisms cannot afford this window's inference at ` +
+        `${fmt(deposit, 18, 4)} STT: ${broke.join(", ")}. They will abstain and still pay ` +
+        `metabolism. Fund them: npm run fund -- --windows 400`,
     );
   }
 
