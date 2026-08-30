@@ -967,6 +967,11 @@ the stale-docs list below.
   architecture section was not), and the funding-reality paragraph now describes a bill the
   organisms pay.
 - **`STORAGE.md`** — the Task 2 changelog entry documents `Retired` with three fields; it has four.
+  **Misattributed; corrected 2026-08-30.** `STORAGE.md` contains no occurrence of `Retired`,
+  `collateralReturned` or `cognitionReturned` anywhere — grep it. The stale three-field signature is
+  in `docs/superpowers/plans/2026-08-29-arena-engine.md:1255` (the declaration) and `:1379` (the
+  emit), a dated plan whose own `:1498` already reads *"`Retired` carries four fields"*. Nothing
+  shipped ever stated it wrong, so there was nothing here to fix.
 - **`README.md`** — its cost narration predates organism-paid cognition.
 - **`docs/superpowers/plans/2026-08-29-arena-engine.md`** — Task 3's step text still contains the
   five shapes listed above, and Task 4 is written against them.
@@ -1076,8 +1081,28 @@ Still stale, in rough priority order:
   mechanism (`:38`, `:64`, `:92-93`, `:126`) and never mentions that settlement is pluggable or that
   there are two adapters. Its cost narration also still predates organism-paid cognition. This is the
   one worth fixing before submission.
-- **`STORAGE.md`** — the Task 2 changelog entry documents `Retired` with three fields; it has four.
-  `DirectDuelVenue` needs no entry: it is plain and non-upgradeable.
+- **`STORAGE.md`** — ~~the Task 2 changelog entry documents `Retired` with three fields; it has
+  four. `DirectDuelVenue` needs no entry: it is plain and non-upgradeable.~~ **Both halves closed
+  2026-08-30, and the second one was wrong in a way worth keeping visible.**
+  - The `Retired` item was **misattributed**. `STORAGE.md` contains no occurrence of `Retired`,
+    `collateralReturned` or `cognitionReturned` anywhere. The stale three-field signature lives in
+    `docs/superpowers/plans/2026-08-29-arena-engine.md:1255` (declaration) and `:1379` (emit) — a
+    dated plan whose own `:1498` already reads *"`Retired` carries four fields"*. Left as-is: a plan
+    that recorded the shape before it changed is a record, not a defect.
+  - *"`DirectDuelVenue` needs no entry"* is what **left Task 5 (`1e70881`) unlogged**, and it
+    conflates two different obligations: the venue has no *storage* constraint (true — it is plain
+    and non-upgradeable) with the *change* having no logging obligation (false — `STORAGE.md:23`
+    asks for an entry for **every** change, and the changelog is full of "no layout change, and the
+    absence is the point" rows precisely because before a freeze the absence is the datum). A reader
+    on 2026-09-02 cannot distinguish "no entry" from "no layout change" from outside. Now closed by
+    a compiler-verified entry: `git show --numstat 1e70881 -- 'contracts/src/*.sol'` reports the one
+    new file and nothing else, and both proxied layouts were re-derived from a clean build with zero
+    discrepancies. The venues also finally appear under "Contracts with no storage constraint",
+    carrying the repoint hazard that section had never stated — **repoint the venue in phase 0, with
+    no position open**, because `Population.setWiring` has no phase guard and the two adapters fail
+    in opposite directions on an unknown position (`DreamDEXVenue` reverts `UnknownPosition`;
+    `DirectDuelVenue` returns `0`, which grades both duellists as total losses and strands the
+    escrow short of a beacon upgrade).
 - **`docs/BUSINESS_PLAN.md`** — not re-read this segment; check it against the escalating ante and
   the two-arena shape.
 
