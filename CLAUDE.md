@@ -31,7 +31,7 @@ forge fmt --root contracts     # 120 cols, 4-space, no bracket spacing
 ```
 
 Single test / subset (all Solidity tests live in `contracts/test/Darwin.t.sol`, one contract
-`DarwinTest`, 56 tests):
+`DarwinTest`, 98 tests):
 
 ```bash
 forge test --root contracts --match-test test_death_isIrreversible -vvv
@@ -204,8 +204,8 @@ The window is a phase machine held **on-chain** in `Population.phase` (`0` idle 
 | Phase | Call | What happens |
 |---|---|---|
 | 0 | `think()` | Reads `IPriceSource.currentWindow`, records the active market, fires one `createAdvancedRequest` per living organism → `Prophet.handleBelief` |
-| 1 | `commitAll()` | Partitions beliefs into Up/Down, pairs them via `pool.mintSet(yesTo, noTo, amount)`; leftovers get a zero-size position |
-| 2 | `settleAll()` | `finalizeAndRedeem`, grade fitness, charge metabolism, reap, flag breeding |
+| 1 | `commitAll()` | Partitions beliefs into Up/Down, pairs them via `IArenaVenue.openOpposing(up, down, amount)`; leftovers get a zero-size position |
+| 2 | `settleAll()` | `IArenaVenue.redeemFor` per organism, grade fitness, skim rake on profit, charge metabolism, reap, flag breeding |
 | — | `hatchAll()` | Births children whose mutated genomes landed — deliberately separate so slow inference never delays a settlement |
 
 Each is gated by `onlyDriver`: **owner ‖ `SelectionEngine` ‖ reactivity precompile `0x0100`**. That
@@ -232,6 +232,40 @@ union is why cadence can migrate from a script to on-chain ticks without a code 
   `BinaryMarketsModule.markets()` on **every** call. Also plain and replaceable.
 - **`Genome.sol`** — dependency-free library: prompt assembly, the nine `allowedValues`, answer
   parsing. `parseAnswer` maps anything unrecognised to `(Abstain, Unknown)` — never a coin flip.
+
+### Settlement is a replaceable part
+
+`Population` and `Prophet` never touch a market, a pool or a settlement contract directly. All of it
+goes through **`IArenaVenue`** (`openOpposing`, `redeemFor`, `positionToken`, `collateral`), and two
+adapters implement it. Both are plain and non-upgradeable, and either can be repointed with one
+`setWiring` call — `test_venue_canBeRepointedBetweenWindows`.
+
+- **`venues/DreamDEXVenue.sol`** — 1:1-backed complete sets on a DreamDEX binary pool, redeemed
+  through `BinarySettlement.finalizeAndRedeem`. Holds no value between transactions.
+- **`venues/DirectDuelVenue.sol`** — a two-party escrow resolved by the sign of a price change. It
+  *does* hold both antes between `openOpposing` and redemption, so every path accounts for the whole
+  backing exactly once. Three rules there are load-bearing rather than stylistic: the outcome is
+  **frozen by the first claim** (otherwise the backing is paid twice), only a position's **own holder**
+  may redeem it and there is no public `resolve` (otherwise a bystander chooses when the window
+  closes), and an unadjudicable duel **refunds both antes** rather than paying zero (otherwise the
+  collateral is stranded and both forecasters are graded wrong).
+
+Two hard constraints the interface imposes on any future adapter, both documented at
+`IArenaVenue`'s declaration: **`redeemFor` must return 0 for a loser rather than reverting** — a
+losing settlement is the normal case and must not abort the window for anyone else — and **it must
+not read a price feed**, because on the reactive path nobody pushes a price between resolution and
+the callback, so `IPriceSource.currentWindow` reverts `StalePrice` there. Record the level at open;
+read it back at settlement through a `try`/`catch`. `positionToken() == address(0)` tells
+`Prophet.settleWindow` to skip the ERC-6909 push, which is the right answer for a venue that issues
+no transferable position — the ERC-6909 surface has no `transferFrom`, so a venue can never *pull* a
+position; the organism pushes.
+
+The demo runs **two `Population` deployments sharing one `Prophet` beacon**, one per venue, rather
+than swapping the venue under a live population — two concurrent leaderboards over identical
+organism code. Note the limit of the claim: a duel arena settles without a market, but
+`PushedPriceSource` still resolves a real market to compute `tradeable` and `think` refuses an
+untradeable window, so *opening* a window still needs one. Cutting that thread is an `IPriceSource`
+v2, not a venue change.
 
 ### The on-chain / off-chain seam
 
@@ -328,13 +362,15 @@ assert it. Do not add an admin recovery path; a judge should be able to grep for
 
 ### `currentStake` vs `currentQuantity`
 
-Not the same number, and conflating them is a real bug. A paired `mintSet` is funded by both
-organisms, so each side *holds* `amount` tokens while having *risked* only ≈`amount / 2`. Redemption
-is denominated in tokens, profit and loss in collateral. Deriving one from the other would make
-every winner read as break-even and silently zero the fitness signal.
+Not the same number, and conflating them is a real bug. A paired position is funded by both
+organisms, so each side *holds* `amount` tokens while having *risked* exactly `amount / 2` — exactly,
+because `_pair` clamps both legs to the same `want` before opening, which is the invariant
+`DirectDuelVenue`'s void refund depends on and cannot itself check. Redemption is denominated in
+tokens, profit and loss in collateral. Deriving one from the other would make every winner read as
+break-even and silently zero the fitness signal.
 
-Likewise in `settleWindow`: `finalizeAndRedeem`'s return value is what the position was **worth**
-(the fitness signal); the collateral **balance delta** is what the organism now custodies. Settlement
+Likewise in `settleWindow`: `IArenaVenue.redeemFor`'s return value is what the position was
+**worth** (the fitness signal); the collateral **balance delta** is what the organism now custodies. Settlement
 may credit an `owed` balance instead of transferring, so `treasury` is ledgered from the delta and
 `_sweepOwed` rescues the difference. `treasury == collateral.balanceOf(prophet)` is an asserted
 invariant.
@@ -344,8 +380,11 @@ invariant.
 - **One bad organism must never halt the population.** Per-organism failures are caught and emitted
   as `ThinkFailed` / `CommitFailed` / `SettleFailed` so `monitor.ts` can see them. `_pair` goes
   through `this.executePair(...)` purely to get a revert boundary. The deliberate exception is
-  `finalizeAndRedeem` in `Prophet.settleWindow` — it is *not* wrapped, because a genuinely reverting
-  settlement is an integration break that should abort rather than be silenced.
+  `IArenaVenue.redeemFor` in `Prophet.settleWindow` — it is *not* wrapped, because a genuinely
+  reverting settlement is an integration break that should abort rather than be silenced. That is
+  precisely why the interface requires a loser to be paid **0** instead of reverting, and why a venue
+  that cannot observe a close must void rather than propagate: an unwrapped revert there leaves the
+  position open with the ante already escrowed.
 - **Non-`Success` inference collapses to `Abstain`**, never a revert. An infrastructure failure is
   absorbed as a biological one. `_modalResult` additionally requires ≥2 agreeing validators
   regardless of what the platform's own tally says.

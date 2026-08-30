@@ -1002,3 +1002,110 @@ committing — it would bury this change set in a whole-repo reformat.
 Still open beyond the plan: the live reactivity subscription and `npm run prove` (blocked on the
 deploy, which is the user's call), and `web/`, which does not exist and is the largest schedule
 risk.
+
+---
+
+## 2026-08-30 — Tasks 4 and 5 done: the arena-engine plan is complete
+
+**98 tests pass, clean `forge build`, clean `tsc --noEmit`.** The count went 56 → 81 (Tasks 1–3) →
+92 (Task 4) → 98 (Task 5). Branch `master`, still **no remote — do not push**.
+
+### Task 4 — escalating ante, seasons, prize pool, explicit rake
+
+Committed as `d413abe feat(arena): escalating ante, seasons, and explicit rake accounting` (6 files,
++908/−34). Storage landed exactly where the plan predicted: packed season group at slot 33,
+`baseAnte` 34, `rakeAccrued` 35, `prizePool` 36, `__gap uint256[10]` at 37, and `Prophet`
+**byte-identical**. Re-derived from the compiler twice, not from a document.
+
+The shape that shipped: a flat ante doubling every `levelWindows`; rake taken on **profit only** and
+clamped to `treasury`; two books (`rakeAccrued`, `prizePool`) over one balance; a corpse's residue
+drained into the prize pool **before** `die()`; and a permissionless `endSeason()` paying 60/30/10 to
+the top three survivors by net correct calls. Six defects in the plan's Task 4 are recorded in that
+task's correction banner — the most instructive being that its headline accounting test was
+near-vacuous (`assertLe(booked, balance)` against a 10,000 tUSDC harness float passes for almost any
+bug); the shipped version brackets three windows and asserts the **delta** equality.
+
+### Task 5 — `DirectDuelVenue`, the second settlement mechanism
+
+New file `contracts/src/venues/DirectDuelVenue.sol` plus six tests. **Nine defects in the plan's
+sketch**, all recorded in Task 5's correction banner; four of them are one mistake seen from
+different sides — *the sketch adjudicates each redemption against the price live at that moment*.
+The three rules that matter, because a future reader will be tempted to "simplify" each of them:
+
+1. **The outcome is frozen by the first claim.** Otherwise the up side can be redeemed while the
+   price is high and the down side after it falls, and both are paid the whole backing out of an
+   escrow holding one. Verified by **mutation**, not by argument: comment out `_resolve`'s `Pending`
+   guard and exactly one test fails, as `panic: arithmetic underflow` inside the second transfer.
+   Worth repeating as a technique — six tests passing on the first run is when to go looking.
+2. **Only a position's holder may redeem, and there is no public `resolve`.** Resolution reads
+   whatever price is current, so whoever can trigger it chooses when the window closes.
+3. **An unadjudicable duel refunds both antes**, never pays zero. Zero strands the backing in the
+   venue forever *and* grades both organisms wrong, since `settleWindow` reads the grade from the
+   payout against the stake. Half the backing is exactly one ante because `_pair` clamps both legs
+   equal — an invariant the venue depends on and cannot itself check.
+
+Also: `redeemFor` **must not read a price feed** (stated in `DreamDEXVenue`'s header and at
+`Population.sol:1188-1189`) because on the reactive path nobody pushes a price between resolution and
+the callback. The level is recorded at `openOpposing`, where a `StalePrice` revert is the *correct*
+outcome and `_pair` already unwinds both antes into a `CommitFailed`.
+
+### The claim about removing the DreamDEX dependency was overstated, and is now corrected
+
+The plan and spec §3.2 claimed "no market availability dependency" and billed this venue as a
+**resilience fallback if DreamDEX markets are missing.** Both were false. Settlement needs no market
+— but prices come through `IPriceSource`, whose v1 implementation resolves a real market to compute
+`tradeable`, and `Population.think` refuses an untradeable window. **So a duel arena still cannot
+open a window without a live market.** Cutting that last thread is an `IPriceSource` v2 reading the
+oracle hub directly; it is not a venue change and it is not in the plan. Spec §3.2 now says this
+explicitly, and the narrower true claim is the one to make: *settlement itself cannot fail for want
+of a market, a pool, or a counterparty contract of any kind.*
+
+### Docs updated, and what is still stale
+
+Brought current in this segment: **spec §3.2** (two `Population` deployments sharing one beacon, the
+precise dependency scope, the three design rules), the **plan** (Task 5 banner; the `Produces:` line
+that promised a `resolve(bytes32)` the contract deliberately does not have; the stale "Deferred"
+bullet about `_requestMutation`), and **`CLAUDE.md`** — which was actively *wrong*, not merely
+incomplete: its window table said `commitAll` pairs "via `pool.mintSet(...)`" and `settleAll` calls
+`finalizeAndRedeem`, when both now go through `IArenaVenue`. It gained a "Settlement is a replaceable
+part" section and its test count went 56 → 98.
+
+Still stale, in rough priority order:
+
+- **`README.md`** — the judge-facing document. Not wrong, but it describes the DreamDEX path as *the*
+  mechanism (`:38`, `:64`, `:92-93`, `:126`) and never mentions that settlement is pluggable or that
+  there are two adapters. Its cost narration also still predates organism-paid cognition. This is the
+  one worth fixing before submission.
+- **`STORAGE.md`** — the Task 2 changelog entry documents `Retired` with three fields; it has four.
+  `DirectDuelVenue` needs no entry: it is plain and non-upgradeable.
+- **`docs/BUSINESS_PLAN.md`** — not re-read this segment; check it against the escalating ante and
+  the two-arena shape.
+
+### Two handoffs nobody in-session can close
+
+1. **`contracts/script/Seed.s.sol` is permission-denied to Claude sessions** (Glob, Grep and Read all
+   report nothing; `forge` sees it fine and it **compiles clean** against the struct-form
+   `setSeason`). So only *ordering* is unverified. Someone must check by hand that it (a) calls
+   `setSeason` before `spawnGenesis`, and (b) either attaches STT to the now-`payable`
+   `spawnGenesis` or runs after the house float is funded — `npm run fund -- --house 3` first.
+2. **`npm run fee` cannot be run before the deploy.** It needs
+   `contracts/deployments/50312.json`, so the plan's Task 5 gate list is wrong to call it a commit
+   gate. Same for `npm run prove`. Until `prove` passes, only the weaker claim is licensed:
+   *selection is on-chain and atomic with redemption* — not "no keeper anywhere in the causal chain."
+
+### Resume here
+
+The arena-engine plan is finished. What remains is not more contract work:
+
+1. **`web/`** — does not exist, and is now unambiguously the largest schedule risk. Submission is
+   **2026-09-08**. A running population with a thin UI beats a polished UI over a dead one.
+2. **The Season 0 deploy, whose storage freeze is 2026-09-02.** Dry-run first (same command minus
+   `--broadcast`). **Deploying and broadcasting are the user's call, not a session's** — the deploy
+   spends real STT and starts a run whose lineage graph cannot be rebuilt.
+3. After the deploy: the reactivity subscription (`npm run subscribe -- --topic0 0xb1884334… --create`
+   — pass the topic explicitly, never let `--discover` choose), then `npm run prove` and
+   `npm run fee`, then `disableFallback()` only if `prove` passes.
+4. `README.md`, per the stale-docs list above.
+
+Do not run `forge fmt` before a commit: the repo has never been fmt-clean (all ten `.sol` files
+diff), so it would bury the change set.
