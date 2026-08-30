@@ -208,7 +208,10 @@ export const populationAbi = parseAbi([
   // The arena's money events. `ResidueForfeited` is the pool's other source besides
   // the rake split, and a `Reaped` with no `ResidueForfeited` beside it means the
   // organism died with an empty treasury rather than that collateral went missing.
-  "event Raked(uint256 indexed prophetId, uint256 profit, uint256 amount)",
+  //
+  // `Raked` is deliberately NOT in this list. Prophet emits it (`Prophet.sol:456`, inside
+  // `settle`), so it lives in `prophetAbi` — declaring it here would compile, parse, and
+  // then silently match nothing when filtering Population's logs.
   "event ResidueForfeited(uint256 indexed prophetId, uint256 amount)",
   "event SeasonEnded(uint32 indexed season, uint256 pot, uint256 paid)",
   "event SeasonPrizePaid(uint32 indexed season, uint256 indexed prophetId, address indexed to, uint256 amount)",
@@ -263,6 +266,12 @@ export const prophetAbi = parseAbi([
   // and breeding grows the entrant's position rather than handing it to the house.
   "function entrant() view returns (address)",
   "function claimOwed() returns (uint256)",
+  // events. The rake is taken inside `settle` on the organism itself
+  // (`Prophet.sol:456`), so this is a Prophet log, not a Population one — it is the one
+  // money event whose emitter is easy to guess wrong. `web/js/abi.js:143` files it the
+  // same way; if these two hand-written ABIs ever disagree about an emitter, one of them
+  // is filtering for logs that will never arrive.
+  "event Raked(uint256 indexed prophetId, uint256 profit, uint256 amount)",
 ]);
 
 export const priceSourceAbi = parseAbi([
