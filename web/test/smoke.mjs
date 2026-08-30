@@ -263,6 +263,28 @@ assert("rootKind(#1)==founder", lineage.rootKind(row(1)) === "founder");
 assert("rootKind(#12)==entrant", lineage.rootKind(row(12)) === "entrant");
 assert("rootKind(#11)==child", lineage.rootKind(row(11)) === "child");
 
+// `chain.js` touches viem and abi.js only through lazy `import()`, which is what lets `?demo=1`
+// stay off the network entirely — so its module body loads here with no RPC and no CDN. Importing
+// it verifies its static imports resolve and its export surface is intact.
+//
+// Two modules are out of reach from Node and that is by design, not an oversight: `abi.js` imports
+// `viem.js` and therefore the CDN, and Node has no HTTPS imports; `main.js` calls `boot()` on load
+// and registers listeners on `globalThis`, because being the entry point is its whole job.
+const chain = await import("../js/chain.js");
+for (const fn of [
+  "connect",
+  "manifestPopulation",
+  "organismLabels",
+  "discover",
+  "readState",
+  "readOrganism",
+  "readFeed",
+  "stampBlocks",
+  "blockTime",
+]) {
+  assert(`chain.${fn} is exported`, typeof chain[fn] === "function", typeof chain[fn]);
+}
+
 console.log("\n" + checks.join("\n"));
 console.log(`\n${fails === 0 ? "ALL GREEN" : fails + " FAILURE(S)"}`);
 process.exit(fails === 0 ? 0 : 1);

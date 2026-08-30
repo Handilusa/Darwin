@@ -43,10 +43,15 @@ npm test --prefix web      # or: node web/test/smoke.mjs
 `test/smoke.mjs` puts a 60-line fake DOM in front of the **real** renderer and calls every exported
 render function on the fixture — twenty of them, including the degraded paths (`grid([])`,
 `detail(null)`, a header with no window, an RPC error banner) — then asserts on the text and CSS
-classes that come back. Thirty-one assertions: that a founder, a child and a paying entrant each
+classes that come back. Forty assertions: that a founder, a child and a paying entrant each
 read differently; that both runway severity bands actually appear; that all 21 log rows render and
 none falls through to the unknown-event fallback; that `fallbackEnabled: true` yields the *weaker*
 claim; that both corpses stay on the page.
+
+It also imports `js/chain.js` and finds its nine exports intact **with no network access at all**,
+which is the load-bearing proof that viem and `js/abi.js` are reached only through lazy `import()`.
+If either were a static import, that line would fail — so `?demo=1` cannot silently start touching
+the network.
 
 It says nothing about CSS, layout, or how it looks — for that, open it. What it does prove is that
 the JavaScript runs and says what it should say, which is the part a static read cannot establish.
