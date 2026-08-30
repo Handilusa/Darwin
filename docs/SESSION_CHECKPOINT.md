@@ -1075,12 +1075,39 @@ incomplete: its window table said `commitAll` pairs "via `pool.mintSet(...)`" an
 `finalizeAndRedeem`, when both now go through `IArenaVenue`. It gained a "Settlement is a replaceable
 part" section and its test count went 56 → 98.
 
-Still stale, in rough priority order:
+Still stale, in rough priority order — **all three were closed on 2026-08-30.** The original
+diagnosis is kept struck through rather than deleted, because in two of the three the *diagnosis* was
+itself wrong, and a list that only ever shows correct predictions is not a useful record of how the
+stale-doc problem actually behaves here. Twice the fix found an **overstatement** the note had not
+suspected; once the note pointed at the wrong file entirely.
 
-- **`README.md`** — the judge-facing document. Not wrong, but it describes the DreamDEX path as *the*
-  mechanism (`:38`, `:64`, `:92-93`, `:126`) and never mentions that settlement is pluggable or that
-  there are two adapters. Its cost narration also still predates organism-paid cognition. This is the
-  one worth fixing before submission.
+- **`README.md`** — ~~the judge-facing document. Not wrong, but it describes the DreamDEX path as
+  *the* mechanism (`:38`, `:64`, `:92-93`, `:126`) and never mentions that settlement is pluggable or
+  that there are two adapters. Its cost narration also still predates organism-paid cognition.~~
+  **Done 2026-08-30 (`a2d1c87`), and it was wrong in the other direction too.** The cost-narration
+  half of this item was already stale when written — `:12-15` had been brought current. The venue
+  half was real: the diagram called `pool.mintSet` and `finalizeAndRedeem` directly, the primitives
+  table claimed the design collapses without four primitives when a second adapter had proven two of
+  them replaceable, the repo layout listed neither `venues/` nor `IArenaVenue`, and the test count
+  still said "~40". But checking the code instead of my notes also found **two overstatements**,
+  which matter more in a document whose whole premise is that it does not overstate:
+  - *"The demo runs two `Population` deployments sharing one `Prophet` beacon."* `Deploy.s.sol:177-186`
+    deploys **one** on **one** `DreamDEXVenue`. The two-arena shape is real and runs end-to-end, but
+    in the test harness (`_duelArena`) — a second live arena is a second deploy. `CLAUDE.md` asserted
+    the same thing as shipped and is corrected too.
+  - *"`test_venue_canBeRepointedBetweenWindows` asserts a population can be moved from one venue to
+    the other."* It repoints to a fresh instance of the **same** adapter (`Darwin.t.sol:1372`). It
+    proves the seam, which is strictly weaker than cross-adapter migration — and cross-adapter
+    migration mid-run is the unsafe operation logged in `STORAGE.md`.
+
+  Three of the six "Still unverified" bullets had been closed by measurement on 2026-08-29 and were
+  still on the page as open (settlement fee, handler selector, agent id and prices); they now have a
+  "Closed by measurement" list of their own. Two genuinely open items were missing and are now in it:
+  whether validators *honour* `allowedValues`, and `faucet(uint256)`'s units. Also fixed: the
+  Quickstart told the reader to obey `subscribe --discover`, which `SPIKE.md` row 3 says explicitly
+  not to; `agents.somnia.network` (mainnet) → `agents.testnet.somnia.network`; and the claim that
+  `allowedValues` is what makes model output safe to act on — it is `Genome.parseAnswer`, and safety
+  that does not depend on trusting the platform is the better claim anyway.
 - **`STORAGE.md`** — ~~the Task 2 changelog entry documents `Retired` with three fields; it has
   four. `DirectDuelVenue` needs no entry: it is plain and non-upgradeable.~~ **Both halves closed
   2026-08-30, and the second one was wrong in a way worth keeping visible.**
@@ -1103,8 +1130,30 @@ Still stale, in rough priority order:
     in opposite directions on an unknown position (`DreamDEXVenue` reverts `UnknownPosition`;
     `DirectDuelVenue` returns `0`, which grades both duellists as total losses and strands the
     escrow short of a beacon upgrade).
-- **`docs/BUSINESS_PLAN.md`** — not re-read this segment; check it against the escalating ante and
-  the two-arena shape.
+- **`docs/BUSINESS_PLAN.md`** — ~~not re-read this segment; check it against the escalating ante and
+  the two-arena shape.~~ **Done 2026-08-30.** Both suspicions were right, and a third thing was
+  wrong that this note had not predicted:
+  - §4 still argued the venue seam as a *plan* ("the engine needs exactly two things from a venue")
+    when it had shipped that morning. Rewritten as a claim with its boundary attached: `Population`
+    and `Prophet` reference no pool and no market, two adapters implement `IArenaVenue`, and the
+    shape is a **second `Population` proxy over the same beacon** — not one population repointed,
+    which the plan is now explicit is "both wrong and unsafe" and cross-references the operator rule
+    above. §9's table row says the same, with the `Deploy.s.sol` caveat inline.
+  - §8 was future-tense about mechanics that are in `Population.sol`. Rewritten past-tense with an
+    "As shipped" paragraph naming the initializer defaults (`baseAnte` 0.25 tUSDC, `anteMultBps`
+    20_000, `levelWindows` 72) and the `setSeason` guards, plus the deploy-day caveat that
+    `Deploy.s.sol` calls **no** configuration setter at all — not `setSeason`, not `setEconomics`,
+    not `setInference` — so a deploy that skips them runs those defaults rather than a season sized
+    to the STT in hand.
+  - **The unpredicted one:** §8 claimed the ante *and metabolism* escalate. `metabolicCost` is flat
+    (`Population.sol:63`, `:340`, passed unscaled at `:1204`). Corrected in place rather than
+    silently deleted, because the section's own arithmetic — "a 1,000-tUSDC organism risking a flat
+    0.25 plus 0.05 rent still survives 3,300 windows" — already assumed flat metabolism, so a reader
+    who checked would find the prose and the numbers disagreeing and not know which to trust.
+  - Also made live: the same-block risk bullet was written as prospective ("the thing most at risk
+    from this redesign"). The redesign landed, so it now states that the 98-test suite **cannot**
+    exercise it — the reactivity precompile does not exist on local chain ids — and that only the
+    weaker claim is licensed until `npm run prove` passes against Shannon.
 
 ### Two handoffs nobody in-session can close
 

@@ -193,9 +193,30 @@ share one `Prophet` beacon and one price source and differ only in the `venue`
 field of their wiring, so the two run concurrently over identical organism code —
 two live leaderboards rather than one that changed adapters mid-run. It is also
 the stronger form of the claim: the same code settling against two unrelated
-mechanisms *at the same time*. `setWiring` remains the escape hatch for
-repointing a single arena, and `test_venue_canBeRepointedBetweenWindows` proves
-that path still works.
+mechanisms *at the same time*.
+
+**Two boundaries on that paragraph, added 2026-08-30 after checking it against the
+code rather than against this document.** Both are the same failure mode as the
+overstatement corrected four paragraphs below, which is why they are stated here
+instead of being left for a reader to discover:
+
+- **"Concurrently" is true of the test suite, not of a deploy.** `_duelArena` in
+  `Darwin.t.sol` builds the second `Population` through `ERC1967Proxy` sharing
+  `beacon` and `priceSource`, and the two arena tests run full windows through it —
+  so the shape is real and asserted end-to-end. But `Deploy.s.sol:177-186` deploys
+  **one** `Population` on **one** `DreamDEXVenue` and calls no configuration setter
+  at all. A second *live* arena for Season 0 is a second deploy, not a flag. That is
+  a scripting task rather than an engineering risk, and it is not done.
+- **`setWiring` remains the escape hatch for repointing a single arena**, and
+  `test_venue_canBeRepointedBetweenWindows` proves that path still works — but read
+  what it actually does before relying on it. It repoints to a **fresh instance of
+  the same adapter** (`Darwin.t.sol:1372` constructs another `DreamDEXVenue`), so
+  what it establishes is the seam: the new venue issues the pair and the organism is
+  graded through both windows. **No test repoints a live population across
+  adapters, and doing so mid-run is unsafe** — `setWiring` has no phase guard and
+  the two adapters fail in opposite directions on a position the new venue never
+  issued, one of them silently. See the operator rule in `STORAGE.md`: repoint only
+  in phase 0, with no position open.
 
 It earns its place twice:
 

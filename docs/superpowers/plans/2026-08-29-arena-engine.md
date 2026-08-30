@@ -2797,6 +2797,19 @@ graded lineage worth selling.
 
 **Refinement of the spec:** the spec says "the same population against two settlement sources." Implement it instead as **two `Population` deployments sharing one codebase and beacon, one per venue, running concurrently.** Two arenas are simpler to operate and a stronger demo — two live leaderboards rather than one that changed adapters — while exercising exactly the same claim. `setWiring`'s fourth argument remains the escape hatch for repointing a single arena, and Task 1's `test_venue_canBeRepointedBetweenWindows` proves it works. Update the spec's §3.2 to match.
 
+> **Correction, 2026-08-30 — two words in the paragraph above outran the code, and both reached three
+> other documents before anyone checked.** *"Running concurrently"* describes the **test suite**:
+> `_duelArena` builds the second `Population` through `ERC1967Proxy` and the two arena tests run full
+> windows through it, but `Deploy.s.sol:177-186` deploys **one** `Population` on **one**
+> `DreamDEXVenue` and calls no configuration setter at all, so a second *live* arena is a second
+> deploy rather than a flag — a scripting task, not done. And *"proves it works"* overstates
+> `test_venue_canBeRepointedBetweenWindows`, which repoints to a **fresh instance of the same
+> adapter** (`Darwin.t.sol:1372` constructs another `DreamDEXVenue`). It proves the seam, not
+> cross-adapter migration; nothing tests that, and mid-run it is unsafe, because `setWiring` has no
+> phase guard and the two adapters fail in opposite directions on a position the new venue never
+> issued — one of them silently. `README.md`, `CLAUDE.md`, `docs/BUSINESS_PLAN.md` and spec §3.2 all
+> carried one or both claims and are corrected; the operator rule lives in `STORAGE.md`.
+
 *(An earlier draft of this paragraph justified two deployments by claiming a venue swap "invalidates every organism's operator grant and needs a batched `regrantVenue` walk." That is void — see Task 1's correction banner. There is no grant and no walk, because organisms push their positions rather than the venue pulling them. Two deployments remain the right call on the demo argument alone.)*
 
 **`positionToken()` MUST return `address(0)`, and this task owns proving that branch.** `DirectDuelVenue` issues no transferable position token, so `Prophet.settleWindow` must skip the push and call `redeemFor` directly. Task 1 shipped that branch **untested on purpose** — a throwaway escrow double written then would have been deleted here. So the test block below must run a full window (`_think` → `_answer` → `_commit` → `_settle`) through a `Population` wired to `DirectDuelVenue`, not just call the venue directly, or the address-zero path reaches Season 0 unexercised.

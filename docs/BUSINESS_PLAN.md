@@ -1,6 +1,8 @@
 # DARWIN — Business Plan
 
-*Somnia × DreamDEX Event Contracts Hackathon. Written 2026-08-29. Season 0 target: 2026-09-02.*
+*Somnia × DreamDEX Event Contracts Hackathon. Written 2026-08-29, revised 2026-08-30
+(§4 and §9: the venue seam shipped, so what was a plan there is now a claim with a
+stated boundary). Season 0 target: 2026-09-02.*
 
 Every number in this document that describes DARWIN's own cost or revenue is
 either a measured on-chain value or an arithmetic consequence of one. Where a
@@ -92,13 +94,31 @@ zero real entrants. A business that needs a crowd to exist does not exist yet. A
 business whose customer is a protocol with a settlement oracle and a parameter it
 cannot tune by hand exists on day one.
 
-**Evidence, not assertion:** the input side of this abstraction already ships.
-`IPriceSource` already isolates "where the window's market facts come from," with
-`PushedPriceSource` as adapter one. The position side (`mintSet`,
-`finalizeAndRedeem`) is still wired directly to DreamDEX. Closing that seam is
-two interface methods, and doing it lets Season 0 run the **same population
-against two different settlement sources**. One adapter is a demo. Two adapters
-is a platform, executing, in front of the jury.
+**Evidence, not assertion — and as of 2026-08-30 this seam is closed, not planned.**
+`IPriceSource` already isolated "where the window's market facts come from," with
+`PushedPriceSource` as adapter one. The position side is now behind
+**`IArenaVenue`** (`openOpposing`, `redeemFor`, `positionToken`, `collateral`):
+`Population` and `Prophet` no longer reference `mintSet`, `finalizeAndRedeem`, a
+pool or a market anywhere. Two adapters implement it — `DreamDEXVenue` (1:1-backed
+complete sets on a binary pool) and `DirectDuelVenue` (a two-party escrow resolved
+by the sign of a price change, **no market at all**). One adapter is a demo. Two
+adapters is a platform, executing, in front of the jury.
+
+State the shape precisely, because the loose version is both wrong and unsafe. It
+is **not** one population repointed between sources; it is a second `Population`
+proxy over the *same* `Prophet` beacon and the same price source, with only the
+`venue` field differing — the same organism code settling against two unrelated
+mechanisms, which is the stronger claim anyway. Repointing a *live* population
+across adapters is the unsafe version: `setWiring` has no phase guard and the two
+adapters fail in opposite directions on a position the new venue never issued, so
+one of them strands the escrow silently. That is documented in `STORAGE.md` with
+the operator rule (repoint only in phase 0, with no position open).
+
+Where it stops, as of today: the two arenas run end-to-end in the test suite, and
+`Deploy.s.sol` deploys **one** `Population` on **one** `DreamDEXVenue` — so a
+second live arena for Season 0 is a second deploy, not a flag. That is a scripting
+task, not an engineering risk, but it is not done and should not be pitched as if
+it were.
 
 ## 5. The moat is wall-clock time, and it is not purchasable
 
@@ -190,34 +210,59 @@ lands on us.
 ## 8. The tournament mechanics that make the arena honest
 
 Two defects in v1 would be cosmetic in an exhibition and fatal in a paid
-tournament.
+tournament. **Both were fixed in code on 2026-08-30**; this section is kept in
+diagnosis-then-fix order because the reasoning is the interesting part, but the
+tense is now past.
 
-**Capital currently buys immortality.** Pairing risks
-`min(stakeOf(up), stakeOf(down))` where `stakeOf` is 10% of treasury, and
-metabolism is flat. Fund an organism to 1,000 tUSDC against 10-tUSDC opponents
-and it risks 1 tUSDC per window while paying 0.05 in rent. Losing *every single
-window* it survives ~950 windows; at even odds it survives on the order of
-20,000. `fundProphet` is permissionless, so this is live in the current code.
+**Capital bought immortality.** Pairing risked
+`min(stakeOf(up), stakeOf(down))` where `stakeOf` was 10% of treasury, and
+metabolism was flat. Fund an organism to 1,000 tUSDC against 10-tUSDC opponents
+and it risked 1 tUSDC per window while paying 0.05 in rent. Losing *every single
+window* it survived ~950 windows; at even odds, on the order of 20,000. And
+`fundProphet` is permissionless, so anyone could buy it.
 
-**Proportional staking also breaks the science.** A rich organism and a poor one
-are not playing the same game, so measured fitness is luck weighted by capital
+**Proportional staking also broke the science.** A rich organism and a poor one
+are not playing the same game, so measured fitness was luck weighted by capital
 rather than forecasting skill — and comparability is exactly what makes the
 graded corpus worth anything.
 
 The fix is the mechanism poker settled on a century ago: **a fixed ante that
 escalates in levels.** Every organism risks the same absolute amount in a given
-level, and the ante and metabolism step up on a schedule. Geometric escalation
-exhausts any finite treasury in a logarithmic number of levels, so a season
-**terminates by construction** and capital cannot buy permanence. It is also the
-better metaphor: the climate gets harsher, and only better predictors survive.
+level, and the ante steps up on a schedule. Geometric escalation exhausts any
+finite treasury in a logarithmic number of levels, so a season **terminates by
+construction** and capital cannot buy permanence. It is also the better metaphor:
+the climate gets harsher, and only better predictors survive.
+
+An earlier draft of this section said the ante *and metabolism* escalate. Only the
+ante does — `metabolicCost` is a flat per-window charge and `settleAll` passes it
+unscaled. That is not a shortfall, it is what the next paragraph's arithmetic
+already assumed, and it keeps the two pressures separable: rent is the cost of
+existing, the ante is the cost of having an opinion.
 
 Fixed ante alone would *not* have fixed this — a 1,000-tUSDC organism risking a
 flat 0.25 plus 0.05 rent still survives 3,300 windows. The escalation is the
 load-bearing part.
 
+**As shipped:** `Population._pair` opens at `ante()`, not at a fraction of
+treasury, and the docblock at that site records the rule it replaced.
+`ante()` is `baseAnte` multiplied by `anteMultBps` once per level — a loop rather
+than an exponentiation, because a basis-point rate has to round at every step to
+stay honest, and `level()` bounds it at 40 iterations. Season 0's initializer
+defaults are `baseAnte = 0.25 tUSDC`, `anteMultBps = 20_000` (the ante doubles),
+`levelWindows = 72` (~18 h at the 15-minute cadence). The ante is flat but not
+conjured: each side still pays from its own treasury and both legs are clamped to
+the same amount, because unequal legs would mint a set nobody can redeem 1:1 — and
+an organism that cannot cover the ante opens empty and is one metabolism charge
+from death, which is the intended way for a losing genome to exit. `setSeason`
+rejects a configuration that would brick the arena: a zero `levelWindows` or
+`seasonWindows`, or an `anteMultBps` below 10,000, which would make the climate get
+*easier*.
+
 Seasons follow from the same logic: a fixed end, a prize pool fed by forfeited
 residues and a share of the rake, a leaderboard, a payout event, and a natural
-marketing cycle. **Season 0 runs across the judging period.**
+marketing cycle. **Season 0 runs across the judging period.** One deploy-day
+caveat: `Deploy.s.sol` does not call `setSeason`, so a deploy that skips it runs
+the initializer defaults above rather than a season sized to the STT in hand.
 
 ## 9. What is real on September 8, and what is not
 
@@ -226,7 +271,7 @@ marketing cycle. **Season 0 runs across the judging period.**
 | Population thinking on-chain, generations advancing | **Demonstrable** |
 | Selection atomic with settlement (same block) | **Demonstrable** — asserted by `prove-same-block.ts` |
 | Rent accruing on-chain as protocol revenue | **Demonstrable** |
-| Engine runs against two different settlement sources | **Demonstrable** — the platform claim, executing |
+| Engine runs against two different settlement sources | **Demonstrable** — the platform claim, shipped 2026-08-30 and asserted end-to-end in the test suite. One caveat: a second *live* arena is a second deploy, since `Deploy.s.sol` wires one |
 | Entrants paying their own cognition | **Demonstrable** |
 | Real third-party entrants at scale | **No.** Season 0 is house-seeded |
 | B2B arena customers | **No.** Pipeline |
@@ -248,11 +293,14 @@ marketing cycle. **Season 0 runs across the judging period.**
   already verified: metabolism is charged per *settled window*, not per unit of
   wall-clock time, so pausing the cadence costs nothing on-chain and a
   short-funded run becomes bursts rather than a weaker population.
-- **The same-block claim is the thing most at risk from this redesign.**
-  Abstracting redemption behind a venue interface touches the exact code path the
-  central technical claim depends on. It must be re-proven against Shannon before
-  `SelectionEngine.fallbackEnabled` is closed, and until then only the weaker
-  claim is licensed: *"selection is on-chain and atomic with redemption."*
+- **The same-block claim is the thing most at risk from this redesign — which has
+  now landed, so the risk is live rather than prospective.** Abstracting redemption
+  behind `IArenaVenue` touches the exact code path the central technical claim
+  depends on, and the 98-test suite cannot exercise it: the reactivity precompile
+  does not exist on local chain ids. It must be re-proven against Shannon by
+  `npm run prove` before `SelectionEngine.fallbackEnabled` is closed, and until
+  then only the weaker claim is licensed: *"selection is on-chain and atomic with
+  redemption."*
 - **Long B2B cycle.** The largest revenue line is the slowest.
 
 ## 10. Why this wins rather than merely finishes

@@ -174,6 +174,17 @@ contract Deploy is Script {
         //    collateral. Also before Population, and also freely replaceable: it holds
         //    nothing between transactions, so `setWiring` can repoint the population at
         //    a different adjudication mechanism without touching an organism.
+        //
+        //    "Freely" is wrong in one specific way, and this is the comment an operator
+        //    reads before doing it. `setWiring` has NO PHASE GUARD. Repoint only in
+        //    phase 0, with no position open: the two adapters fail in opposite
+        //    directions on a position the new venue never issued — DreamDEXVenue reverts
+        //    UnknownPosition (loud, recoverable), DirectDuelVenue returns 0 (silent, and
+        //    it grades both duellists as total losses while the escrow goes unreachable
+        //    short of a beacon upgrade). See STORAGE.md, "Contracts with no storage
+        //    constraint". Repointing to a fresh instance of the SAME adapter between
+        //    windows is the only version the test suite covers
+        //    (test_venue_canBeRepointedBetweenWindows).
         d.venue = address(
             new DreamDEXVenue(
                 IPriceSource(d.priceSource), d.settlement, d.collateral, d.outcomeToken, d.symbol
