@@ -260,8 +260,20 @@ contract MockMarketsModule {
     {
         Rec memory r = recs[marketId];
         return (
-            0, 2, 0, address(0), 0, bytes32(0), address(0), address(0),
-            r.market, r.pool, r.yesId, r.noId, r.tradingStart, r.expiry
+            0,
+            2,
+            0,
+            address(0),
+            0,
+            bytes32(0),
+            address(0),
+            address(0),
+            r.market,
+            r.pool,
+            r.yesId,
+            r.noId,
+            r.tradingStart,
+            r.expiry
         );
     }
 }
@@ -325,11 +337,7 @@ contract MockAgentRequester {
         return depositFloor * subcommitteeSize;
     }
 
-    function createRequest(uint256, address cb, bytes4 sel, bytes calldata payload)
-        external
-        payable
-        returns (uint256)
-    {
+    function createRequest(uint256, address cb, bytes4 sel, bytes calldata payload) external payable returns (uint256) {
         return _create(cb, sel, payload);
     }
 
@@ -420,9 +428,8 @@ contract MockAgentRequester {
             perAgentBudget: p.value / 3
         });
 
-        (bool ok, bytes memory err) = p.callbackAddress.call(
-            abi.encodeWithSelector(p.callbackSelector, requestId, responses, overallStatus, req)
-        );
+        (bool ok, bytes memory err) =
+            p.callbackAddress.call(abi.encodeWithSelector(p.callbackSelector, requestId, responses, overallStatus, req));
         if (!ok) {
             if (err.length == 0) revert("callback reverted");
             assembly {

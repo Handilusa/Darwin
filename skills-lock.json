@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "ux-design": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": "ux-design/SKILL.md",
+      "computedHash": "767fc1c09bca0fdeed1c096846b732cd5b70643001aef17d221a87e0ab146657"
+    }
+  }
+}

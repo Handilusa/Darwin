@@ -1,0 +1,153 @@
+/*
+ *  DARWIN — DARK FIELD
+ *  The design system. One file, read by both surfaces.
+ *
+ *  `app/` (Vite + React: landing and entry) imports this.
+ *  `web/` (zero-build dashboard) links it.
+ *  Neither owns it. A colour that exists in only one of them is a bug — the judge
+ *  moves between the landing and the arena in one click and must not feel a seam.
+ *
+ *  ── WHY SINGLE-THEME ────────────────────────────────────────────────────────
+ *  There is deliberately no light palette here. The design is dark-field microscopy:
+ *  luminous specimens against unlit medium. That cannot be done on white — invert it
+ *  and the entire metaphor, including "the light goes out", stops working. So this is
+ *  a commitment, not an omission, and every colour below is stated explicitly so
+ *  neither surface ever borrows a ground from its host.
+ *
+ *  ── WHY THESE COLOURS ───────────────────────────────────────────────────────
+ *  The mechanism picked them, not taste. An organism holds one of two beliefs and is
+ *  in one of two states, so the palette is two opposed hues plus a drained neutral:
+ *
+ *      life  mint   alive · Belief.Up   · a claim that settled correct
+ *      heat  amber  cost  · Belief.Down · what an organism pays to think
+ *      ash   violet dead — DESATURATED, so a corpse reads drained and not merely dim
+ *
+ *  Colour therefore carries information rather than decorating, and the semantic
+ *  triad below is derived from it: ok = life, warn = heat, bad = its own alarm hue,
+ *  kept distinct from `heat` because "expensive" and "wrong" are different claims.
+ *
+ *  ── HOW TO EXTEND ───────────────────────────────────────────────────────────
+ *  Add a token here; never a literal in a component. If you need a colour that is
+ *  not derivable from the five above, the design has a gap worth arguing about.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ── ground and surfaces ──────────────────────────────────────────────────
+     A blue-green black, never a neutral one: the ground is culture medium, and
+     hue-biasing it toward `life` is what stops the page reading as generic dark
+     mode. Each step up is a surface that sits on the one before it. */
+  --ink: #060d0c;
+  --ink-2: #0a1413;
+  --ink-3: #101f1d;
+  --ink-4: #162926;
+
+  /* Hairlines. `line` is structure, `line-2` is emphasis, `line-3` is a focused
+     or hovered edge. */
+  --line: #1b2e2b;
+  --line-2: #26403c;
+  --line-3: #33544f;
+
+  /* ── the three that mean something ────────────────────────────────────── */
+  --life: #5fe3c0;
+  --life-dim: #2f8d78;
+  --life-deep: #113029;
+
+  --heat: #f0a055;
+  --heat-dim: #96602f;
+  --heat-deep: #2e1e10;
+
+  --ash: #7a7686;
+  --ash-dim: #4a4854;
+  --ash-deep: #1a1920;
+
+  /* ── semantic, derived ────────────────────────────────────────────────────
+     `bad` is the one hue not derived from the mechanism, because a wrong claim
+     and an expensive one must not look alike. A warm coral rather than a crypto
+     red: it has to sit on a green-black ground without vibrating. */
+  --ok: var(--life);
+  --warn: var(--heat);
+  --bad: #f2645f;
+  --bad-dim: #97403d;
+  --bad-deep: #2c1414;
+
+  /* ── belief and thesis ────────────────────────────────────────────────────
+     Genome.sol allows exactly nine answers. Direction is a colour; the thesis
+     behind it is never a colour — it is a word, because inventing five more hues
+     for Momentum/Reversion/Breakout/Range would make the palette lie about how
+     much of it carries meaning. */
+  --belief-up: var(--life);
+  --belief-down: var(--heat);
+  --belief-abstain: var(--ash);
+  --belief-none: var(--text-4);
+
+  /* ── text ─────────────────────────────────────────────────────────────────
+     Off-white biased toward the medium, so type sits in the image rather than on
+     top of it. `text-4` is for values that are structurally absent — a belief not
+     yet formed, a parent an organism does not have. */
+  --text: #deeae6;
+  --text-2: #90a5a0;
+  --text-3: #5c736f;
+  --text-4: #3d504d;
+
+  /* ── type ─────────────────────────────────────────────────────────────────
+     A reading serif for the genome, because a genome is prose to be read, and its
+     italic marks it as a specimen of language rather than interface copy. A
+     lab-instrument sans for the interface. Mono for every measurement.
+     Fallbacks are real stacks: fonts.css is vendored, but a font can still fail. */
+  --f-display: "Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --f-sans: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+
+  /* A 1.25 scale, pinned at 16px. Stay on it. */
+  --t-xs: 0.6875rem;
+  --t-sm: 0.8125rem;
+  --t-base: 0.9375rem;
+  --t-md: 1.0625rem;
+  --t-lg: 1.3125rem;
+  --t-xl: 1.625rem;
+  --t-2xl: 2.125rem;
+  --t-3xl: 2.85rem;
+
+  --lh-tight: 1.16;
+  --lh-snug: 1.34;
+  --lh-body: 1.6;
+
+  /* Uppercase mono labels are the page's connective tissue in both surfaces. */
+  --ls-label: 0.14em;
+  --ls-brand: 0.22em;
+
+  /* ── space ────────────────────────────────────────────────────────────────
+     A 4px base. `--gut` is the page gutter and is the only fluid value here. */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.5rem;
+  --s-6: 2rem;
+  --s-7: 3rem;
+  --s-8: 4.5rem;
+  --gut: clamp(1.25rem, 4vw, 3.5rem);
+
+  /* Running text stays near 65 characters. */
+  --measure: 63ch;
+
+  /* ── form ─────────────────────────────────────────────────────────────────
+     Radii are small on purpose. This is an instrument, and instruments have
+     square corners; a 12px radius would make every panel read as a SaaS card. */
+  --r-1: 2px;
+  --r-2: 3px;
+  --r-pill: 999px;
+
+  /* ── motion ───────────────────────────────────────────────────────────────
+     Named by what they are for, so a duration is chosen rather than typed.
+     `--d-death` is long and alone: it is the one moment on either surface that is
+     allowed to take its time, and nothing tweens back out of it. */
+  --d-fast: 0.16s;
+  --d-base: 0.32s;
+  --d-slow: 0.62s;
+  --d-death: 1.5s;
+  --e-out: cubic-bezier(0.2, 0.8, 0.3, 1);
+  --e-in-out: cubic-bezier(0.5, 0, 0.3, 1);
+}

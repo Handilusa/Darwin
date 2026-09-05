@@ -1,1000 +1,2198 @@
 /*
- *  One stylesheet, no framework, no build.
+ *  DARWIN — the arena console.
  *
- *  Dark by default because this is an operations view that will sit open on a second monitor
- *  for days, and because the thing it displays is mostly text. `prefers-color-scheme: light`
- *  is honoured at the bottom by swapping the tokens only.
+ *  Every colour, size, radius and duration here comes from a token in `tokens.css`, which the
+ *  landing (`app/src/styles.css`) imports and this file links. There are no colour literals below
+ *  this comment. If you need one, the design system has a gap and the token belongs in that file,
+ *  where both surfaces can see it — a judge crosses from `/` to `/arena/` in one click and must
+ *  not feel a seam.
  *
- *  The colour vocabulary is small and load-bearing rather than decorative:
- *    --up / --down       the two beliefs an organism can hold, so a grid reads at a glance
- *    --ok / --warn/--bad claim strength and severity, used NOWHERE decoratively — a red row
- *                        means a death or a failed read, never emphasis
+ *  DARK ONLY, and it is a commitment rather than an omission. The design is dark-field microscopy:
+ *  luminous specimens on unlit medium. Invert it and "the light goes out" stops meaning anything.
+ *
+ *  ── COLOUR CARRIES INFORMATION. NOTHING HERE IS DECORATION. ─────────────────
+ *
+ *    --life  mint    alive · Belief.Up   · a claim that settled correct
+ *    --heat  amber   cost  · Belief.Down · what an organism pays to think
+ *    --ash   violet  dead — desaturated, so a corpse reads drained rather than merely dim
+ *    --bad   coral   WRONG. Its own hue, because "expensive" and "wrong" are different claims.
+ *
+ *  So mint always means an organism is doing well, amber always means something is being spent,
+ *  and violet always means something is over. Break that and the grid stops being readable at a
+ *  glance, which is the only thing it is for. Structure — panels, rules, labels, the phase track
+ *  — is stated in `--line*` and `--text*` and takes no hue at all: chrome that competed with the
+ *  organisms for attention would be chrome arguing with the product.
+ *
+ *  ── THREE RULES THIS FILE MUST NOT BREAK ────────────────────────────────────
+ *
+ *  1. `.card-dead` sets `filter: saturate(0.15)` and that exact value is duplicated in
+ *     `js/motion.js`'s `died()` timeline, which ends there before `clearProps` drops the inline
+ *     style. If the two drift, a card visibly jumps at the end of the death animation.
+ *  2. No CSS `transition` on `width` for `.vitals-fill`, on `background-color` for `.feed-row`,
+ *     or on `transform`/`opacity` for `.card`, `.metric-value`, `.hero-thesis`, `.phase-node`.
+ *     GSAP writes those properties every frame; a transition on top of a tween is a fight the
+ *     page loses at 60fps.
+ *  3. Everything must still read with GSAP absent. `motion.js` no-ops without the library and
+ *     under `prefers-reduced-motion`, so no element may depend on a tween to become visible.
+ *     Nothing below starts at `opacity: 0`.
+ *
+ *  CONTRAST NOTE: `--ash` is ~4.3:1 on `--ink-2`, just under the 4.5:1 body floor. It is used
+ *  only for dead organisms — content that is deliberately spent — and never for live readings or
+ *  for anything a visitor has to act on. Live text is `--text` (13:1) or `--text-2` (7:1).
  */
 
-:root {
-  --bg: #0b0f14;
-  --bg-2: #111823;
-  --bg-3: #17202d;
-  --line: #223044;
-  --line-2: #2c3d55;
-  --fg: #dbe4ef;
-  --fg-2: #93a4bb;
-  --fg-3: #6a7d96;
+@import "fonts.css";
+@import "tokens.css";
 
-  --up: #58d68d;
-  --down: #f1737f;
-  --abstain: #d9b45b;
-  --none: #6a7d96;
+/*//////////////////////////////////////////////////////////////
+                             RESET
+//////////////////////////////////////////////////////////////*/
 
-  --ok: #58d68d;
-  --warn: #d9b45b;
-  --bad: #f1737f;
-  --accent: #6ea8fe;
-
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
-
-  --radius: 10px;
-  --pad: 16px;
-}
-
-* {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
-html,
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
-  padding: 0;
-}
-
-body {
-  background: var(--bg);
-  color: var(--fg);
-  font: 14px/1.5 var(--sans);
+  /* Explicit, always. The page is composited over a ground the browser paints, and a transparent
+     body would borrow whatever that is. */
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--f-sans);
+  font-size: var(--t-base);
+  line-height: var(--lh-body);
   -webkit-font-smoothing: antialiased;
-  padding-bottom: 48px;
-}
-
-code,
-.mono,
-kbd {
-  font-family: var(--mono);
-  font-size: 0.92em;
-}
-
-a {
-  color: var(--accent);
-  text-decoration: none;
-}
-a:hover {
-  text-decoration: underline;
+  /* A very faint bloom behind the top of the page: the specimen field is lit from above, and it
+     stops the header reading as a flat block of near-black. */
+  background-image: radial-gradient(120% 60% at 50% -10%, var(--life-deep) 0%, transparent 62%);
+  background-repeat: no-repeat;
 }
 
 h1,
 h2,
-h3 {
+h3,
+p,
+ol,
+ul,
+figure,
+blockquote,
+table {
   margin: 0;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-h1 {
-  font-size: 20px;
-  letter-spacing: 0.16em;
-}
-h2 {
-  font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-2);
-}
-h3 {
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-3);
-  margin-bottom: 6px;
 }
 
-.sub {
-  font-size: 11px;
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  color: var(--fg-3);
-  text-transform: none;
-  margin-left: 8px;
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--life);
+  text-decoration-color: color-mix(in srgb, var(--life) 40%, transparent);
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  text-decoration-color: var(--life);
+}
+
+:focus-visible {
+  outline: 2px solid var(--life);
+  outline-offset: 2px;
+  border-radius: var(--r-1);
+}
+
+code {
+  font-family: var(--f-mono);
+  font-size: 0.92em;
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  padding: 0.05em 0.32em;
+  /* A boxed inline token is one word. UAX #14 permits a line break after `?`, so the footer's
+     `?population=0x…` split into an orphaned boxed `?` at the end of one line and the rest at the
+     start of the next — borders drawn on both halves, which reads as a rendering fault rather than
+     as a query parameter. */
+  white-space: nowrap;
+}
+
+/* Except where the token is not ours. `badQuery` is whatever a visitor typed into the URL bar and
+   `.banner`/`.error-list` carry revert data, so none of the three has a length bound; `nowrap` there
+   would push a horizontal scrollbar across the whole page instead of wrapping. */
+.bad code,
+.banner code,
+.error-list code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/*//////////////////////////////////////////////////////////////
+                        PAGE SCAFFOLD
+//////////////////////////////////////////////////////////////*/
+
+/* One column, one gutter, one measure. Every direct child of these three is a full-width band. */
+#banner,
+#header,
+#body,
+.footer {
+  max-width: 1560px;
+  margin-inline: auto;
+  padding-inline: var(--gut);
+}
+
+#body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+  padding-bottom: var(--s-7);
+}
+
+/* The population and the organism it is showing you, side by side. The detail pane sticks because
+   reading a genome while scrolling the grid is the single most common thing anyone does here. */
+.split {
+  display: grid;
+  gap: var(--s-5);
+  grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.split > .panel-detail {
+  position: sticky;
+  top: var(--s-4);
+  max-height: calc(100vh - var(--s-6));
+  overflow-y: auto;
+}
+
+/*//////////////////////////////////////////////////////////////
+                            PANELS
+//////////////////////////////////////////////////////////////*/
+
+.panel {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel h2 {
+  font-family: var(--f-mono);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-2);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-3);
+}
+
+.panel h3 {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+
+/* A panel reporting something wrong wears one amber edge and nothing else — a fully amber panel
+   would make a recoverable read failure look like a dead arena. */
+.panel-warn {
+  border-color: var(--heat-dim);
+  border-left-width: 2px;
+  background: linear-gradient(90deg, var(--heat-deep) 0%, var(--ink-2) 22%);
+}
+
+.error-list {
+  margin: 0;
+  padding-left: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  color: var(--text-2);
+}
+
+.error-list code {
+  color: var(--heat);
+}
+
+/*//////////////////////////////////////////////////////////////
+                         UTILITIES
+//////////////////////////////////////////////////////////////*/
+
+.mono {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 .muted {
-  color: var(--fg-3);
+  color: var(--text-3);
 }
+
+.sub {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 400;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* A separator with no text of its own, so the glyph lives here. */
+.dot::before {
+  content: "·";
+  color: var(--text-4);
+}
+
 .ok {
   color: var(--ok);
 }
+
 .warn {
   color: var(--warn);
 }
+
 .bad {
   color: var(--bad);
 }
 
-.dot::before {
-  content: "·";
-  margin: 0 6px;
-  color: var(--fg-3);
+.empty {
+  color: var(--text-3);
+  font-style: italic;
+  max-width: var(--measure);
 }
 
-/*//////////////////////////////  BANNERS  //////////////////////////////*/
+.note {
+  font-size: var(--t-sm);
+  color: var(--text-3);
+  max-width: var(--measure);
+}
+
+.lede {
+  color: var(--text-2);
+  max-width: var(--measure);
+}
+
+.prose {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+/*//////////////////////////////////////////////////////////////
+                           BANNERS
+//////////////////////////////////////////////////////////////*/
 
 .banner {
-  padding: 10px 20px;
-  font-size: 13px;
-  border-bottom: 1px solid var(--line);
   display: flex;
-  gap: 8px;
-  align-items: baseline;
+  align-items: center;
+  gap: var(--s-3);
   flex-wrap: wrap;
-}
-.banner-demo {
-  background: #3a2d0c;
-  color: #f4e2b0;
-  border-bottom-color: #5c4713;
-}
-.banner-demo a {
-  color: #ffd772;
-}
-.banner-error {
-  background: #3a1420;
-  color: #ffd7dd;
-  border-bottom-color: #5c1e2c;
-}
-
-/*//////////////////////////////  TOPBAR  //////////////////////////////*/
-
-.topbar {
-  padding: 18px 20px 14px;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(180deg, var(--bg-2), var(--bg));
-  display: grid;
-  gap: 14px;
-}
-
-.topbar-title {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.topbar-meta {
-  font-size: 12px;
-  color: var(--fg-3);
-}
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-  gap: 1px;
-  background: var(--line);
+  margin-top: var(--s-4);
+  padding: var(--s-3) var(--s-4);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-.stat {
-  background: var(--bg-2);
-  padding: 9px 12px;
-  display: grid;
-  gap: 1px;
-}
-.stat-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-3);
-}
-.stat-value {
-  font-family: var(--mono);
-  font-size: 16px;
-  color: var(--fg);
-}
-.stat-note {
-  font-size: 10px;
-  color: var(--fg-3);
+  border-radius: var(--r-2);
+  font-size: var(--t-sm);
+  color: var(--text-2);
 }
 
-/* Phase is the one stat that changes colour, because it is the only one that tells an operator
-   whether the cadence is stuck. */
-.stat-phase .stat-value {
-  color: var(--accent);
+.banner strong {
+  color: var(--text);
+  font-weight: 500;
 }
-.stat-phase.phase-1 .stat-value {
-  color: var(--warn);
+
+.banner code {
+  color: var(--life);
 }
-.stat-phase.phase-2 .stat-value {
-  color: var(--up);
+
+/* The fixture banner is a statement of fact, not a warning: it says which data you are looking
+   at. Mint, because in this mode everything on the page is honest about being synthetic. */
+.banner-demo {
+  border-color: var(--line-2);
+  background: linear-gradient(90deg, var(--life-deep) 0%, var(--ink-2) 40%);
 }
+
+.banner-error {
+  border-color: var(--bad-dim);
+  background: linear-gradient(90deg, var(--bad-deep) 0%, var(--ink-2) 40%);
+  color: var(--text);
+}
+
+/*//////////////////////////////////////////////////////////////
+                            HERO
+//////////////////////////////////////////////////////////////*/
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  /* --s-4, not --s-5: three bands already separated by rules do not also need 24px of air between
+     them, and 32px of it was buying nothing the population below could not use better. This is the
+     one header reclamation independent of the hero-grid columns — `.hero-argument` (~186px) and
+     `.hero-vitals` (~184px) are within 2px of each other, so shrinking either ALONE reclaims zero,
+     and neither is touched here. */
+  gap: var(--s-4);
+  padding-block: var(--s-5) var(--s-4);
+}
+
+.hero-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+}
+
+.hero h1 {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-4);
+  font-family: var(--f-sans);
+  font-size: var(--t-lg);
+  font-weight: 600;
+  letter-spacing: var(--ls-brand);
+  line-height: var(--lh-tight);
+  color: var(--text);
+  text-transform: uppercase;
+}
+
+.hero-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-size: var(--t-xs);
+  color: var(--text-3);
+}
+
+.hero-meta a {
+  color: var(--text-2);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.hero-meta a:hover {
+  color: var(--life);
+  border-bottom-color: var(--life);
+}
+
+/* Claim, evidence, market — in that order, each separated by a rule rather than by whitespace,
+   because they are three different kinds of statement. */
+.hero-grid {
+  display: grid;
+  gap: var(--s-5);
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.85fr) minmax(0, 1fr);
+  align-items: start;
+  /* 8px, with none of the risk of re-proportioning the tracks: a 0.85fr readout column of ~297px
+     puts `price-main` on the edge of wrapping. The corpse no longer depends on header height at all
+     once the band exists, so only the risk-free reclamations are worth taking. */
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line);
+}
+
+/* The pre-deployment masthead. `hero-grid`'s three columns exist to hold claim, vitals and market;
+   with only the claim to show, the first column's 1.35fr would strand the sentence at 42% of the
+   width and leave two thirds of the screen empty above a form. One column, and the lede keeps its
+   own measure.
+
+   Written as a descendant selector rather than as a `.hero-grid-plain` modifier so that the two
+   breakpoints below, which re-declare `.hero-grid`'s columns at equal specificity and later in the
+   file, cannot quietly win it back. */
+.hero-plain .hero-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* With the claim alone to show, the masthead is set as one composition rather than as a survivor of
+   the three-column grid: display line and lede side by side, bottom-aligned, bounded to the SAME
+   62rem as `.panel-setup` below it so the page has one left-hand measure instead of two.
+
+   `.hero-lede`'s 42ch is correct inside `hero-grid`'s 1.35fr column and wrong here — at full width
+   it stranded the paragraph in a 395px rag with the rest of the row empty, which looks exactly like
+   a three-column layout that lost two of its columns. The grid column is the measure now. */
+.hero-plain .hero-argument {
+  display: grid;
+  /* `auto-fit` rather than two explicit tracks, so this needs no breakpoint of its own: two columns
+     appear only once both can hold 22rem, and below that it is one column. The trigger is whether
+     the composition fits, which is the actual condition — a fixed `1fr 1fr` would keep two columns
+     down to 720px and set the display line in a 330px gutter. */
+  grid-template-columns: repeat(auto-fit, minmax(min(22rem, 100%), 1fr));
+  align-items: end;
+  gap: var(--s-3) var(--s-6);
+  max-width: 62rem;
+}
+
+.hero-plain .hero-thesis {
+  max-width: 22ch;
+}
+
+.hero-plain .hero-lede {
+  max-width: none;
+}
+
+.hero-argument {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+/* The load-bearing sentence. The serif is the same face the genomes are set in: the thesis and
+   the organisms' own prose belong to one voice, and the interface around them to another. */
+.hero-thesis {
+  font-family: var(--f-display);
+  font-size: var(--t-2xl);
+  /* 400 and not lighter: `fonts.css` vendors ONE upright Newsreader file declared at 400, so a
+     300 here would silently resolve back to 400 anyway. Say what is actually rendered. */
+  font-weight: 400;
+  line-height: var(--lh-tight);
+  letter-spacing: -0.01em;
+  color: var(--text);
+  text-wrap: balance;
+}
+
+/* The word is "die", so it is set in the corpse hue rather than the alarm hue — a dead organism
+   is a state, not a fault, and this sentence should demonstrate the palette it describes. Large
+   display type, so `--ash` clears the 3:1 floor that applies at this size. */
+.hero-thesis em {
+  font-style: italic;
+  color: var(--ash);
+}
+
+.hero-lede {
+  font-size: var(--t-sm);
+  color: var(--text-2);
+  max-width: 42ch;
+}
+
+.hero-vitals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding-left: var(--s-5);
+  border-left: 1px solid var(--line);
+}
+
+.hero-readout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  padding-left: var(--s-5);
+  border-left: 1px solid var(--line);
+}
+
+/* ── metrics ───────────────────────────────────────────────────────────────── */
+
+.metric {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1em;
+}
+
+.metric-value {
+  font-family: var(--f-mono);
+  font-size: var(--t-3xl);
+  /* IBM Plex Mono is vendored at 400 and 500 only. Nothing here asks for a weight that would
+     have to be synthesised or silently rounded. */
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  display: flex;
+  align-items: baseline;
+  gap: 0.06em;
+}
+
+.metric-unit {
+  font-size: 0.42em;
+  letter-spacing: var(--ls-label);
+  color: var(--text-4);
+}
+
+.metric-label {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+
+.metric-note {
+  font-size: var(--t-xs);
+  color: var(--text-4);
+}
+
+/* Generation depth is the headline metric the whole project claims. It is the one number in the
+   console that gets the life hue, because it is the arena's result and not any one organism's. */
+.metric-gen .metric-value {
+  color: var(--life);
+  text-shadow: 0 0 24px color-mix(in srgb, var(--life) 22%, transparent);
+}
+
+.metric-gen .metric-unit {
+  color: var(--life-dim);
+}
+
+/* Every organism dead is the one reading that should stop a visitor, so it is the alarm hue and
+   not the ash hue: ash is what a corpse looks like, this is what an extinction looks like. */
+.all-dead .metric-value {
+  color: var(--bad);
+}
+
+/* ── price ─────────────────────────────────────────────────────────────────── */
 
 .price {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 16px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: var(--s-2);
 }
+
 .price-main {
   display: flex;
-  gap: 10px;
   align-items: baseline;
-  font-family: var(--mono);
-  font-size: 20px;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
 }
+
 .price-open {
-  color: var(--fg-3);
+  font-size: var(--t-sm);
+  color: var(--text-3);
 }
-/* The last price is the live number and the open is the reference, so the emphasis has to run
-   that way round — without this they render identically and the pair reads as ambiguous. */
-.price-last {
-  color: var(--fg);
-  font-weight: 600;
-}
+
 .price-arrow {
-  color: var(--fg-3);
+  color: var(--text-4);
 }
+
+.price-last {
+  font-size: var(--t-xl);
+  font-weight: 400;
+  color: var(--text);
+}
+
 .price-move {
-  font-size: 14px;
-  padding: 1px 7px;
-  border-radius: 20px;
-  background: var(--bg-3);
+  font-size: var(--t-sm);
+  padding: 0.1em 0.4em;
+  border-radius: var(--r-1);
+  border: 1px solid transparent;
 }
+
+/* Up and down are the market's direction, and they share the hues beliefs use for the same two
+   directions on purpose: an organism that said Up and a market that went up must look agreed. */
 .price-move.up {
-  color: var(--up);
+  color: var(--life);
+  border-color: color-mix(in srgb, var(--life) 32%, transparent);
+  background: var(--life-deep);
 }
+
 .price-move.down {
-  color: var(--down);
+  color: var(--heat);
+  border-color: color-mix(in srgb, var(--heat) 32%, transparent);
+  background: var(--heat-deep);
 }
+
+.price-move.flat {
+  color: var(--text-3);
+  border-color: var(--line);
+}
+
 .price-meta {
-  font-size: 12px;
-  color: var(--fg-2);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-size: var(--t-xs);
+  color: var(--text-3);
 }
+
 .price-none {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
 }
+
 .price-none strong {
-  color: var(--warn);
+  font-family: var(--f-mono);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-2);
 }
+
+/* Not an error state. Between cadence ticks there is genuinely no window, and the excuse says
+   which of the two ordinary reasons applies. */
 .price-why {
-  font-size: 12px;
-  color: var(--fg-3);
-  font-family: var(--mono);
+  font-size: var(--t-xs);
+  color: var(--text-4);
+  max-width: 38ch;
 }
 
-/*//////////////////////////////  LAYOUT  //////////////////////////////*/
+/* ── phase track ───────────────────────────────────────────────────────────── */
 
-#body {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 20px;
-  display: grid;
-  gap: 16px;
-}
-
-.split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
-@media (max-width: 1000px) {
-  .split {
-    grid-template-columns: 1fr;
-  }
-}
-
-.panel {
-  background: var(--bg-2);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: var(--pad);
-}
-.panel-head {
+.phase-track {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 12px;
+  align-items: center;
+  gap: var(--s-2);
   flex-wrap: wrap;
-}
-.panel-head .muted {
-  font-size: 12px;
-}
-
-.empty {
-  color: var(--fg-3);
-  margin: 0;
-  font-style: italic;
-}
-.lede {
-  color: var(--fg-2);
-  margin: 0 0 14px;
-  max-width: 62ch;
-}
-.note {
-  font-size: 12px;
-  color: var(--warn);
-  margin: 8px 0 0;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
 }
 
-.panel-warn {
-  border-color: #5c4713;
-  background: #241d0d;
+.phase-node {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--text-4);
 }
-.error-list {
-  margin: 8px 0 0;
-  padding-left: 18px;
-  font-size: 12px;
-  color: var(--fg-2);
+
+.phase-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--line-2);
+  /* GSAP scales this element on a phase advance, so its transform origin has to be its centre
+     and nothing here may transition transform. */
+  transform-origin: 50% 50%;
+}
+
+.phase-node.is-past {
+  color: var(--text-3);
+}
+
+.phase-node.is-past .phase-dot {
+  background: var(--life-dim);
+}
+
+.phase-node.is-live {
+  color: var(--life);
+}
+
+.phase-node.is-live .phase-dot {
+  background: var(--life);
+  box-shadow: 0 0 0 3px var(--life-deep);
+}
+
+.phase-rail {
+  width: var(--s-5);
+  height: 1px;
+  background: var(--line);
+}
+
+.phase-rail.is-past {
+  background: var(--life-dim);
+}
+
+.phase-next {
+  color: var(--text-4);
+}
+
+.phase-next b {
+  font-weight: 500;
+  color: var(--text-2);
+}
+
+/* The Solidity selector, kept BESIDE the sentence rather than instead of it. Quiet on purpose: it
+   is what a reader who intends to check the cadence against the contract needs, and it must not
+   compete with the phrase that tells everybody else what is about to happen. No background and no
+   hue — this is a label, and structure takes no hue. */
+.phase-call {
+  margin-left: 0.45em;
+  padding: 0;
+  background: none;
+  font-size: 0.85em;
+  color: var(--text-4);
+}
+
+/* ── the strip of season arithmetic ────────────────────────────────────────── */
+
+.stats {
   display: grid;
-  gap: 4px;
-}
-
-/*//////////////////////////////  CLAIM  //////////////////////////////*/
-
-.panel-claim {
-  border-left: 3px solid var(--warn);
-}
-.panel-claim.claim-strong {
-  border-left-color: var(--ok);
-}
-.claim-line {
-  margin: 0 0 6px;
-  max-width: 80ch;
-}
-.claim-line q {
-  color: var(--fg);
-  font-style: italic;
-}
-.claim-not {
-  color: var(--fg-2);
-  font-size: 13px;
-}
-.claim-evidence {
-  margin-top: 10px;
-  padding-top: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--s-4);
+  padding-top: var(--s-4);
   border-top: 1px solid var(--line);
+}
+
+/* One baseline, not three rows. These five are season PARAMETERS — window, level, ante, prize pool,
+   rake — and a parameter reads perfectly well as `label value note` on one line. Nothing is dropped;
+   the note keeps `--text-4` so the hierarchy still reads. 65px of strip becomes 28px.
+   `flex-wrap` is the safety valve: a long note costs this band one 28px line, not a broken layout. */
+.stat {
   display: flex;
-  gap: 24px;
+  flex-direction: row;
+  align-items: baseline;
   flex-wrap: wrap;
+  gap: 0 0.5em;
+  min-width: 0;
+}
+
+.stat-label {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.stat-value {
+  font-family: var(--f-mono);
+  font-size: var(--t-md);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.stat-note {
+  font-size: var(--t-xs);
+  color: var(--text-4);
+}
+
+/*//////////////////////////////////////////////////////////////
+                        THE CLAIM PANEL
+//////////////////////////////////////////////////////////////*/
+
+/* The honesty gate, rendered. Its whole job is to be readable by someone looking for an
+   overstatement, so the weak state is not hidden and not red — it is simply amber and specific. */
+.panel-claim {
+  border-left-width: 2px;
+}
+
+.claim-strong {
+  border-left-color: var(--life-dim);
+}
+
+.claim-weak {
+  border-left-color: var(--heat-dim);
+}
+
+.claim-line {
+  max-width: var(--measure);
+  color: var(--text);
+}
+
+.claim-not {
+  color: var(--text-3);
+  font-size: var(--t-sm);
+  padding-left: var(--s-4);
+  border-left: 1px solid var(--line);
+}
+
+.claim-evidence {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  color: var(--text-2);
 }
 
 .pill {
-  font-size: 10px;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  padding: 3px 9px;
-  border-radius: 20px;
+  padding: 0.15em 0.6em;
+  border-radius: var(--r-pill);
   border: 1px solid var(--line-2);
-  color: var(--fg-2);
+  color: var(--text-2);
   white-space: nowrap;
 }
+
 .pill-ok {
-  color: var(--ok);
-  border-color: #2c5a3f;
-  background: #10251a;
+  color: var(--life);
+  border-color: color-mix(in srgb, var(--life) 40%, transparent);
+  background: var(--life-deep);
 }
+
 .pill-warn {
-  color: var(--warn);
-  border-color: #5c4713;
-  background: #241d0d;
+  color: var(--heat);
+  border-color: color-mix(in srgb, var(--heat) 40%, transparent);
+  background: var(--heat-deep);
 }
 
-/*//////////////////////////////  FIELDS  //////////////////////////////*/
-
-.field {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-}
-.field-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-3);
-}
-.field-value {
-  font-size: 13px;
-  overflow-wrap: anywhere;
-}
-/* `dom.js field()` takes an `opts.tone` and emits `tone-<tone>`; these are the rules behind that
-   affordance. Same three-colour vocabulary as everywhere else — a red field means a real problem
-   (a starved treasury, a failed read), never emphasis. */
-.field-value.tone-ok {
-  color: var(--ok);
-}
-.field-value.tone-warn {
-  color: var(--warn);
-}
-.field-value.tone-bad {
-  color: var(--bad);
-}
-.field-value.tone-muted {
-  color: var(--fg-3);
-}
-.detail-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px 16px;
-}
-
-/*//////////////////////////////  GRID  //////////////////////////////*/
+/*//////////////////////////////////////////////////////////////
+                        THE POPULATION
+//////////////////////////////////////////////////////////////*/
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 216px), 1fr));
+  gap: var(--s-3);
 }
 
 .card {
-  background: var(--bg-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  background: var(--ink-3);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 11px;
-  display: grid;
-  gap: 7px;
+  border-radius: var(--r-2);
+  text-align: left;
   cursor: pointer;
-  transition: border-color 0.12s, transform 0.12s;
+  /* Border and background only. `died()` tweens `x`, `filter` and `boxShadow`, and `first()`
+     tweens `y` and `opacity`; a transition on any of those would stutter against the tween. */
+  transition:
+    border-color var(--d-fast) var(--e-out),
+    background-color var(--d-fast) var(--e-out);
 }
+
 .card:hover {
-  border-color: var(--line-2);
-  transform: translateY(-1px);
+  border-color: var(--line-3);
+  background: var(--ink-4);
 }
-.card:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
+
 .card-selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent) inset;
+  border-color: var(--life-dim);
+  background: var(--ink-4);
+  box-shadow: inset 2px 0 0 var(--life);
 }
-/* Dead organisms stay on the page and stay legible. Death is the primary signal here, not an
-   error to be hidden, so they are dimmed rather than removed. */
+
+/* `.card:hover` is one pseudo-class more specific than `.card-selected` and was taking `border-color`
+   back off the selected card: measured with transitions disabled 2026-09-01, resting `--life-dim`
+   rgb(47, 141, 120) became `--line-3` rgb(51, 84, 79) the moment the cursor arrived — the pointer
+   erased the selection edge of the very card it was pointing at. (Only the inset `--life` rail
+   survived, because nothing else declares it.) Brightening within life's own ramp rather than merely
+   restating `--life-dim`, which is how `.btn-primary:hover` and `.card-dead:hover` below already
+   answer this: a hover moves a thing along its own hue, it does not neutralise it. */
+.card-selected:hover {
+  border-color: var(--life);
+}
+
+/* The resting state of a corpse. `saturate(0.15)` is duplicated in `motion.js`'s `died()` so the
+   animation lands exactly here — see rule 1 in the header comment. */
 .card-dead {
-  opacity: 0.5;
+  filter: saturate(0.15);
+  background: var(--ash-deep);
+  border-color: var(--ash-dim);
+  color: var(--ash);
+  cursor: pointer;
+}
+
+.card-dead:hover {
+  border-color: var(--ash);
+  background: var(--ash-deep);
+}
+
+/*  THE CORPSE BAND
+
+    The dead sit ABOVE the living grid, not at the end of it — reasoning in `render.js`'s `band()`.
+    Height is the entire point of this block: 45px per corpse against 153px per card, and 45 is
+    1 + 8 + 20 (one `--t-md` line at `--lh-tight`) + 4 + 3 (`.vitals`) + 8 + 1. Nothing here may grow
+    a second line without giving that back.
+
+    Structure takes no hue. Every colour is `--ash*` or `--line`, the same ash `.card-dead` already
+    wears above, so `token()` sees no new name.  */
+.tomb-band {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-bottom: var(--s-3);
+}
+
+.tomb-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  line-height: var(--lh-tight);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ash);
+}
+
+.tomb-note {
+  color: var(--ash-dim);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Three across at the measured 856px of panel content, one on a phone: 3 x 264 + 2 x 8 = 808 fits,
+   4 x 264 + 24 = 1080 does not. Deliberately NO `max-height` and no `overflow`: `died()`'s bloom is
+   `0 0 34px -4px` and a scroll container would clip the one beat that says a death just happened. A
+   band that grows with the death count is correct — twelve corpses is 4 rows = 204px here against
+   the 649px the same twelve cost as cards. */
+.tomb-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 264px), 1fr));
+  gap: var(--s-2);
+}
+
+/* Overrides `.card`'s gap and padding and NOTHING else — ash, `saturate(0.15)`, hover and the allowed
+   border/background transition all still come from `.card` and `.card-dead`. No transition is added
+   here: `died()` owns transform, filter and boxShadow on this node. */
+.card-tomb {
+  gap: var(--s-1);
+  padding: var(--s-2) var(--s-3);
+}
+
+.tomb-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+  overflow: hidden;
+}
+
+/* The name is the only elastic item, so a long label ellipsises instead of pushing the balance out of
+   the row. `Population.enter` is permissionless and a label can be any width. */
+.card-tomb .card-name {
+  flex: 1 1 auto;
+  min-width: 2ch;
+  font-size: var(--t-md);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-tomb .card-id,
+.card-tomb .card-gen,
+.card-tomb .amount,
+.card-tomb .tomb-when {
+  flex: none;
+}
+
+.card-tomb .amount {
+  margin-left: auto;
+  font-size: var(--t-sm);
+}
+
+.card-tomb .tomb-when {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  color: var(--ash-dim);
+}
+
+/* The toll rides inside `.metric-note`, on the note's own line, so the hero does not grow. */
+.toll {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35em;
+  margin-left: 0.5em;
+  color: var(--ash);
+}
+
+.toll-mark {
+  color: var(--bad);
+}
+
+.toll-when {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-4);
 }
 
 .card-top {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: baseline;
+  gap: var(--s-2);
   flex-wrap: wrap;
 }
+
 .card-id {
-  font-family: var(--mono);
-  font-weight: 600;
+  font-family: var(--f-mono);
+  font-size: var(--t-sm);
+  color: var(--text-2);
 }
+
 .card-name {
-  font-size: 11px;
-  color: var(--fg-2);
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: var(--t-md);
+  line-height: var(--lh-tight);
+  color: var(--text);
 }
+
+.card-dead .card-name {
+  color: var(--ash);
+}
+
+/* Generation is the metric that matters, so it is legible on every card rather than buried in
+   the detail pane. */
 .card-gen {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--fg-3);
-  border: 1px solid var(--line-2);
-  border-radius: 4px;
-  padding: 0 4px;
+  margin-left: auto;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  color: var(--life-dim);
 }
-/* Paid entry is the one thing in the grid worth an accent: it is evidence the arena is open, not
-   a population the operator hand-picked. */
+
+/* A stranger who paid the ante is structurally a root, indistinguishable from a founder except
+   by birth window — so the badge that says so is the most interesting thing on the card. */
 .card-entrant {
-  color: var(--accent);
-  border-color: var(--accent);
-  font-family: var(--sans);
+  margin-left: 0;
+  color: var(--heat);
+  border: 1px solid color-mix(in srgb, var(--heat) 30%, transparent);
+  border-radius: var(--r-1);
+  padding: 0 0.3em;
 }
+
 .card-treasury {
   display: flex;
   align-items: baseline;
-  gap: 4px;
+  justify-content: space-between;
+  gap: var(--s-2);
 }
-.card-treasury .amount {
-  font-family: var(--mono);
-  font-size: 17px;
+
+.amount {
+  font-family: var(--f-mono);
+  font-size: var(--t-lg);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  color: var(--text);
+  /* No colour transition: `countUp()` tints this mint or coral for the length of the count and
+     then clears the inline style. A transition would smear the handoff. */
 }
-.card-treasury .unit {
-  font-size: 10px;
-  color: var(--fg-3);
+
+.card-dead .amount {
+  color: var(--ash);
 }
+
 .card-stats {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--fg-2);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  color: var(--text-3);
 }
-.card-foot {
-  font-size: 10px;
-  color: var(--fg-3);
-  border-top: 1px solid var(--line);
-  padding-top: 5px;
-}
+
 .streak {
+  color: var(--heat);
+}
+
+/* The streak bar for breeding is read from the chain (`breedStreak`), so a streak that has cleared
+   it can say so instead of being one more orange number. Mint is the palette's "alive and well" —
+   the same colour a full vitals bar runs at — and reproduction is the one thing on this page that
+   moves the headline metric. It is deliberately only a colour: an organism at 4/4 still has a
+   treasury bar to clear, and a louder treatment would read as a promise the contract has not made. */
+.streak-ready {
+  color: var(--life);
+}
+
+.card-foot {
+  font-size: var(--t-xs);
+  color: var(--text-4);
+  padding-top: var(--s-2);
+  border-top: 1px solid var(--line);
+}
+
+/* ── belief tags ───────────────────────────────────────────────────────────── */
+
+.tag {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4em;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  padding: 0.15em 0.5em;
+  border-radius: var(--r-1);
+  border: 1px solid var(--line-2);
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* The thesis behind a belief is a word and never a hue — five more colours for
+   Momentum/Reversion/Breakout/Range would make the palette lie about how much of it means
+   something. */
+.tag-sub {
+  font-size: 0.9em;
+  letter-spacing: 0.06em;
+  text-transform: none;
+  color: var(--text-4);
+}
+
+.belief-up {
+  color: var(--belief-up);
+  border-color: color-mix(in srgb, var(--life) 34%, transparent);
+  background: var(--life-deep);
+}
+
+.belief-down {
+  color: var(--belief-down);
+  border-color: color-mix(in srgb, var(--heat) 34%, transparent);
+  background: var(--heat-deep);
+}
+
+.belief-abstain {
+  color: var(--belief-abstain);
+  border-color: var(--ash-dim);
+  background: var(--ash-deep);
+}
+
+.belief-none {
+  color: var(--belief-none);
+  border-color: var(--line);
+}
+
+.tag-dead {
+  color: var(--ash);
+  border-color: var(--ash-dim);
+  background: var(--ash-deep);
+}
+
+/* ── the vitals bar ────────────────────────────────────────────────────────── */
+
+/* Metabolism, drawn. This is the bar that has been counting down all along, which is what makes
+   `died()`'s drain read as a death rather than as an error. */
+.vitals {
+  height: 3px;
+  border-radius: var(--r-pill);
+  background: var(--ink);
+  overflow: hidden;
+}
+
+.vitals-fill {
+  height: 100%;
+  background: var(--life-dim);
+  /* NO transition on width. `motion.js` tweens it from the previous paint's value, and a
+     transition would race the tween — see rule 2 in the header comment. */
+}
+
+.vitals-fill.warn {
+  background: var(--heat);
+}
+
+.vitals-fill.bad {
+  background: var(--bad);
+}
+
+.card-dead .vitals-fill {
+  background: var(--ash-dim);
+}
+
+/*//////////////////////////////////////////////////////////////
+                       ORGANISM DETAIL
+//////////////////////////////////////////////////////////////*/
+
+.detail-invite .empty {
+  max-width: 34ch;
+}
+
+.detail-fields {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  column-gap: var(--s-4);
+  row-gap: var(--s-2);
+  font-size: var(--t-sm);
+}
+
+/* Each `field()` is a two-cell row of a grid it does not own, so it displays as `contents`. */
+.field {
+  display: contents;
+}
+
+.field-label {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding-top: 0.15em;
+}
+
+.field-value {
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tone-ok {
+  color: var(--ok);
+}
+
+.tone-warn {
   color: var(--warn);
 }
 
-.tag {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 2px 6px;
-  border-radius: 4px;
-  margin-left: auto;
-  white-space: nowrap;
-}
-.tag-sub {
-  opacity: 0.7;
-  margin-left: 5px;
-  text-transform: none;
-  letter-spacing: 0;
-}
-.tag-dead {
-  margin-left: auto;
-  background: #2a1a20;
-  color: var(--down);
-}
-.belief-up {
-  background: #10251a;
-  color: var(--up);
-}
-.belief-down {
-  background: #2a1a20;
-  color: var(--down);
-}
-.belief-abstain {
-  background: #241d0d;
-  color: var(--abstain);
-}
-.belief-none {
-  background: var(--bg-2);
-  color: var(--none);
+.tone-bad {
+  color: var(--bad);
 }
 
-/*//////////////////////////////  DETAIL  //////////////////////////////*/
-
-.panel-detail {
-  position: sticky;
-  top: 16px;
-}
 .position {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
-.prose {
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
-}
-/* The genome and the reasoning are shown whole, wrapped, never truncated: the genome IS the
-   organism, and cutting it would hide the only thing distinguishing one row from another. */
-blockquote.genome,
-blockquote.reasoning {
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--bg);
-  border-left: 2px solid var(--line-2);
-  border-radius: 0 6px 6px 0;
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-blockquote.genome {
-  border-left-color: var(--accent);
-  color: var(--fg);
-}
-blockquote.reasoning {
-  border-left-color: var(--up);
-  color: var(--fg-2);
-  font-style: italic;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
 }
 
-/*//////////////////////////////  TREE  //////////////////////////////*/
+/* An organism's own words, set as prose because that is what they are. The italic serif marks
+   them as a specimen of language rather than as interface copy — and it is the same face the
+   landing sets every genome in. */
+.genome,
+.reasoning {
+  margin: 0;
+  padding-left: var(--s-4);
+  border-left: 2px solid var(--line-2);
+  max-width: var(--measure);
+}
+
+.genome {
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: var(--t-md);
+  line-height: var(--lh-snug);
+  color: var(--text);
+  border-left-color: var(--life-dim);
+  white-space: pre-wrap;
+}
+
+.reasoning {
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
+  color: var(--text-2);
+}
+
+/* ── the organism chip ─────────────────────────────────────────────────────── */
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.4em;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  padding: 0.1em 0.45em;
+  background: var(--ink-4);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-1);
+  color: var(--text-2);
+  cursor: pointer;
+  transition:
+    border-color var(--d-fast) var(--e-out),
+    color var(--d-fast) var(--e-out);
+}
+
+.chip:hover {
+  border-color: var(--life-dim);
+  color: var(--life);
+}
+
+.chip-name {
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+/*//////////////////////////////////////////////////////////////
+                          LINEAGE
+//////////////////////////////////////////////////////////////*/
 
 .tree-scroll {
   overflow-x: auto;
-  padding-bottom: 4px;
+  overscroll-behavior-x: contain;
+  padding-bottom: var(--s-2);
 }
+
 .tree {
   display: block;
   min-width: 100%;
+  height: auto;
 }
+
 .tree-grid {
   stroke: var(--line);
   stroke-width: 1;
-  stroke-dasharray: 2 4;
+  stroke-dasharray: 2 6;
 }
+
 .tree-gen {
-  fill: var(--fg-3);
-  font: 10px var(--mono);
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: var(--ls-label);
+  fill: var(--text-4);
   text-anchor: middle;
 }
+
+/* Descent, drawn parent to child. `motion.js` animates `stroke-dashoffset` on a new edge, so no
+   dasharray may be set here — an inherited one would fight the tween's own. */
 .tree-edge {
   fill: none;
-  stroke: var(--line-2);
-  stroke-width: 1.5;
+  stroke: var(--line-3);
+  stroke-width: 1.25;
 }
+
 .tree-edge.is-dead {
-  stroke: #3a2630;
-  stroke-dasharray: 3 3;
+  stroke: var(--ash-dim);
 }
+
 .tree-node {
   cursor: pointer;
 }
+
 .tree-node circle {
-  stroke: var(--bg-2);
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+
+.tree-node circle.belief-up {
+  fill: var(--life);
+}
+
+.tree-node circle.belief-down {
+  fill: var(--heat);
+}
+
+.tree-node circle.belief-abstain {
+  fill: var(--ash);
+}
+
+.tree-node circle.belief-none {
+  fill: var(--text-4);
+}
+
+/* A dead node is a ring, not a disc: the smaller radius render.js gives it plus a hollow centre
+   reads as something that used to be there. */
+.tree-node.is-dead circle {
+  fill: none;
+  stroke: var(--ash-dim);
+  stroke-width: 1.25;
+}
+
+.tree-node.is-selected circle {
+  stroke: var(--life);
   stroke-width: 2;
 }
-.tree-node circle.belief-up {
-  fill: var(--up);
+
+/* The same source-order collision the labels below had, and the same resolution — but on the ring,
+   which the label fix of 2026-09-01 did not reach. `.tree-node.is-dead circle` above and
+   `.tree-node.is-selected circle` are both (0,2,1) — two classes and a type, where the label pair is
+   (0,3,0) — so source order decided and the selected rule is the later one: clicking a corpse
+   repainted its ring `--life`. Measured 2026-09-02 before this rule existed — a dead ring went
+   rgb(74, 72, 84) -> rgb(95, 227, 192) under `.is-selected`, byte-identical to a selected LIVING ring,
+   so selection erased the only colour that said the organism was gone. Mint is this palette's word for
+   alive (§2), on the page whose loudest claim is that death is irreversible.
+   Answering inside the ash ramp, exactly as the label rule and `.card-dead:hover` do. The wider
+   `stroke-width: 2` above still applies, so selection is still visibly answered — by weight, not by
+   resurrection. (0,3,1), so this no longer depends on source order at all. */
+.tree-node.is-dead.is-selected circle {
+  stroke: var(--ash);
 }
-.tree-node circle.belief-down {
-  fill: var(--down);
-}
-.tree-node circle.belief-abstain {
-  fill: var(--abstain);
-}
-.tree-node circle.belief-none {
-  fill: var(--none);
-}
-.tree-node.is-dead {
-  opacity: 0.4;
-}
-.tree-node.is-selected circle {
-  stroke: var(--accent);
-}
-.tree-node:focus-visible circle {
-  stroke: var(--accent);
-}
+
 .tree-label {
-  fill: var(--fg-2);
-  font: 11px var(--mono);
+  font-family: var(--f-mono);
+  font-size: 10px;
+  fill: var(--text-3);
 }
+
+.tree-node:hover .tree-label,
 .tree-node.is-selected .tree-label {
-  fill: var(--fg);
+  fill: var(--text);
+}
+
+.tree-node.is-dead .tree-label {
+  fill: var(--ash-dim);
+}
+
+/* This rule and the hover/selection rule above are both (0,3,0), so source order alone decided, and
+   the dead rule is the later one — which meant a corpse in the lineage tree answered NEITHER the
+   cursor nor selection. Measured 2026-09-01 with transitions off: a dead label held `--ash-dim`
+   rgb(74, 72, 84) at rest, under forced `:hover` and with `.is-selected` added, while the living
+   control moved rgb(92, 115, 111) -> rgb(222, 234, 230) for both. Lineage is where a judge goes to
+   click through ancestry, and most of any ancestry is dead, so the unresponsive case was the common
+   one: clicking a corpse selected it and the tree said nothing.
+   Answering inside the ash ramp instead of jumping to `--text`, because death owns `--ash` here and
+   selection must not un-kill the node — `.card-dead:hover` resolves the identical tension the same
+   way. Kept as one rule with both selectors so the two states cannot drift apart. */
+.tree-node.is-dead:hover .tree-label,
+.tree-node.is-dead.is-selected .tree-label {
+  fill: var(--ash);
 }
 
 .legend {
-  font-size: 11px;
-  color: var(--fg-3);
-  margin: 10px 0 0;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--s-1);
   flex-wrap: wrap;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.04em;
+  color: var(--text-3);
 }
+
 .swatch {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
   display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--r-pill);
+  /* The belief classes carry `background` here rather than `fill`; the same class on an SVG
+     circle above carries `fill`. One vocabulary, two rendering models. */
 }
+
 .swatch.belief-up {
-  background: var(--up);
+  background: var(--life);
 }
+
 .swatch.belief-down {
-  background: var(--down);
+  background: var(--heat);
 }
+
 .swatch.belief-abstain {
-  background: var(--abstain);
+  background: var(--ash);
 }
+
 .swatch.belief-none {
-  background: var(--none);
+  background: var(--text-4);
 }
 
-/*//////////////////////////////  CENSUS  //////////////////////////////*/
+/*//////////////////////////////////////////////////////////////
+                       GENERATION CENSUS
+//////////////////////////////////////////////////////////////*/
 
+/* The drift this shows — G2 all Momentum where G0 was evenly split — is the "selection over
+   ideas" claim made visible without an indexer. */
 .census {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
-}
-.census th {
-  text-align: left;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-3);
-  font-weight: 500;
-  padding: 0 10px 6px 0;
-  border-bottom: 1px solid var(--line);
-}
-.census td {
-  padding: 6px 10px 6px 0;
-  border-bottom: 1px solid var(--line);
-  font-family: var(--mono);
-}
-.thesis-pill {
-  display: inline-block;
-  font-family: var(--sans);
-  font-size: 11px;
-  padding: 1px 7px;
-  margin: 0 4px 2px 0;
-  border-radius: 20px;
-  background: var(--bg-3);
-  color: var(--fg-2);
+  font-size: var(--t-sm);
 }
 
-/*//////////////////////////////  FEED  //////////////////////////////*/
+.census th {
+  text-align: left;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 0 var(--s-3) var(--s-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.census td {
+  padding: var(--s-2) var(--s-3) var(--s-2) 0;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+  font-family: var(--f-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+/* `render.js` marks the census's dead tally `class: "muted"`, but `.muted` (up at the top of this
+   file) is one type-selector less specific than `.census td` and was losing `color` to it. Measured
+   on the live season 2026-09-01: the row `G0 | 6 | 3 | …` rendered all four cells at `--text`
+   rgb(222, 234, 230), so the count of the dead shouted exactly as loud as the count of the living,
+   and the column the eye should skip was the column it landed on.
+   Scoped here rather than by raising `.muted` itself: `.muted` is a utility used all over the sheet
+   and this table is the one place something outranks it. Same shape as `.beat-body > .beat-claim`. */
+.census td.muted {
+  color: var(--text-3);
+}
+
+.census tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.census td:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  border-bottom: 0;
+}
+
+.thesis-pill {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.04em;
+  padding: 0.1em 0.45em;
+  border-radius: var(--r-1);
+  border: 1px solid var(--line-2);
+  background: var(--ink-3);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+/*//////////////////////////////////////////////////////////////
+                            FEED
+//////////////////////////////////////////////////////////////*/
+
+.panel-feed {
+  gap: var(--s-3);
+}
 
 .feed {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: grid;
-  gap: 1px;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
+
 .feed-row {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr) 32px;
-  gap: 10px;
-  padding: 8px 11px;
-  background: var(--bg-2);
+  grid-template-columns: 5.5rem minmax(0, 1fr) 3rem;
+  gap: var(--s-3);
   align-items: baseline;
-  font-size: 13px;
+  padding: var(--s-2) var(--s-2);
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-sm);
+  /* NO background-color transition. `apply()` flashes a new row by tweening exactly this
+     property and clearing it — see rule 2 in the header comment. */
 }
-.feed-row.sev-bad {
-  background: #1d1216;
+
+.feed-row:last-child {
+  border-bottom: 0;
 }
-.feed-row.sev-warn {
-  background: #1d1a10;
+
+/* Severity is a rail on the leading edge, not a coloured row: an amber row would drown the event
+   name, which is the part anyone actually reads. */
+.sev-good {
+  box-shadow: inset 2px 0 0 var(--life-dim);
 }
-.feed-row.sev-good {
-  background: #101d16;
+
+.sev-warn {
+  box-shadow: inset 2px 0 0 var(--heat-dim);
 }
+
+.sev-bad {
+  box-shadow: inset 2px 0 0 var(--bad-dim);
+}
+
 .feed-when {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--fg-3);
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-4);
   white-space: nowrap;
 }
-.feed-name {
-  font-family: var(--mono);
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  margin-right: 8px;
-  background: var(--bg-3);
-  color: var(--fg-2);
-  white-space: nowrap;
-}
-/* Origin is worth a colour: it says whether the population, an organism, or the selection
-   engine emitted the line, which is the difference between arena bookkeeping and evidence. */
-.feed-name.origin-organism {
-  color: var(--accent);
-}
-.feed-name.origin-selection {
-  color: var(--up);
-}
-.feed-body {
-  color: var(--fg);
-}
+
 .feed-what {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
   min-width: 0;
 }
-.feed-where {
-  text-align: right;
-  font-size: 11px;
+
+.feed-name {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-2);
 }
-blockquote.feed-reasoning {
-  margin: 6px 0 0;
-  padding: 6px 10px;
-  background: var(--bg);
-  border-left: 2px solid var(--line-2);
-  font-size: 12px;
-  font-style: italic;
-  color: var(--fg-2);
-  white-space: pre-wrap;
+
+/* Which contract spoke. The population is the arena talking about itself and stays neutral; an
+   event from anywhere else is worth noticing. */
+.origin-population {
+  color: var(--text-2);
+}
+
+.feed-name:not(.origin-population) {
+  color: var(--life-dim);
+}
+
+.feed-body {
+  color: var(--text);
   overflow-wrap: anywhere;
 }
 
-.chip {
-  font-family: var(--mono);
-  font-size: 12px;
-  background: var(--bg-3);
-  border: 1px solid var(--line-2);
-  color: var(--fg);
-  border-radius: 4px;
-  padding: 0 5px;
-  cursor: pointer;
-}
-.chip:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-.chip-name {
-  color: var(--fg-3);
-  margin-left: 4px;
+.feed-reasoning {
+  margin-top: var(--s-1);
+  padding-left: var(--s-3);
+  border-left: 1px solid var(--line-2);
+  font-size: var(--t-sm);
+  color: var(--text-2);
+  max-width: var(--measure);
 }
 
-/*//////////////////////////////  SETUP  //////////////////////////////*/
-
-.panel-setup {
-  max-width: 660px;
-  margin: 32px auto;
+.feed-where {
+  justify-self: end;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  white-space: nowrap;
 }
-.setup-form {
+
+.feed-where a {
+  color: var(--text-3);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line-2);
+}
+
+.feed-where a:hover {
+  color: var(--life);
+  border-bottom-color: var(--life);
+}
+
+/*//////////////////////////////////////////////////////////////
+                  THE PRIMER — MECHANISM, NOT MAGNITUDES
+//////////////////////////////////////////////////////////////*/
+
+/* The first thing on the page before Season 0, and the reason the setup form is no longer the
+   front door. Same 62rem measure as `.panel-setup` under it, so the two panels share one
+   left-hand edge and one right-hand edge instead of stepping. */
+.panel-primer {
+  max-width: 62rem;
+  padding: var(--s-6);
+}
+
+.panel-primer > h2,
+.panel-primer .panel-head h2 {
+  font-family: var(--f-display);
+  font-size: var(--t-xl);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: var(--lh-tight);
+  color: var(--text);
+}
+
+/* The two lines above the beats. The first says what the page IS, the second says whether there is
+   anything in it — and those are different jobs, so they get different weights rather than two
+   identical grey paragraphs the eye reads as one block. `:first-of-type` is safe here because
+   `.panel-head` holds only an `h2`, so the first `p` child of the primer IS the first status line.
+   No `margin` between them: `.panel` is a flex column with `gap: var(--s-4)`, and every direct child
+   of the primer is a flex item, so a margin here would ADD to that gap instead of setting it. */
+.primer-status {
+  margin: 0;
+  max-width: var(--measure);
+  font-size: var(--t-base);
+  line-height: var(--lh-body);
+  color: var(--text-2);
+}
+
+.primer-status:first-of-type {
+  font-size: var(--t-md);
+  line-height: var(--lh-snug);
+  color: var(--text);
+}
+
+.beats {
+  list-style: none;
+  margin: var(--s-6) 0 0;
+  padding: 0;
+}
+
+/* Five steps, and a reader who scans ONLY the five claims still leaves with the whole mechanism.
+   That is what the number column buys: it makes the sequence skimmable at arm's length, so the
+   prose underneath is elective rather than required. The rule between beats is structural, so it
+   takes no hue. */
+.beat {
   display: grid;
-  gap: 6px;
-}
-.setup-form label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--fg-3);
-  margin-top: 6px;
-}
-.input {
-  background: var(--bg);
-  border: 1px solid var(--line-2);
-  border-radius: 6px;
-  color: var(--fg);
-  padding: 9px 11px;
-  font-size: 13px;
-  width: 100%;
-}
-.input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-.setup-actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 14px;
-  flex-wrap: wrap;
-}
-.setup-note {
-  margin-top: 22px;
-  padding-top: 16px;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  gap: var(--s-4);
+  padding: var(--s-5) 0;
   border-top: 1px solid var(--line);
 }
-.setup-note p {
-  color: var(--fg-2);
-  margin: 0 0 8px;
-  font-size: 13px;
+
+.beat:first-child {
+  border-top: 0;
+  padding-top: 0;
 }
+
+/* The pre-deploy primer carries the five claims WITHOUT the prose under them, so each beat is one
+   line instead of a paragraph and `.beat`'s `var(--s-5)` block padding — sized for the paragraph
+   case — leaves the list looking spaced out rather than terse. The top margin goes to zero because
+   `.beats` sets one and the panel's flex `gap` already separates the list from the line above it;
+   left in, the two stack to 3rem.
+   The `:first-child` restatement below is MANDATORY, not defensive. `.beats-terse .beat` and
+   `.beat:first-child` are both (0,2,0), so the only thing deciding `padding-top` on the first beat is
+   source order, and this rule is later — without the restatement the terse list silently regrows a
+   1rem gap above beat 1 that the airy list does not have, and nothing errors, nothing is stranded,
+   and no machine check downstream can tell the difference. Same class of defect as `.beat-claim`
+   losing to `.panel h3` above, and as `.panel-wiring`'s padding losing to `.panel` at 720px. */
+.beats-terse {
+  margin: 0;
+}
+
+.beats-terse .beat {
+  padding: var(--s-4) 0;
+}
+
+.beats-terse .beat:first-child {
+  padding-top: 0;
+}
+
+.beat-n {
+  font-family: var(--f-mono);
+  font-size: var(--t-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--lh-snug);
+  color: var(--text-4);
+}
+
+.beat-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  min-width: 0;
+}
+
+/* Selector is `.beat-body > .beat-claim` and not `.beat-claim`, because `.panel h3` up at the top of
+   this file is one type-selector more specific and was winning EVERY property the two share. The
+   five claims are the skim path — the comment above says so — and they were rendering character for
+   character as `.panel h3`: 11px IBM Plex Mono, uppercase, 1.54px tracking, in `--text-3`. That is
+   the treatment "NOTHING IS DEPLOYED YET" gets, a minor label in the form below. The prose beneath
+   each claim is 15px in `--text-2`, so the hierarchy was inverted: the elective paragraph outweighed
+   the claim it is subordinate to, and the tracking pushed beats 2 and 3 onto a second line with a
+   one-word orphan. Verified by CDP on the undeployed front door 2026-09-01; letting the rule apply
+   costs 11px of panel height and returns all five claims to one line each.
+   `font-weight: 400` is load-bearing, not a restatement of the default: the rule it beats sets 500,
+   and `fonts.css` vendors Newsreader UPRIGHT at a bare `font-weight: 400` (only the italic carries a
+   `300 400` range), so a 500 here would synthesize a fake bold off the 400 file.
+   `display: block` is here to undo the `flex` that same rule sets for its label/value pattern. */
+.beat-body > .beat-claim {
+  margin: 0;
+  font-family: var(--f-display);
+  font-size: var(--t-md);
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: var(--lh-snug);
+  color: var(--text);
+  display: block;
+  max-width: var(--measure);
+}
+
+.beat-body > p {
+  margin: 0;
+  max-width: var(--measure);
+  font-size: var(--t-base);
+  line-height: var(--lh-body);
+  color: var(--text-2);
+}
+
+/* Selector is `.beat-body > .beat-aside` rather than `.beat-aside`, because `.beat-body > p` above
+   is one type-selector more specific and would otherwise win. */
+.beat-body > .beat-aside {
+  font-size: var(--t-sm);
+  color: var(--text-3);
+}
+
+/* A quoted founder genome. `.genome` already carries the italic-serif, left-ruled treatment the
+   detail pane gives a living organism's genome — this only positions it and attributes it, because
+   it is the same kind of object and must not look like a different one. */
+.specimen {
+  margin: var(--s-1) 0 0;
+}
+
+.specimen figcaption {
+  margin-top: var(--s-2);
+  padding-left: var(--s-4);
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: 0.04em;
+  color: var(--text-4);
+}
+
+.specimen-name {
+  font-weight: 400;
+  color: var(--text-3);
+}
+
+/* Replaces `.primer-foot`, which was a paragraph of prose ending in an inline link to `/`. The link
+   was the only route from the telescope to the surface that has a wallet, and it was buried in the
+   last sentence of the last paragraph of the page, styled as body text. It is now the one
+   `btn-primary` on the page — this surface has no wallet of its own, so its primary action can only
+   ever be "go where the wallet is". The hairline and the `var(--s-5)` above it are inherited from
+   `.primer-foot`: the primer still needs a closing edge, and a bare button row does not read as one.
+   `margin` is `var(--s-2)`, not `var(--s-6)`, because `.panel`'s flex `gap` already contributes
+   `var(--s-4)` — see `.primer-status`. */
+.primer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  margin: var(--s-2) 0 0;
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--line);
+}
+
+/*//////////////////////////////////////////////////////////////
+                    SETUP — THE RESTING STATE
+//////////////////////////////////////////////////////////////*/
+
+/* A `<details>` now, not a `<section>`, and folded shut by default.
+   It used to be half the front door: a two-column panel, headed "If you already have a population
+   address", whose `btn-primary` said "Connect". Both halves of that were wrong. The heading taught
+   the reader that an organism has an address of its own and that getting one is step one — there is
+   ONE `Population` proxy per season, organisms are numbered rows inside it, and the proxy's address
+   is read out of `contracts/deployments/<chainid>.json`, so in the normal case nobody types it. And
+   "Connect" promises a wallet that does not exist anywhere under `web/`: `chain.js` builds an
+   `http()` transport and stops. The loudest control on the page could not do the thing it named.
+   So the panel keeps its function and loses its rank. The primary action moved to `.primer-actions`
+   and points at `/`, and what is left here is a tool for the abnormal case: a second deploy, a local
+   fork, a stale manifest.
+   `display: block` cancels the `display: flex; flex-direction: column` `.panel` sets — the same line
+   `.panel-wiring` needs and for the same reason, except that here it is also cancelling this rule's
+   own former `display: grid`. It takes `.panel`'s `gap: var(--s-4)` down with it, so the spacing
+   between the summary, the warning, the form and the note is hand-rolled below; adjacent-sibling
+   margins collapse in block flow, which is why `var(--s-4)` on both sides of a boundary still
+   measures `var(--s-4)`.
+   Horizontal padding stays `var(--s-6)` while the vertical drops to `var(--s-4)`: collapsed, this is
+   one line of text, but its left edge has to stay flush with `.panel-primer`'s stacked above it —
+   which is the whole point of the shared 62rem measure, and what the 720px restatement protects. */
+.panel-setup {
+  max-width: 62rem;
+  display: block;
+  padding: var(--s-4) var(--s-6);
+}
+
+/* Mirrors `.panel-wiring > summary` — the page already had one disclosure and a second one must not
+   invent a second look for the same affordance. Marker suppression needs all three declarations:
+   `list-style: none` for modern engines, plus both pseudo-elements, because there is no single
+   selector every browser honours. The `+ ` / `− ` swap on `[open]` replaces the triangle. */
+.panel-setup > summary {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.panel-setup > summary::marker,
+.panel-setup > summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel-setup > summary::before {
+  content: "+ ";
+  color: var(--text-4);
+}
+
+.panel-setup[open] > summary {
+  color: var(--text-2);
+  margin-bottom: var(--s-4);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-setup[open] > summary::before {
+  content: "− ";
+}
+
+.panel-setup > summary:hover {
+  color: var(--life);
+}
+
+/* An address that was handed to the page and ignored has to be explained where it was ignored, which
+   is why `setupCard` forces the disclosure OPEN whenever `badQuery` is set. `.bad` carries only a
+   colour, so the spacing is here. */
+.panel-setup > .bad {
+  margin: var(--s-4) 0;
+}
+
+.setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  max-width: 34rem;
+}
+
+.setup-form label {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin-top: var(--s-2);
+}
+
+.input {
+  width: 100%;
+  padding: var(--s-3);
+  background: var(--ink);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  color: var(--text);
+  font-size: var(--t-sm);
+  transition:
+    border-color var(--d-fast) var(--e-out),
+    background-color var(--d-fast) var(--e-out);
+}
+
+.input::placeholder {
+  color: var(--text-4);
+}
+
+.input:hover {
+  border-color: var(--line-3);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--life-dim);
+  background: var(--ink-2);
+  box-shadow: 0 0 0 3px var(--life-deep);
+}
+
+.setup-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  margin-top: var(--s-4);
+}
+
+/* One paragraph now, where it used to be a `div` wrapping an `h3` and two `p`s — so the
+   `display: flex; flex-direction: column` it carried for that stack is not merely redundant here, it
+   is actively wrong: a flex container turns each bare text run between its inline children into its
+   own anonymous flex item, which would have broken "Leave the RPC blank for <code> on chain <code>."
+   into five stacked rows. Removed rather than overridden. */
+.setup-note {
+  margin: var(--s-4) 0 0;
+  padding: var(--s-4);
+  background: var(--ink-3);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-3);
+  border-radius: var(--r-2);
+  font-size: var(--t-sm);
+  line-height: var(--lh-body);
+  color: var(--text-2);
+  max-width: var(--measure);
+}
+
+/*//////////////////////////////////////////////////////////////
+                          CONTROLS
+//////////////////////////////////////////////////////////////*/
 
 .btn {
-  font: inherit;
-  font-size: 13px;
-  padding: 8px 15px;
-  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-5);
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  border-radius: var(--r-2);
   border: 1px solid var(--line-2);
-  background: var(--bg-3);
-  color: var(--fg);
+  background: var(--ink-3);
+  color: var(--text);
+  text-decoration: none;
   cursor: pointer;
+  transition:
+    border-color var(--d-fast) var(--e-out),
+    background-color var(--d-fast) var(--e-out),
+    color var(--d-fast) var(--e-out);
 }
+
 .btn:hover {
-  border-color: var(--accent);
+  border-color: var(--line-3);
+  background: var(--ink-4);
 }
+
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #08121f;
-  font-weight: 600;
+  border-color: var(--life-dim);
+  background: var(--life-deep);
+  color: var(--life);
 }
+
 .btn-primary:hover {
-  filter: brightness(1.1);
+  border-color: var(--life);
+  background: color-mix(in srgb, var(--life) 14%, var(--ink-3));
+  color: var(--life);
 }
+
 .btn-ghost {
   background: transparent;
-  color: var(--fg-2);
+  color: var(--text-2);
 }
+
+.btn-ghost:hover {
+  color: var(--text);
+  background: var(--ink-3);
+}
+
+/* Inline in a sentence — a retry inside an error banner. Not a block, or the banner reflows. */
 .btn-inline {
-  padding: 2px 9px;
-  font-size: 12px;
+  padding: 0.15em 0.6em;
+  font-size: var(--t-xs);
+  border-radius: var(--r-1);
 }
 
-/*//////////////////////////////  WIRING / FOOTER  //////////////////////////////*/
+/*//////////////////////////////////////////////////////////////
+                       WIRING AND FOOTER
+//////////////////////////////////////////////////////////////*/
 
-.panel-wiring summary,
-.panel-warn summary {
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--fg-2);
+/* Reference, not a live reading, so it is folded away — but discoverable, because "which venue
+   is this actually pointed at" is the first question anyone technical asks. */
+.panel-wiring {
+  display: block;
+  padding: var(--s-4) var(--s-5);
+}
+
+.panel-wiring > summary {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
+  color: var(--text-3);
+  cursor: pointer;
+  list-style: none;
 }
-.panel-wiring[open] summary,
-.panel-warn[open] summary {
-  margin-bottom: 12px;
+
+.panel-wiring > summary::marker,
+.panel-wiring > summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel-wiring > summary::before {
+  content: "+ ";
+  color: var(--text-4);
+}
+
+.panel-wiring[open] > summary {
+  color: var(--text-2);
+  margin-bottom: var(--s-4);
+  padding-bottom: var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-wiring[open] > summary::before {
+  content: "− ";
+}
+
+.panel-wiring > summary:hover {
+  color: var(--life);
 }
 
 .footer {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding-block: var(--s-5) var(--s-7);
   border-top: 1px solid var(--line);
-  font-size: 12px;
-  color: var(--fg-2);
+  font-size: var(--t-sm);
+  color: var(--text-2);
 }
+
 .footer p {
-  margin: 0 0 6px;
+  max-width: var(--measure);
 }
 
-/*//////////////////////////////  LIGHT  //////////////////////////////*/
+.footer code {
+  color: var(--text);
+}
 
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg: #f7f9fc;
-    --bg-2: #ffffff;
-    --bg-3: #f0f4f9;
-    --line: #dde5ee;
-    --line-2: #c3d0e0;
-    --fg: #16202e;
-    --fg-2: #4a5a70;
-    --fg-3: #75859b;
+/*//////////////////////////////////////////////////////////////
+                        NARROWER SCREENS
+//////////////////////////////////////////////////////////////*/
 
-    --up: #1a8b52;
-    --down: #c8384a;
-    --abstain: #9a7413;
-    --none: #75859b;
-    --ok: #1a8b52;
-    --warn: #9a7413;
-    --bad: #c8384a;
-    --accent: #2563eb;
+/* The hero's three zones stack before the grid does, because the rule separating claim from
+   evidence stops meaning anything once they are one column wide. */
+@media (max-width: 1180px) {
+  .hero-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
-  .banner-demo {
-    background: #fdf3d6;
-    color: #6b520c;
-    border-bottom-color: #e8d49a;
-  }
-  .banner-demo a {
-    color: #8a6a10;
-  }
-  .banner-error {
-    background: #fdeaee;
-    color: #8c1f2f;
-    border-bottom-color: #f0c2cb;
-  }
-  .belief-up {
-    background: #e6f6ec;
-  }
-  .belief-down {
-    background: #fdeaee;
-  }
-  .belief-abstain {
-    background: #fdf3d6;
-  }
-  .panel-warn {
-    background: #fdf9ec;
-    border-color: #e8d49a;
-  }
-  .pill-ok {
-    background: #e6f6ec;
-    border-color: #b7e0c6;
-  }
-  .pill-warn {
-    background: #fdf3d6;
-    border-color: #e8d49a;
-  }
-  .feed-row.sev-bad {
-    background: #fdf5f6;
-  }
-  .feed-row.sev-warn {
-    background: #fdfaf1;
-  }
-  .feed-row.sev-good {
-    background: #f3fbf6;
-  }
-  .btn-primary {
-    color: #ffffff;
+
+  .hero-readout {
+    grid-column: 1 / -1;
+    padding-left: 0;
+    padding-top: var(--s-4);
+    border-left: 0;
+    border-top: 1px solid var(--line);
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  * {
-    transition: none !important;
+@media (max-width: 980px) {
+  .split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Sticky only helps while the grid is beside it. Stacked, it would pin the detail pane over
+     the cards the visitor is trying to scroll. */
+  .split > .panel-detail {
+    position: static;
+    max-height: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .hero-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hero-vitals {
+    flex-direction: row;
+    gap: var(--s-6);
+    padding-left: 0;
+    padding-top: var(--s-4);
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+
+  .hero-thesis {
+    font-size: var(--t-xl);
+  }
+
+  .metric-value {
+    font-size: var(--t-2xl);
+  }
+
+  .panel {
+    padding: var(--s-4);
+  }
+
+  /* BOTH front-door panels have to be restated here, not just one. `.panel` immediately above
+     re-declares `padding` at the same specificity (0,1,0) as `.panel-primer` and `.panel-setup`, and
+     later in the file than either, so whichever is left out silently loses its own padding to the
+     generic one. `.panel-setup` was restated and `.panel-primer` was not: measured at 700px, the
+     primer's content sat at x=45 and the setup panel's at x=53, an 8px step between two panels whose
+     boxes are flush (both at x=28) and which are stacked one above the other on the page a visitor
+     lands on before Season 0. That is precisely the stepping `.panel-primer`'s own comment says the
+     shared 62rem measure exists to prevent. At 1400px both were 32px and flush, which is why nothing
+     upstream of a phone-width viewport could see it.
+     Kept as one rule so the pair cannot drift apart again — same reason the dead lineage node's
+     hover and selection share a rule. */
+  .panel-primer,
+  .panel-setup {
+    padding: var(--s-5);
+  }
+
+  /* `.panel-setup { grid-template-columns: minmax(0, 1fr) }` stood here, collapsing the two-column
+     setup panel to one at phone width. The panel is a `<details>` in block flow now, so the
+     declaration had no element to apply to — removed rather than left as a rule that reads like it
+     is doing something. The padding restatement above still matters and must stay. */
+
+  .feed-row {
+    grid-template-columns: minmax(0, 1fr) 3rem;
+  }
+
+  .feed-when {
+    grid-column: 1 / -1;
   }
 }

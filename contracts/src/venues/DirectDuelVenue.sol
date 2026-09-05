@@ -207,7 +207,11 @@ contract DirectDuelVenue is IArenaVenue {
      *  from `settleAll` in phase 2 — so the cadence driver decides when a duel
      *  closes, exactly as it does for the DreamDEX arena.
      */
-    function redeemFor(address organism, uint256 positionId, uint256 /* quantity */ )
+    function redeemFor(
+        address organism,
+        uint256 positionId,
+        uint256 /* quantity */
+    )
         external
         returns (uint256 collateralOut)
     {
@@ -271,7 +275,16 @@ contract DirectDuelVenue is IArenaVenue {
 
     /// @dev Position ids for a duel, so a caller reading events does not have to know
     ///      the `2k-1` / `2k` convention.
+    ///
+    ///      Duel 0 is refused rather than allowed to underflow. Ids start at 1
+    ///      (`++duelCount`), so zero is not a boundary case — it is the argument a
+    ///      caller passes when it has no duel, typically an unset variable or a
+    ///      `duels[id]` lookup that returned nothing. `0 * 2 - 1` answered that with a
+    ///      bare arithmetic panic; `UnknownDuel(0)` answers it with the same error
+    ///      `outcomeOf` already gives for every other id that does not exist. `pure`
+    ///      cannot check existence beyond this one, and does not pretend to.
     function positionIdsOf(uint256 duelId) external pure returns (uint256 upId, uint256 downId) {
+        if (duelId == 0) revert UnknownDuel(0);
         return (duelId * 2 - 1, duelId * 2);
     }
 

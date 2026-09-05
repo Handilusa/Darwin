@@ -75,12 +75,10 @@ struct Request {
  *  callback, so a ten-day unattended run has exactly one balance to watch.
  */
 interface IAgentRequester {
-    function createRequest(
-        uint256 agentId,
-        address callbackAddress,
-        bytes4 callbackSelector,
-        bytes calldata payload
-    ) external payable returns (uint256 requestId);
+    function createRequest(uint256 agentId, address callbackAddress, bytes4 callbackSelector, bytes calldata payload)
+        external
+        payable
+        returns (uint256 requestId);
 
     function createAdvancedRequest(
         uint256 agentId,

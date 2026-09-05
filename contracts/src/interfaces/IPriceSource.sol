@@ -36,7 +36,15 @@ interface IPriceSource {
      *  @return outcomeIdDown    NO token id for this window.
      *  @return openPrice        The level resolution is measured against.
      *  @return lastPrice        Latest observed price.
-     *  @return priceDecimals    Scale of both prices. Derived, never assumed.
+     *  @return priceDecimals    Scale of both prices. Derived, never assumed, and
+     *                           bounded: an implementation MUST NOT return a value
+     *                           above 77. `Genome._decimal` renders the prompt with
+     *                           `10 ** priceDecimals`, which overflows uint256 past
+     *                           that and reverts `think()` for the WHOLE population
+     *                           with a bare arithmetic panic — outside the
+     *                           per-organism try/catch, so it is not survivable as a
+     *                           `ThinkFailed`. `PushedPriceSource` enforces a tighter
+     *                           18 at push time and explains the choice there.
      *  @return secondsRemaining Until the window closes.
      *  @return tradeable        False unless the market's status is exactly 1.
      *                           Population must not open a position when false.

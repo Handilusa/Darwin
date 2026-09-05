@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, stdError} from "forge-std/Test.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 import {Population} from "../src/Population.sol";
+import {GenesisTreasury} from "../src/GenesisTreasury.sol";
 import {Prophet} from "../src/Prophet.sol";
 import {PushedPriceSource} from "../src/PushedPriceSource.sol";
 import {SelectionEngine} from "../src/SelectionEngine.sol";
@@ -15,13 +16,7 @@ import {IArenaVenue} from "../src/interfaces/IArenaVenue.sol";
 import {IPriceSource} from "../src/interfaces/IPriceSource.sol";
 import {Genome, Belief, Thesis} from "../src/Genome.sol";
 import {IBinaryMarketsModule} from "../src/interfaces/IDreamDEX.sol";
-import {
-    Response,
-    Request,
-    ResponseStatus,
-    ConsensusType,
-    ISomniaEventHandler
-} from "../src/interfaces/ISomnia.sol";
+import {Response, Request, ResponseStatus, ConsensusType, ISomniaEventHandler} from "../src/interfaces/ISomnia.sol";
 
 import {
     MockERC20,
@@ -92,11 +87,7 @@ contract DarwinTest is Test {
 
         priceSource = new PushedPriceSource(IBinaryMarketsModule(address(module)), owner, owner);
         venue = new DreamDEXVenue(
-            IPriceSource(address(priceSource)),
-            address(settlement),
-            address(collateral),
-            address(outcomeToken),
-            "BTC"
+            IPriceSource(address(priceSource)), address(settlement), address(collateral), address(outcomeToken), "BTC"
         );
         beacon = new UpgradeableBeacon(address(new Prophet()), owner);
 
@@ -120,6 +111,16 @@ contract DarwinTest is Test {
             )
         );
         population = Population(payable(address(new ERC1967Proxy(address(impl), init))));
+
+        // `spawnGenesis` REFUSES TO RUN without this, so it is part of standing up an
+        // arena rather than a fixture detail: a founder minted against a zero treasury
+        // would be permanently ownerless and permanently unretirable. Doing it here
+        // covers `_seed` (77 callers) and the two direct `spawnGenesis` calls in
+        // `test_population_capIsConcurrentNotLifetime`.
+        // `test_genesis_spawnRefusesWithoutATreasury` builds its own bare proxy to
+        // assert the refusal, precisely because this arena no longer can.
+        vm.prank(owner);
+        population.deployGenesisTreasury();
 
         // Cognition is paid in native; endowments and payouts in collateral.
         vm.deal(address(population), 100 ether);
@@ -606,9 +607,14 @@ contract DarwinTest is Test {
         assertEq(_p(child).parentId(), parent, "child parentage is wrong");
     }
 
+    /// @dev "The house" is the Genesis Treasury, not the operator. Asserted as a pair
+    ///      rather than a single equality, because `== treasury` alone would still pass
+    ///      if a future change made the treasury address BE the owner.
     function test_entry_genesisOrganismsBelongToTheHouse() public {
         _seed(1);
-        assertEq(_p(1).entrant(), owner, "genesis organism should belong to the owner");
+        address treasury = population.genesisTreasury();
+        assertEq(_p(1).entrant(), treasury, "genesis organism should belong to the Genesis Treasury");
+        assertTrue(treasury != owner, "the treasury must not be the operator's EOA");
     }
 
     function test_retire_returnsTheEntrantsRemainingCapital() public {
@@ -997,6 +1003,103 @@ contract DarwinTest is Test {
         assertFalse(winner.dead(), "settlement completed for everyone else");
     }
 
+    /**
+     *  A HATCHED CHILD'S COGNITION IS THE PARENT'S BILL, NOT THE HOUSE'S.
+     *
+     *  The collateral endowment already came out of the parent (see
+     *  `test_breeding_mutatesAndInheritsGeneration`); this is the other currency.
+     *  Both have to move, or the house keeps paying for every descendant and the
+     *  recurring bill grows with evolutionary success — the dynamic the whole
+     *  organism-paid-cognition change exists to remove.
+     *
+     *  THE ASSERTION THAT DOES THE WORK is the pair of them: the parent's balance
+     *  falls by exactly `cognitionEndowment` AND the arena's is unchanged to the wei.
+     *  Either one alone is satisfiable by the bug this test was written against —
+     *  funding the child from `address(this).balance` after drawing from the parent,
+     *  where the draw returns the money to the very balance it is then spent out of,
+     *  so a house subsidy and a parent payment are indistinguishable. The house here
+     *  holds 100 ether, so it could cover this a hundred times over and the
+     *  unchanged-arena assertion is what refuses to let it.
+     */
+    function test_cognition_hatchedChildIsPaidForByTheParent() public {
+        Prophet parent = _parentReadyToHatch();
+        uint256 cog = population.cognitionEndowment();
+
+        // The parent has already spent two deposits (belief, then mutation), so top
+        // it up to where it can actually afford a child's ten windows. `vm.deal`
+        // rather than `topUpCognition` on purpose: a top-up would move value out of
+        // this test contract THROUGH the arena, and the arena's balance is the
+        // measurement below.
+        vm.deal(address(parent), cog + 1 ether);
+
+        uint256 houseBefore = address(population).balance;
+        uint256 parentBefore = address(parent).balance;
+        // VACUITY GUARD: if the house could not afford it either, an unchanged house
+        // balance would prove nothing about who paid.
+        assertGe(houseBefore, cog, "the house must be able to afford this for the test to mean anything");
+
+        vm.expectEmit(true, true, true, true, address(population));
+        emit Population.CognitionFunded(3, address(parent), cog);
+        vm.prank(owner);
+        population.hatchAll();
+
+        Prophet child = _p(3);
+        assertEq(population.prophetCount(), 3, "no child was born");
+        assertEq(parentBefore - address(parent).balance, cog, "the parent did not pay for the child's cognition");
+        assertEq(address(child).balance, cog, "the child was not funded with what the parent paid");
+        assertEq(address(population).balance, houseBefore, "the house subsidised the birth");
+    }
+
+    /**
+     *  A parent too poor to endow a child's thinking still bears the child.
+     *
+     *  `drawCognition` is all-or-nothing, so this is the 0-return branch, and the
+     *  only correct answer is an unfunded newborn: reverting would make one broke
+     *  parent abort `hatchAll` for everybody, and reaching for the house balance
+     *  would be the same subsidy in a costume — reproduction is meant to be
+     *  expensive.
+     */
+    function test_cognition_brokeParentBearsAnUnfundedChild() public {
+        Prophet parent = _parentReadyToHatch();
+        uint256 cog = population.cognitionEndowment();
+
+        // One wei short of the draw, not zero: this must be the all-or-nothing
+        // boundary rather than an empty-pocket special case.
+        vm.deal(address(parent), cog - 1);
+
+        uint256 houseBefore = address(population).balance;
+        assertGe(houseBefore, cog, "the house could have covered this, and must not have");
+
+        vm.prank(owner);
+        population.hatchAll();
+
+        Prophet child = _p(3);
+        assertEq(population.prophetCount(), 3, "an unfunded birth is still a birth");
+        assertEq(address(child).balance, 0, "the child was funded by someone other than its parent");
+        assertEq(address(parent).balance, cog - 1, "a short draw must move nothing at all");
+        assertEq(address(population).balance, houseBefore, "the house bailed the birth out");
+        assertFalse(child.dead(), "the child is alive, just brain-dead");
+
+        // §8.13 CONTROL. Everything above turns on `child.balance == 0`, and a
+        // detector that can only ever read zero is not a detector. `topUpCognition`
+        // is the documented remedy for exactly this state, so make the same
+        // measurement fire on purpose.
+        population.topUpCognition{value: cog}(3);
+        assertEq(address(child).balance, cog, "the balance this test reads cannot register funding at all");
+    }
+
+    /// @dev A parent with a landed mutated genome, one `hatchAll` away from a child.
+    ///      Shared by the two tests above so neither has to restate the four windows
+    ///      of breeding qualification that precede the thing being asserted.
+    function _parentReadyToHatch() internal returns (Prophet parent) {
+        parent = _p(_breedingCandidate());
+        _settle();
+        uint256 mutation = parent.pendingMutationRequestId();
+        assertGt(mutation, 0, "the parent is not breeding, so there is nothing to hatch");
+        requester.deliver(mutation, "organism 0, but bolder");
+        assertEq(parent.pendingChildPrompt(), "organism 0, but bolder", "the child genome did not land");
+    }
+
     /// @dev The breeding surplus is measured against the HOUSE endowment, not the
     ///      organism's own stake, so a founder that wins one window off a
     ///      same-sized opponent does not clear it. Mirrors what `Population`
@@ -1339,9 +1442,7 @@ contract DarwinTest is Test {
         _answer(2, "DOWN_REVERSION");
         _commit();
 
-        assertFalse(
-            outcomeToken.isOperator(address(_p(1)), address(venue)), "the venue must not hold operator rights"
-        );
+        assertFalse(outcomeToken.isOperator(address(_p(1)), address(venue)), "the venue must not hold operator rights");
         assertEq(outcomeToken.balanceOf(address(venue), YES_ID), 0, "no position parked at the venue mid-window");
 
         _upWins();
@@ -1370,11 +1471,7 @@ contract DarwinTest is Test {
         _settle();
 
         DreamDEXVenue replacement = new DreamDEXVenue(
-            IPriceSource(address(priceSource)),
-            address(settlement),
-            address(collateral),
-            address(outcomeToken),
-            "BTC"
+            IPriceSource(address(priceSource)), address(settlement), address(collateral), address(outcomeToken), "BTC"
         );
         assertEq(replacement.poolOf(YES_ID), address(0), "the replacement has issued nothing yet");
 
@@ -1666,10 +1763,7 @@ contract DarwinTest is Test {
         _settle();
 
         assertEq(_p(1).correctCount(), 1, "graded on worth, not on custody");
-        assertEq(
-            _p(1).treasury(),
-            population.endowment() + _stake() - _skimOn(_stake()) - population.metabolicCost()
-        );
+        assertEq(_p(1).treasury(), population.endowment() + _stake() - _skimOn(_stake()) - population.metabolicCost());
         assertEq(settlement.owed(address(_p(1)), address(collateral)), 0, "claimed inside settlement");
         _assertLedgerMatchesBalance(1);
     }
@@ -1868,6 +1962,144 @@ contract DarwinTest is Test {
         vm.prank(address(0xBAD));
         vm.expectRevert(PushedPriceSource.NotAuthorized.selector);
         priceSource.pushWindow("BTC", MARKET_ID, 1, 1, 6);
+    }
+
+    /// @dev Declared locally so `vm.expectEmit` has a shape to match. Mirrors
+    ///      `PushedPriceSource.MaxStalenessChanged`.
+    event MaxStalenessChanged(uint64 previous, uint64 current);
+
+    /**
+     *  A ZERO PRICE IS THE ONE BAD PUSH THAT DOES NOT ANNOUNCE ITSELF.
+     *
+     *  Staleness already had a guard, because a stalled pusher must stop the
+     *  population rather than feed it an old level. A zero is worse: nothing reverts
+     *  anywhere, and every organism is graded against nothing. On the duel venue the
+     *  outcome is the sign of `lastPrice - openPrice`, so an `openPrice` of zero
+     *  makes UP win deterministically whatever BTC actually did — a whole window of
+     *  fitness signal measuring the pusher instead of the forecaster, in counters
+     *  that are permanent.
+     *
+     *  `scripts/lib/market.ts:151` names this exact failure and guards `undefined`,
+     *  but a REST payload carrying a literal `0` — or `OPEN_PRICE=0` in the env
+     *  override — still arrives as a well-formed zero. The updater is a hot key on a
+     *  script, so the check belongs on the contract side of that boundary.
+     */
+    function test_priceSource_refusesAZeroPriceAndAZeroMarket() public {
+        vm.startPrank(owner);
+
+        vm.expectRevert(PushedPriceSource.ZeroPrice.selector);
+        priceSource.pushWindow("BTC", MARKET_ID, 0, 100_000 * ONE, 6);
+
+        vm.expectRevert(PushedPriceSource.ZeroPrice.selector);
+        priceSource.pushWindow("BTC", MARKET_ID, 100_000 * ONE, 0, 6);
+
+        // A zero `marketId` reads back as "no window at all" (`NoWindow`), so pushing
+        // one writes a window the reader denies exists. Failing at the push says what
+        // actually went wrong.
+        vm.expectRevert(PushedPriceSource.ZeroMarket.selector);
+        priceSource.pushWindow("BTC", bytes32(0), 100_000 * ONE, 100_000 * ONE, 6);
+
+        // CONTROL. Three reverts above prove nothing if this function refuses
+        // everything — the same push with all three fields non-zero must land, and
+        // the window must read back.
+        priceSource.pushWindow("BTC", MARKET_ID, 100_000 * ONE, 100_001 * ONE, 6);
+        vm.stopPrank();
+
+        (bytes32 id,,,, uint256 open, uint256 last,,,) = priceSource.currentWindow("BTC");
+        assertEq(id, MARKET_ID, "the valid push did not land");
+        assertEq(open, 100_000 * ONE, "the valid push did not land");
+        assertEq(last, 100_001 * ONE, "the valid push did not land");
+    }
+
+    /// @dev An external boundary for an `internal` library call, so a panic inside it
+    ///      can be caught. `vm.expectRevert` needs a call to unwind; `Genome` is
+    ///      inlined into whoever uses it.
+    function externalBeliefPrompt(uint8 decimals) external pure returns (string memory) {
+        return Genome.beliefPrompt("BTC", 110_432_500_000, 110_500_000_000, decimals, 420);
+    }
+
+    /**
+     *  A GARBAGE `priceDecimals` IS REFUSED AT THE PUSH, because the alternative is
+     *  a population that cannot think and a revert reason that says nothing.
+     *
+     *  The first half of this test is the hazard itself, executed rather than
+     *  asserted: `Genome._decimal` computes `10 ** decimals`, so 78 overflows uint256
+     *  and panics. That call sits in `Population.think`'s scoped window block —
+     *  OUTSIDE the per-organism try/catch — so it is not one `ThinkFailed` among
+     *  eight, it is the whole window reverting on `Panic(0x11)`, a reason naming
+     *  neither the field nor the contract that supplied it. The operator's actual
+     *  mistake is one uint8 in a script; what they would see is an unexplained dead
+     *  population.
+     *
+     *  The cap is 18 rather than 77, and that number is a judgment, not a
+     *  measurement — tUSDC is 6, `market.ts` defaults to 6, no ERC-20 or price feed
+     *  reports more than 18 — so nothing real is rejected while every value that
+     *  could brick a window is. The second half asserts the boundary in both
+     *  directions, since a cap is only meaningful if it also lets 18 through.
+     */
+    function test_priceSource_refusesAPriceScaleThatWouldBrickEveryWindow() public {
+        // THE HAZARD, DEMONSTRATED. Not "78 would overflow" — 78 overflows.
+        vm.expectRevert(stdError.arithmeticError);
+        this.externalBeliefPrompt(78);
+
+        // And 18 does not, which is what makes the cap below safe to set there.
+        assertGt(bytes(this.externalBeliefPrompt(18)).length, 0, "18 decimals cannot render a prompt");
+
+        vm.startPrank(owner);
+
+        vm.expectRevert(abi.encodeWithSelector(PushedPriceSource.BadDecimals.selector, uint8(78), uint8(18)));
+        priceSource.pushWindow("BTC", MARKET_ID, 100_000 * ONE, 100_001 * ONE, 78);
+
+        // 19 is the first refused value, not merely some large one — a guard that
+        // only catches absurd inputs leaves the plausible typo through.
+        vm.expectRevert(abi.encodeWithSelector(PushedPriceSource.BadDecimals.selector, uint8(19), uint8(18)));
+        priceSource.pushWindow("BTC", MARKET_ID, 100_000 * ONE, 100_001 * ONE, 19);
+
+        // CONTROL. The boundary value itself must land, or the cap is off by one and
+        // this test could not tell.
+        priceSource.pushWindow("BTC", MARKET_ID, 100_000 * ONE, 100_001 * ONE, 18);
+        vm.stopPrank();
+
+        (,,,,,, uint8 decimals,,) = priceSource.currentWindow("BTC");
+        assertEq(decimals, 18, "the boundary push did not land");
+    }
+
+    /**
+     *  `setMaxStaleness(0)` bricked the feed, and with it every `think`, from one
+     *  `onlyOwner` call whose likeliest cause is an uninitialised variable rather
+     *  than an intention: `currentWindow` refuses a price when `age > maxStaleness`,
+     *  and `pushWindow` and `think` are two transactions, so zero refuses every price
+     *  that will ever be pushed.
+     *
+     *  A LARGE value is deliberately still allowed. That one is a real loosening an
+     *  operator might want on a chain having a slow minute, so it is recorded by an
+     *  event instead of being capped at a number picked here on the owner's behalf.
+     */
+    function test_priceSource_refusesToBrickItselfWithZeroStaleness() public {
+        vm.prank(owner);
+        vm.expectRevert(PushedPriceSource.ZeroStaleness.selector);
+        priceSource.setMaxStaleness(0);
+        assertEq(priceSource.maxStaleness(), 180, "the rejected write must not have landed");
+
+        // A loosening is allowed, and it is no longer silent: `setUpdater` has always
+        // emitted, so this was the one operator change to the feed that left no trace.
+        vm.expectEmit(true, true, true, true, address(priceSource));
+        emit MaxStalenessChanged(180, 900);
+        vm.prank(owner);
+        priceSource.setMaxStaleness(900);
+        assertEq(priceSource.maxStaleness(), 900, "the accepted write did not land");
+
+        // CONTROL for the two assertions above: the guard is on the VALUE, not on the
+        // function, and a `maxStaleness` that never actually moved would satisfy both
+        // `assertEq`s by accident. So warp past the OLD limit and read the feed — it
+        // must answer under 900 and refuse under 180, from the same pushed window.
+        vm.warp(block.timestamp + 800);
+        priceSource.currentWindow("BTC");
+
+        vm.prank(owner);
+        priceSource.setMaxStaleness(180);
+        vm.expectRevert(abi.encodeWithSelector(PushedPriceSource.StalePrice.selector, uint64(800), uint64(180)));
+        priceSource.currentWindow("BTC");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -2198,6 +2430,97 @@ contract DarwinTest is Test {
         e.onEvent(address(settlement), new bytes32[](0), "");
     }
 
+    /// @dev Declared locally so `vm.expectEmit` has a shape to match. Mirrors
+    ///      `SelectionEngine.OwnershipTransferred`.
+    event OwnershipTransferred(address indexed previous, address indexed current);
+
+    /**
+     *  A STRANGER IS TOLD THEY ARE A STRANGER, whatever the honesty flag happens to
+     *  say. `poke` checked `fallbackEnabled` before ownership until 2026-09-05, so
+     *  after `disableFallback` a passer-by got `FallbackClosed` — a fact about the
+     *  contract's posture — when the only answer relevant to them is that they are
+     *  not the owner. Two consequences, one of them the reason this is worth a test:
+     *  the caller who cannot act on it is the one who learns the state, and the flag
+     *  that licenses the project's strongest claim became readable through a revert
+     *  by anyone who felt like probing it.
+     */
+    function test_reactivity_pokeAnswersAStrangerAsAStrangerNotAsAnOracle() public {
+        SelectionEngine e = _engine();
+        address passerby = makeAddr("passerby");
+
+        vm.prank(passerby);
+        vm.expectRevert(SelectionEngine.NotAuthorized.selector);
+        e.poke();
+
+        vm.prank(owner);
+        e.disableFallback();
+
+        // Same caller, same error — the closed fallback did not change what a
+        // stranger is told about it.
+        vm.prank(passerby);
+        vm.expectRevert(SelectionEngine.NotAuthorized.selector);
+        e.poke();
+
+        // CONTROL. The assertion above is that a stranger CANNOT see the state, which
+        // is worth nothing unless the state is genuinely closed and genuinely visible
+        // to somebody. The owner, at this exact moment, gets the other error.
+        vm.prank(owner);
+        vm.expectRevert(SelectionEngine.FallbackClosed.selector);
+        e.poke();
+    }
+
+    /**
+     *  OWNERSHIP CANNOT BE HANDED TO NOBODY, and here that is not the usual
+     *  lost-admin-key argument.
+     *
+     *  `owner` is the only address that can call `disableFallback`, and
+     *  `disableFallback` is what turns the licensed claim from *"selection is
+     *  on-chain and atomic with redemption"* into *"no keeper anywhere in the causal
+     *  chain"*. A transfer to `address(0)` therefore froze `fallbackEnabled` at
+     *  `true` forever and made the project's central claim unprovable for the life of
+     *  the contract — one typo away, in a function that took any address at all.
+     *
+     *  A two-step handover is deliberately absent, and this test is where that
+     *  decision is recorded: a transfer to a live-but-wrong address is fully
+     *  recoverable here, because this contract is plain, non-upgradeable, and
+     *  `Population.setWiring` repoints to a fresh one in a single transaction. Being
+     *  cheap to redeploy IS the recovery mechanism.
+     */
+    function test_reactivity_ownershipCannotBeHandedToNobody() public {
+        SelectionEngine e = _engine();
+
+        vm.prank(owner);
+        vm.expectRevert(SelectionEngine.ZeroOwner.selector);
+        e.transferOwnership(address(0));
+        assertEq(e.owner(), owner, "the rejected transfer must not have landed");
+
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(SelectionEngine.NotAuthorized.selector);
+        e.transferOwnership(stranger);
+
+        // A real handover still works, and no longer does so silently — an ownership
+        // change on the contract that gates the honesty flag should be greppable in
+        // the log stream, not only in storage.
+        address successor = makeAddr("successor");
+        vm.expectEmit(true, true, true, true, address(e));
+        emit OwnershipTransferred(owner, successor);
+        vm.prank(owner);
+        e.transferOwnership(successor);
+        assertEq(e.owner(), successor, "the accepted transfer did not land");
+
+        // CONTROL. Two `assertEq`s on `owner()` above would both pass against a field
+        // nobody can move, so require the authority itself to have followed it: the
+        // old owner is now a stranger, and the new one can close the fallback.
+        vm.prank(owner);
+        vm.expectRevert(SelectionEngine.NotAuthorized.selector);
+        e.disableFallback();
+
+        vm.prank(successor);
+        e.disableFallback();
+        assertFalse(e.fallbackEnabled(), "the new owner could not exercise ownership");
+    }
+
     /*//////////////////////////////////////////////////////////////
               THE ARENA — ANTE, SEASONS, PRIZE POOL, RAKE
     //////////////////////////////////////////////////////////////*/
@@ -2430,6 +2753,980 @@ contract DarwinTest is Test {
         population.endSeason();
     }
 
+    /*//////////////////////////////////////////////////////////////
+                    SEASONS — THE PRIZE PAYOUT PATH
+
+        Everything below moves real value on a live chain, and the two
+        tests above are the only coverage it used to have: one winner
+        collecting 60%, and one revert. `_topThree()` had none at all.
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  The whole 60/30/10 split, with a live claimant in every place.
+     *
+     *  Nothing previously asserted that second and third place are paid AT ALL,
+     *  that the three cuts are struck against the SAME pot — `endSeason` reads
+     *  `prizePool` once for exactly this reason — or that the rounding remainder
+     *  stays in the pool. All three are exact balances here.
+     *
+     *  The standings are deliberately NOT in id order: id 1 is paired and right, id
+     *  2 is paired and wrong, id 3 has no counterparty and abstains, so the net
+     *  records are +1 / -1 / 0 and the payout order must be 1, 3, 2. A test whose
+     *  winners happen to fall in id order cannot tell the split apart from the walk.
+     */
+    function test_season_paysSixtyThirtyTenToThreeLivingWinners() public {
+        address alice = address(0xA11CE);
+        address bruno = address(0xB121);
+        address carol = address(0xCA201);
+
+        assertEq(_enter(alice, "momentum", 10 * ONE), 1, "ids are assigned in entry order");
+        assertEq(_enter(bruno, "reversion", 10 * ONE), 2, "ids are assigned in entry order");
+        assertEq(_enter(carol, "range", 10 * ONE), 3, "ids are assigned in entry order");
+
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 1;
+        _setSeason(s);
+
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _answer(3, "ABSTAIN");
+        _commit();
+        _settle();
+
+        // The records the standings are derived from, asserted rather than assumed:
+        // if these are not +1 / -1 / 0 the payout order below proves nothing.
+        assertEq(_p(1).correctCount(), 1, "id 1 was not graded correct");
+        assertEq(_p(1).wrongCount(), 0, "id 1 was graded wrong");
+        assertEq(_p(2).wrongCount(), 1, "id 2 was not graded wrong");
+        assertEq(_p(2).correctCount(), 0, "id 2 was graded correct");
+        assertEq(_p(3).abstainCount(), 1, "id 3 found a counterparty it was not supposed to have");
+        assertEq(_p(3).correctCount(), 0, "an abstention was graded");
+        assertEq(_p(3).wrongCount(), 0, "an abstention was graded");
+        assertEq(population.aliveCount(), 3, "all three must be alive to be ranked");
+
+        uint256 pot = population.prizePool();
+        assertGt(pot, 0, "test is vacuous: the season earned nothing to pay out");
+
+        uint256 first = (pot * 6_000) / 10_000;
+        uint256 second = (pot * 3_000) / 10_000;
+        uint256 third = (pot * 1_000) / 10_000;
+        assertGt(third, 0, "test is vacuous: third place's cut rounds to zero");
+
+        uint256 aliceBefore = collateral.balanceOf(alice);
+        uint256 brunoBefore = collateral.balanceOf(bruno);
+        uint256 carolBefore = collateral.balanceOf(carol);
+        uint256 arenaBefore = collateral.balanceOf(address(population));
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        // 1st is id 1 (+1), 2nd is id 3 (0), 3rd is id 2 (-1).
+        assertEq(collateral.balanceOf(alice), aliceBefore + first, "id 1 was not paid 60%");
+        assertEq(collateral.balanceOf(carol), carolBefore + second, "id 3 was not paid 30%");
+        assertEq(collateral.balanceOf(bruno), brunoBefore + third, "id 2 was not paid 10%");
+
+        assertEq(population.prizePool(), pot - first - second - third, "the pot was not drawn down by exactly the cuts");
+        assertEq(
+            collateral.balanceOf(address(population)),
+            arenaBefore - first - second - third,
+            "more or less than the three prizes left the arena"
+        );
+    }
+
+    /**
+     *  `_topThree()` uses a STRICT `>`, so a tie is settled by the walk — and the
+     *  walk is ascending by id. Ties therefore favour the LOWER id, and that is a
+     *  real economic rule (an early entrant outranks a later one on an identical
+     *  record), not an implementation detail.
+     *
+     *  Constructed so the comparison is observable at BOTH ends of the standings:
+     *  ids 1 and 2 tie at +1 and ids 3 and 4 tie at -1. Under `>=` the shift chain
+     *  would run on every equal score and the result would be [2, 1, 4] — a
+     *  different organism in first place and a different one paid at all — so this
+     *  discriminates the operator rather than merely exercising it.
+     */
+    function test_season_topThreeBreaksTiesTowardTheLowerId() public {
+        address alice = address(0xA11CE);
+        address bruno = address(0xB121);
+        address carol = address(0xCA201);
+        address dora = address(0xD012A);
+
+        assertEq(_enter(alice, "momentum", 10 * ONE), 1, "ids are assigned in entry order");
+        assertEq(_enter(bruno, "breakout", 10 * ONE), 2, "ids are assigned in entry order");
+        assertEq(_enter(carol, "reversion", 10 * ONE), 3, "ids are assigned in entry order");
+        assertEq(_enter(dora, "range", 10 * ONE), 4, "ids are assigned in entry order");
+
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 1;
+        _setSeason(s);
+
+        // `commitAll` pairs ups[i] with downs[i] in living order, so this is
+        // (1 vs 3) and (2 vs 4) — two winners and two losers, tied pairwise.
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "UP_BREAKOUT");
+        _answer(3, "DOWN_REVERSION");
+        _answer(4, "DOWN_RANGE");
+        _commit();
+        _settle();
+
+        // THE VACUITY GUARD, and it is the whole test: without an actual tie the
+        // assertions below would pass on a `>=` implementation too.
+        assertEq(_p(1).correctCount(), _p(2).correctCount(), "ids 1 and 2 must tie");
+        assertEq(_p(1).wrongCount(), _p(2).wrongCount(), "ids 1 and 2 must tie");
+        assertEq(_p(3).correctCount(), _p(4).correctCount(), "ids 3 and 4 must tie");
+        assertEq(_p(3).wrongCount(), _p(4).wrongCount(), "ids 3 and 4 must tie");
+        assertEq(_p(1).correctCount(), 1, "the winners were not graded correct");
+        assertEq(_p(3).wrongCount(), 1, "the losers were not graded wrong");
+        assertEq(population.aliveCount(), 4, "all four must be alive to be ranked");
+
+        uint256 pot = population.prizePool();
+        assertGt(pot, 0, "test is vacuous: the season earned nothing to pay out");
+        uint256 first = (pot * 6_000) / 10_000;
+        uint256 second = (pot * 3_000) / 10_000;
+        uint256 third = (pot * 1_000) / 10_000;
+        assertGt(third, 0, "test is vacuous: third place's cut rounds to zero");
+
+        uint256 aliceBefore = collateral.balanceOf(alice);
+        uint256 brunoBefore = collateral.balanceOf(bruno);
+        uint256 carolBefore = collateral.balanceOf(carol);
+        uint256 doraBefore = collateral.balanceOf(dora);
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        assertEq(collateral.balanceOf(alice), aliceBefore + first, "the lower of the two tied leaders must take 60%");
+        assertEq(collateral.balanceOf(bruno), brunoBefore + second, "the higher of the two tied leaders takes 30%");
+        assertEq(collateral.balanceOf(carol), carolBefore + third, "the lower of the two tied losers takes 10%");
+        assertEq(collateral.balanceOf(dora), doraBefore, "id 4 tied id 3 and must lose the tie to the lower id");
+    }
+
+    /**
+     *  Survival is a CONDITION, not a tiebreak: a corpse is skipped however good its
+     *  record was.
+     *
+     *  Death here is `retire`, which is the sharper case rather than the convenient
+     *  one — a starving organism is by definition a poor one, but a retiring entrant
+     *  cashes out at will and could otherwise take the collateral home AND collect
+     *  first prize on the way out. `_topThree()` cannot see the difference; it reads
+     *  `dead()`, which `retire` sets.
+     *
+     *  The corpse has the strictly best lifetime record (+2 against +1 / -1 / -2), so
+     *  removing the `dead()` guard changes both who is paid and how much: the
+     *  standings become [1, 2, 4] instead of [2, 4, 3].
+     */
+    function test_season_topThreeSkipsTheDeadHoweverGoodTheirRecord() public {
+        address alice = address(0xA11CE);
+        address bruno = address(0xB121);
+        address carol = address(0xCA201);
+        address dora = address(0xD012A);
+
+        assertEq(_enter(alice, "momentum", 10 * ONE), 1, "ids are assigned in entry order");
+        assertEq(_enter(bruno, "breakout", 10 * ONE), 2, "ids are assigned in entry order");
+        assertEq(_enter(carol, "reversion", 10 * ONE), 3, "ids are assigned in entry order");
+        assertEq(_enter(dora, "range", 10 * ONE), 4, "ids are assigned in entry order");
+
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 2;
+        _setSeason(s);
+        _upWins();
+
+        // Window 1: (1 vs 3) and (2 vs 4). Window 2: only 1 vs 3, with 2 and 4
+        // abstaining, which is what spreads the four records to +2 / +1 / -1 / -2.
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "UP_BREAKOUT");
+        _answer(3, "DOWN_REVERSION");
+        _answer(4, "DOWN_RANGE");
+        _commit();
+        _settle();
+
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "ABSTAIN");
+        _answer(3, "DOWN_REVERSION");
+        _answer(4, "ABSTAIN");
+        _commit();
+        _settle();
+
+        assertEq(_p(1).correctCount(), 2, "id 1 must hold the best record in the arena");
+        assertEq(_p(1).wrongCount(), 0, "id 1 must hold the best record in the arena");
+        assertEq(_p(2).correctCount(), 1, "id 2's record is the runner-up");
+        assertEq(_p(2).wrongCount(), 0, "id 2's record is the runner-up");
+        assertEq(_p(3).wrongCount(), 2, "id 3 must hold the worst record in the arena");
+        assertEq(_p(4).wrongCount(), 1, "id 4 must sit between id 2 and id 3");
+
+        // The best organism in the arena leaves, and takes its collateral with it.
+        vm.prank(alice);
+        population.retire(1);
+        assertTrue(_p(1).dead(), "retire did not kill the organism");
+        assertEq(population.aliveCount(), 3, "the corpse is still counted alive");
+
+        uint256 pot = population.prizePool();
+        assertGt(pot, 0, "test is vacuous: the season earned nothing to pay out");
+        uint256 first = (pot * 6_000) / 10_000;
+        uint256 second = (pot * 3_000) / 10_000;
+        uint256 third = (pot * 1_000) / 10_000;
+        assertGt(third, 0, "test is vacuous: third place's cut rounds to zero");
+
+        // Captured AFTER the retirement, so this is only about the prize.
+        uint256 aliceBefore = collateral.balanceOf(alice);
+        uint256 brunoBefore = collateral.balanceOf(bruno);
+        uint256 carolBefore = collateral.balanceOf(carol);
+        uint256 doraBefore = collateral.balanceOf(dora);
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        assertEq(collateral.balanceOf(alice), aliceBefore, "a corpse's entrant was paid a prize");
+        assertEq(collateral.balanceOf(bruno), brunoBefore + first, "id 2 (+1) was not paid 60%");
+        assertEq(collateral.balanceOf(dora), doraBefore + second, "id 4 (-1) was not paid 30%");
+        assertEq(collateral.balanceOf(carol), carolBefore + third, "id 3 (-2) was not paid 10%");
+        assertEq(population.prizePool(), pot - first - second - third, "the pot was not drawn down by exactly the cuts");
+    }
+
+    /**
+     *  The score is a LIFETIME net record, not a per-season one.
+     *
+     *  That is a design decision with teeth and it is currently invisible: nothing
+     *  else in this file runs two seasons, so nothing distinguishes lifetime from
+     *  per-season scoring. Here they disagree outright — id 2 wins every window of
+     *  season 2 and id 1 wins none of them, yet id 1 takes first place on a record
+     *  built up in season 1. An arena that reset scores at the season boundary would
+     *  reverse both payouts.
+     *
+     *  Not asserted as approval of the rule, only as its contract: an entrant joining
+     *  season 3 competes against every window season 1 ever graded, and if that is
+     *  the wrong economics it has to be changed deliberately rather than discovered.
+     */
+    function test_season_topThreeScoresLifetimeRecordNotThisSeasonsRecord() public {
+        address alice = address(0xA11CE);
+        address bruno = address(0xB121);
+
+        assertEq(_enter(alice, "momentum", 10 * ONE), 1, "ids are assigned in entry order");
+        assertEq(_enter(bruno, "reversion", 10 * ONE), 2, "ids are assigned in entry order");
+
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 3;
+        _setSeason(s);
+        _upWins();
+
+        // SEASON 1 — id 1 is right three times, id 2 is wrong three times.
+        for (uint256 i; i < 3; ++i) {
+            _pushWindow();
+            _think();
+            _answer(1, "UP_MOMENTUM");
+            _answer(2, "DOWN_REVERSION");
+            _commit();
+            _settle();
+        }
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+        assertEq(population.seasonId(), 2, "season 1 did not close");
+
+        uint32 aliceCorrectAtBreak = _p(1).correctCount();
+        uint32 brunoCorrectAtBreak = _p(2).correctCount();
+
+        // SEASON 2 — the roles reverse, then both abstain to reach the third window.
+        for (uint256 i; i < 2; ++i) {
+            _pushWindow();
+            _think();
+            _answer(1, "DOWN_MOMENTUM");
+            _answer(2, "UP_REVERSION");
+            _commit();
+            _settle();
+        }
+        _pushWindow();
+        _think();
+        _answer(1, "ABSTAIN");
+        _answer(2, "ABSTAIN");
+        _commit();
+        _settle();
+
+        // WITHIN SEASON 2, id 2 strictly dominates: two wins to nil.
+        assertEq(_p(2).correctCount() - brunoCorrectAtBreak, 2, "id 2 must win both graded windows of season 2");
+        assertEq(_p(1).correctCount() - aliceCorrectAtBreak, 0, "id 1 must win nothing in season 2");
+
+        // OVER ITS LIFETIME, id 1 is still ahead: 3-2 against 2-3.
+        assertEq(_p(1).correctCount(), 3, "id 1's lifetime record");
+        assertEq(_p(1).wrongCount(), 2, "id 1's lifetime record");
+        assertEq(_p(2).correctCount(), 2, "id 2's lifetime record");
+        assertEq(_p(2).wrongCount(), 3, "id 2's lifetime record");
+        assertEq(population.prophetCount(), 2, "an unexpected birth would change the standings");
+
+        uint256 pot = population.prizePool();
+        assertGt(pot, 0, "test is vacuous: the season earned nothing to pay out");
+        uint256 first = (pot * 6_000) / 10_000;
+        uint256 second = (pot * 3_000) / 10_000;
+
+        uint256 aliceBefore = collateral.balanceOf(alice);
+        uint256 brunoBefore = collateral.balanceOf(bruno);
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        assertEq(population.seasonId(), 3, "season 2 did not close");
+        assertEq(collateral.balanceOf(alice), aliceBefore + first, "the better LIFETIME record was not paid 60%");
+        assertEq(collateral.balanceOf(bruno), brunoBefore + second, "the better SEASON record was not paid 30%");
+    }
+
+    /**
+     *  THE RESOLUTION OF THE PINNED FINDING: a founder's prize goes to the Genesis
+     *  Treasury, and the operator's balance does not move.
+     *
+     *  What this replaces. Until 2026-09-05 `spawnGenesis` passed `msg.sender` as the
+     *  founders' `entrant` and was `onlyOwner`, so a founder in the top three paid 60%
+     *  of the players' pot straight to the operator's EOA — and did it WITHOUT touching
+     *  `rakeAccrued`, i.e. outside the one cap the contract puts on operator
+     *  withdrawals (`withdrawRake`'s `RakeExceeded`). Measured then: a 42,500 pot paid
+     *  the owner 25,500 with `rakeAccrued` unmoved. The predecessor of this test
+     *  asserted exactly that, deliberately, so the finding could not be lost.
+     *
+     *  The third assertion is the actual claim; the first two are what make it
+     *  non-vacuous. `treasury += cut` alone would pass if the treasury WERE the owner,
+     *  and `rakeAccrued` unmoved alone would pass if nothing had been paid at all.
+     *
+     *  The founders are the protocol's seed position, so their winnings land in a
+     *  contract with no owner, no withdrawal and one outlet — `recycle()`, back into
+     *  the players' pot. `endSeason`'s `to == address(0)` guard survives as a
+     *  revert-proofing measure rather than as a claim about founders; see the rewritten
+     *  comment at its site.
+     */
+    function test_season_founderPrizeGoesToTheTreasuryAndNotTheOwner() public {
+        _seed(1); // the arena's own organism — nobody entered it
+        address alice = address(0xA11CE);
+        assertEq(_enter(alice, "reversion", 10 * ONE), 2, "the entrant's organism is id 2");
+
+        // THE PRECONDITION. Hoisted into a local before any prank-bearing call, and
+        // asserted as a pair: `== treasury` on its own would still hold if a future
+        // change made the treasury address be the owner, which is the whole bug.
+        address treasury = population.genesisTreasury();
+        assertEq(_p(1).entrant(), treasury, "a founder's entrant must be the Genesis Treasury");
+        assertTrue(treasury != owner, "test is vacuous: the treasury is the owner's address");
+
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 1;
+        _setSeason(s);
+
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        assertEq(_p(1).correctCount(), 1, "the founder must finish first for this to test the branch");
+        assertEq(_p(2).wrongCount(), 1, "the entrant must finish second for this to test the branch");
+
+        uint256 pot = population.prizePool();
+        assertGt(pot, 0, "test is vacuous: the season earned nothing to pay out");
+        uint256 founderCut = (pot * 6_000) / 10_000;
+        uint256 entrantCut = (pot * 3_000) / 10_000;
+        assertGt(entrantCut, 0, "test is vacuous: second place's cut rounds to zero");
+
+        uint256 aliceBefore = collateral.balanceOf(alice);
+        uint256 arenaBefore = collateral.balanceOf(address(population));
+        uint256 founderHeld = collateral.balanceOf(address(_p(1)));
+        uint256 ownerBefore = collateral.balanceOf(owner);
+        uint256 treasuryBefore = collateral.balanceOf(treasury);
+        uint256 rakeBefore = population.rakeAccrued();
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        // 1. The 60% reached the treasury.
+        assertEq(
+            collateral.balanceOf(treasury), treasuryBefore + founderCut, "the founder's 60% did not reach the treasury"
+        );
+        // 2. It did not pass through the house's book on the way.
+        assertEq(population.rakeAccrued(), rakeBefore, "the founder's cut moved rakeAccrued");
+        // 3. THE CLAIM. The operator was paid nothing.
+        assertEq(collateral.balanceOf(owner), ownerBefore, "the operator was paid a founder's prize");
+
+        assertEq(collateral.balanceOf(alice), aliceBefore + entrantCut, "second place was not paid 30%");
+        assertEq(
+            population.prizePool(), pot - founderCut - entrantCut, "only the vacant third place should have rolled over"
+        );
+        assertEq(
+            collateral.balanceOf(address(population)),
+            arenaBefore - founderCut - entrantCut,
+            "the collateral that left the arena is not the two cuts"
+        );
+
+        assertEq(collateral.balanceOf(address(_p(1))), founderHeld, "the prize went to the entrant, not the organism");
+        assertEq(collateral.balanceOf(address(0)), 0, "a prize was transferred to the zero address");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                            GENESIS TREASURY
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev The four reads a judge with an explorer makes, as one test. `setUp` has
+    ///      already run the factory, so this asserts the state a live arena is in.
+    function test_genesis_foundersBelongToTheTreasuryNotTheOwner() public {
+        _seed(2);
+        address treasury = population.genesisTreasury();
+
+        assertTrue(treasury != address(0), "the factory did not record a treasury");
+        assertTrue(treasury != owner, "the treasury is the operator's EOA");
+        assertEq(_p(1).entrant(), treasury, "founder 1 does not belong to the treasury");
+        assertEq(_p(2).entrant(), treasury, "founder 2 does not belong to the treasury");
+
+        // The treasury knows which arena it serves, and reads the token off it rather
+        // than holding an immutable copy — so a `setWiring` repoint cannot strand it.
+        GenesisTreasury t = GenesisTreasury(treasury);
+        assertEq(t.arena(), address(population), "the treasury is bound to another arena");
+        assertEq(t.collateral(), address(collateral), "the treasury reads the wrong collateral");
+        assertEq(t.totalRecycled(), 0, "nothing has been recycled yet");
+
+        // `arena` is immutable and every outlet in the file reads through it, so a
+        // treasury built against zero would be a contract holding collateral with no
+        // code path out. The factory can never pass zero, but a hand-deployment could,
+        // and this is the assertion that keeps the constructor guard from being
+        // decorative — nothing else in the suite reaches it.
+        vm.expectRevert(GenesisTreasury.ZeroArena.selector);
+        new GenesisTreasury(address(0));
+    }
+
+    /**
+     *  A founder can never be minted ownerless, and the treasury can never be replaced.
+     *
+     *  Both halves guard the same hazard from opposite ends. `entrant` is written
+     *  exactly once ever (`Prophet.initialize`), so a founder minted against
+     *  `address(0)` would be permanently ownerless AND permanently unretirable —
+     *  `retire` requires `msg.sender == entrant`, which nobody can satisfy. There is no
+     *  repair path, which is why `spawnGenesis` refuses rather than defaulting.
+     *
+     *  A BARE PROXY, not `population`: `setUp` has already run the factory on that one,
+     *  so the refusal is not reachable there. This is the only test in the file that
+     *  stands up an arena without a treasury, and that is the point.
+     */
+    function test_genesis_spawnRefusesWithoutATreasury() public {
+        Population impl = new Population();
+        bytes memory init = abi.encodeCall(
+            Population.initialize,
+            (
+                owner,
+                Population.Wiring({
+                    agentRequester: address(requester),
+                    settlement: address(settlement),
+                    marketsModule: address(module),
+                    outcomeToken: address(outcomeToken),
+                    collateral: address(collateral),
+                    prophetBeacon: address(beacon),
+                    priceSource: address(priceSource),
+                    venue: address(venue),
+                    llmAgentId: 1,
+                    symbol: "BTC"
+                })
+            )
+        );
+        Population bare = Population(payable(address(new ERC1967Proxy(address(impl), init))));
+        collateral.mint(address(bare), 10_000 * ONE);
+        vm.deal(address(bare), 100 ether);
+
+        assertEq(bare.genesisTreasury(), address(0), "a fresh proxy must have no treasury");
+
+        string[] memory genomes = new string[](1);
+        genomes[0] = "momentum";
+        vm.prank(owner);
+        vm.expectRevert(Population.NoGenesisTreasury.selector);
+        bare.spawnGenesis(genomes);
+        assertEq(bare.prophetCount(), 0, "a founder was minted against a zero treasury");
+
+        // The factory is `onlyOwner`, so it is not a public path to a treasury either.
+        vm.prank(address(0xBAD));
+        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), address(0xBAD)));
+        bare.deployGenesisTreasury();
+
+        vm.prank(owner);
+        address t = bare.deployGenesisTreasury();
+        assertEq(bare.genesisTreasury(), t, "the factory did not record what it returned");
+
+        // And now the same call that refused above succeeds, which is the control that
+        // stops the revert assertion from passing for some unrelated reason.
+        vm.prank(owner);
+        bare.spawnGenesis(genomes);
+        assertEq(bare.prophetCount(), 1, "the founder was not minted once a treasury existed");
+        assertEq(Prophet(payable(bare.prophetAt(1))).entrant(), t, "the founder does not belong to the new treasury");
+    }
+
+    /**
+     *  ONCE, EVER. This is what makes "the treasury can never become an EOA" checkable
+     *  without reading access control: there is no setter anywhere, and the one creator
+     *  refuses to run a second time.
+     *
+     *  Run against the REAL arena rather than a bare proxy, because the state this
+     *  asserts on is the state every other test and the live deploy are already in —
+     *  `setUp` ran the factory. That successful first call is also the control: the
+     *  revert below cannot be passing because `deployGenesisTreasury` is broken, since
+     *  the treasury it created is a live `GenesisTreasury` bound to this arena.
+     */
+    function test_genesis_theTreasuryCanNeverBeReplaced() public {
+        address t = population.genesisTreasury();
+        assertTrue(t != address(0), "setUp did not deploy a treasury, so there is nothing to replace");
+        assertEq(GenesisTreasury(t).arena(), address(population), "the recorded treasury is not this arena's");
+
+        vm.prank(owner);
+        vm.expectRevert(Population.TreasuryAlreadySet.selector);
+        population.deployGenesisTreasury();
+        assertEq(population.genesisTreasury(), t, "the treasury address moved");
+
+        // Not even a fresh owner. `transferOwnership` is the only way the operator key
+        // rotates, and it must not hand the new holder a second chance at the one
+        // address the whole no-owner argument rests on.
+        address successor = address(0x50CC);
+        vm.prank(owner);
+        population.transferOwnership(successor);
+        vm.prank(successor);
+        vm.expectRevert(Population.TreasuryAlreadySet.selector);
+        population.deployGenesisTreasury();
+        assertEq(population.genesisTreasury(), t, "an owner rotation reopened the factory");
+    }
+
+    /**
+     *  `recycle()` is permissionless, and the players' pot is the only place it reaches.
+     *
+     *  The three "did not move" assertions are the substance. A `recycle` that also
+     *  incremented `rakeAccrued`, or that left collateral behind, would satisfy the
+     *  first assertion alone — so the pot rising is necessary and nowhere near
+     *  sufficient.
+     */
+    function test_genesisTreasury_recycleIsPermissionlessAndOnlyReachesThePlayers() public {
+        _seed(1);
+        GenesisTreasury t = GenesisTreasury(population.genesisTreasury());
+
+        // THE CONTROL, and it runs first: an empty treasury says so rather than
+        // silently succeeding with a zero transfer, which would make the assertions
+        // below true of a no-op.
+        vm.prank(address(0xBAD));
+        vm.expectRevert(GenesisTreasury.NothingToRecycle.selector);
+        t.recycle();
+
+        // Fund it the way a season would: put collateral in it directly, since
+        // `endSeason` transfers to the `entrant` and this is that address.
+        uint256 amount = 1_234 * ONE;
+        collateral.mint(address(t), amount);
+
+        uint256 potBefore = population.prizePool();
+        uint256 rakeBefore = population.rakeAccrued();
+        uint256 arenaBefore = collateral.balanceOf(address(population));
+
+        // A STRANGER, deliberately. There is no privileged caller because there is no
+        // privileged destination.
+        vm.prank(address(0xBAD));
+        uint256 moved = t.recycle();
+
+        assertEq(moved, amount, "recycle did not report what it moved");
+        assertEq(population.prizePool(), potBefore + amount, "the players' pot did not rise by the whole balance");
+        assertEq(collateral.balanceOf(address(t)), 0, "the treasury kept some of it");
+        assertEq(collateral.balanceOf(address(population)), arenaBefore + amount, "the arena did not receive it");
+        assertEq(population.rakeAccrued(), rakeBefore, "recycle moved the house's book");
+        assertEq(t.totalRecycled(), amount, "totalRecycled disagrees with what moved");
+
+        // Twice over: the counter accumulates rather than overwrites, and the second
+        // pass proves the first did not leave the treasury in a state it cannot repeat.
+        collateral.mint(address(t), amount);
+        vm.prank(address(0xBAD));
+        t.recycle();
+        assertEq(t.totalRecycled(), 2 * amount, "totalRecycled did not accumulate");
+        assertEq(population.prizePool(), potBefore + 2 * amount, "the second recycle did not reach the pot");
+    }
+
+    /**
+     *  §5.1 OF THE SPEC, PINNED AS INTENDED BEHAVIOUR: the founder lineage is permanently
+     *  unretirable, and 8 x `endowment` of house collateral is committed for the life of
+     *  the arena.
+     *
+     *  This is the HLP parallel done honestly — the protocol's own capital is not
+     *  withdrawable at the operator's convenience — and it is written down as a test
+     *  rather than a comment so nobody rediscovers it later as a bug and "fixes" it by
+     *  adding an owner-callable exit. The founders leave the arena the way every other
+     *  organism does: by dying. Death is not a leak, because an organism dies at zero
+     *  treasury.
+     */
+    function test_genesis_lineageInheritsTheTreasuryAndCannotBeRetired() public {
+        _seed(1);
+        address treasury = population.genesisTreasury();
+        address alice = address(0xA11CE);
+        uint256 foil = _enter(alice, "reversion", 50 * ONE);
+
+        // A ONE-WINDOW STREAK IS NOT ENOUGH ON ITS OWN. `_settle` gates breeding on
+        // BOTH `streak() >= breedStreak` AND `treasury() >= _breedThreshold()`, and a
+        // founder seeded at exactly `endowment` cannot reach 1.5x endowment off one
+        // winning window. Funded rather than relaxing `breedSurplusBps`, so the
+        // lineage this test asserts on is one the deployed economy would actually
+        // produce.
+        collateral.mint(address(this), 1_000 * ONE);
+        collateral.approve(address(population), type(uint256).max);
+        population.fundProphet(1, 500 * ONE);
+
+        Econ memory e = _econ();
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(foil, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        requester.deliver(_p(1).pendingMutationRequestId(), "mutated momentum");
+        vm.prank(owner);
+        population.hatchAll();
+
+        uint256 child = population.prophetCount();
+        assertGt(child, foil, "no child was born, so the inheritance claim is untested");
+        assertEq(_p(child).parentId(), 1, "the child is not the founder's");
+        assertEq(_p(child).entrant(), treasury, "the child did not inherit the treasury");
+
+        // NOT EVEN THE OWNER. `retire` requires `msg.sender == entrant`, and the
+        // treasury has no path to `Population.retire` — no arbitrary call, no owner.
+        vm.prank(owner);
+        vm.expectRevert(Population.NotEntrant.selector);
+        population.retire(1);
+        vm.prank(owner);
+        vm.expectRevert(Population.NotEntrant.selector);
+        population.retire(child);
+
+        // Nor a stranger, and nor the treasury address itself if someone could somehow
+        // send from it — asserted because `vm.prank` can, and a reader should see that
+        // the refusal is about the CALLER not being able to exist, not about the check.
+        vm.prank(address(0xBAD));
+        vm.expectRevert(Population.NotEntrant.selector);
+        population.retire(1);
+
+        assertFalse(_p(1).dead(), "the founder was retired after all");
+        assertFalse(_p(child).dead(), "the child was retired after all");
+
+        // THE CONTROL: `retire` itself is not broken. An entrant's own organism still
+        // exits, so the three reverts above are about ownership rather than about
+        // `retire` having been disabled.
+        vm.prank(alice);
+        population.retire(foil);
+        assertTrue(_p(foil).dead(), "an entrant can no longer retire their own organism");
+    }
+
+    /**
+     *  `sweep` may not draw the collateral the two books are claims on — and the
+     *  `CognitionUnspent` remedy still works.
+     *
+     *  This replaces `test_sweep_canOverdrawTheBooksAndStrandTheSeason`, which pinned
+     *  the hole as a known finding on the argument that a book-aware cap "would block
+     *  the recovery `sweep` exists for". That argument over-reaches by exactly one step,
+     *  and the over-reach is checkable: stranded cognition is NATIVE, so the remedy
+     *  lives entirely in the `token == address(0)` leg and a collateral-only cap cannot
+     *  touch it. The second half of this test is that claim in executable form.
+     *
+     *  Without the cap, `GenesisTreasury` is decorative: a reader who greps `onlyOwner`
+     *  finds a path from the players' pot to the operator, and the treasury reads as
+     *  theatre.
+     */
+    function test_sweep_cannotOverdrawTheCollateralBooksButStillRecoversStrandedCognition() public {
+        _seed(2);
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        uint256 pot = population.prizePool();
+        uint256 rake = population.rakeAccrued();
+        uint256 reserved = pot + rake;
+        assertGt(pot, 0, "test is vacuous: the books hold nothing to protect");
+        assertGt(rake, 0, "test is vacuous: the house book is empty");
+
+        uint256 held = collateral.balanceOf(address(population));
+        assertGt(held, reserved, "precondition: there must be unreserved collateral to sweep");
+
+        // One wei past the books is refused.
+        vm.prank(owner);
+        vm.expectRevert(Population.BooksReserved.selector);
+        population.sweep(address(collateral), owner, held - reserved + 1);
+
+        // And everything up to them is not — the cap is a cap, not a freeze.
+        uint256 free = held - reserved;
+        vm.prank(owner);
+        population.sweep(address(collateral), owner, free);
+        assertEq(collateral.balanceOf(address(population)), reserved, "the sweep did not draw the free collateral");
+        assertEq(population.prizePool(), pot, "the sweep touched the players' book");
+        assertEq(population.rakeAccrued(), rake, "the sweep touched the house's book");
+
+        // At the boundary there is nothing left, and it still says so rather than
+        // succeeding with a silent zero.
+        vm.prank(owner);
+        vm.expectRevert(Population.BooksReserved.selector);
+        population.sweep(address(collateral), owner, 1);
+
+        // THE CONTROL THAT STOPS THE CAP FROM BEING A REGRESSION. `CognitionUnspent` is
+        // a NATIVE amount and its documented remedy is `sweep(address(0), organism, n)`.
+        // The address is resolved into a local FIRST: `_p(1)` is a call and would eat
+        // the prank. See the `_econ()` note.
+        address p1 = address(_p(1));
+        vm.deal(address(population), 5 ether);
+        uint256 cognitionBefore = p1.balance;
+        vm.prank(owner);
+        population.sweep(address(0), p1, 2 ether);
+        assertEq(p1.balance, cognitionBefore + 2 ether, "the cap broke the CognitionUnspent remedy");
+        assertEq(address(population).balance, 3 ether, "more native left the arena than was swept");
+
+        // The season can still close, which is the state the deleted test pinned as
+        // unreachable-from: `endSeason` reverting on `TransferFailed` forever.
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 1;
+        _setSeason(s);
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+        assertEq(population.seasonId(), 2, "the season could not close after the sweep");
+    }
+
+    /// @dev `donatePrizePool` in isolation: the only inbound path to the players' book,
+    ///      and it must not become an outbound one in reverse. Asserted from a plain
+    ///      address rather than through `recycle()` so the function is covered
+    ///      independently of the treasury that motivates it.
+    function test_prizePool_canBeDonatedToButNeverDrawnFrom() public {
+        _seed(1);
+        address donor = address(0xD0A0);
+        uint256 amount = 500 * ONE;
+        collateral.mint(donor, amount);
+
+        vm.prank(donor);
+        vm.expectRevert(Population.ZeroAmount.selector);
+        population.donatePrizePool(0);
+
+        uint256 potBefore = population.prizePool();
+        uint256 rakeBefore = population.rakeAccrued();
+
+        vm.prank(donor);
+        collateral.approve(address(population), amount);
+        vm.prank(donor);
+        population.donatePrizePool(amount);
+
+        assertEq(population.prizePool(), potBefore + amount, "the pot did not rise by the donation");
+        assertEq(population.rakeAccrued(), rakeBefore, "a donation reached the house's book");
+        assertEq(collateral.balanceOf(donor), 0, "the donor was not actually debited");
+
+        // The donation is immediately reserved: the owner cannot take it back out.
+        uint256 held = collateral.balanceOf(address(population));
+        uint256 reserved = population.prizePool() + population.rakeAccrued();
+        vm.prank(owner);
+        vm.expectRevert(Population.BooksReserved.selector);
+        population.sweep(address(collateral), owner, held - reserved + 1);
+
+        // And `withdrawRake` cannot reach it either, which is the other half of "no path
+        // back to the donor".
+        vm.prank(owner);
+        vm.expectRevert(Population.RakeExceeded.selector);
+        population.withdrawRake(owner, rakeBefore + 1);
+    }
+
+    /**
+     *  THE CONTRACT BETWEEN `endSeason` AND `scripts/cadence.ts`.
+     *
+     *  `reportSeasonClose()` reads the close out of the receipt rather than out of
+     *  storage, because `endSeason` moves `seasonId`, `seasonStartWindow` and
+     *  `prizePool` in the same transaction and a post-hoc read would report the NEW
+     *  season's empty state as the old one's result. So these two logs ARE the record,
+     *  and four properties of them are load-bearing off-chain:
+     *
+     *    - `SeasonEnded.pot` and `.paid`, from which the script derives the rollover
+     *      it prints as `pot - paid`;
+     *    - `SeasonEnded.season` and `SeasonPrizePaid.season` carrying the
+     *      PRE-INCREMENT id, so the log names the season that just finished;
+     *    - `SeasonPrizePaid.prophetId` / `.to` / `.amount`, printed per winner;
+     *    - `.amount` as a SHARE OF `SeasonEnded.pot`, which is how the script names the
+     *      place. It deliberately does NOT count log positions: `endSeason` skips a
+     *      vacant place instead of compacting it, so the k-th log is not the k-th place
+     *      and a positional label announces the true 3rd as 2nd. 60/30/10 in tenths of a
+     *      percent are 6000 / 3000 / 1000 bps, so nearest-of-three has 1500 bps of room
+     *      either side and the two integer divisions cannot reach a wrong bucket.
+     *
+     *  What the ORDER still carries is the ranking itself — best first — which is a
+     *  property of `_topThree()` rather than of the payout. Standings here are 1, 3, 2
+     *  rather than 1, 2, 3 precisely so that claim stays falsifiable: the amounts pin
+     *  each place, and the emit sequence pins who earned it.
+     */
+    function test_season_emitsTheStandingsTheCadenceScriptDecodes() public {
+        address alice = address(0xA11CE);
+        address bruno = address(0xB121);
+        address carol = address(0xCA201);
+
+        assertEq(_enter(alice, "momentum", 10 * ONE), 1, "ids are assigned in entry order");
+        assertEq(_enter(bruno, "reversion", 10 * ONE), 2, "ids are assigned in entry order");
+        assertEq(_enter(carol, "range", 10 * ONE), 3, "ids are assigned in entry order");
+
+        Population.SeasonParams memory s = _season();
+        s.seasonWindows = 1;
+        _setSeason(s);
+
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _answer(3, "ABSTAIN");
+        _commit();
+        _settle();
+
+        uint256 pot = population.prizePool();
+        assertGt(pot, 0, "test is vacuous: the season earned nothing to pay out");
+        uint256 first = (pot * 6_000) / 10_000;
+        uint256 second = (pot * 3_000) / 10_000;
+        uint256 third = (pot * 1_000) / 10_000;
+
+        // PRE-INCREMENT, which is the half of the claim a `seasonId - 1` in the script
+        // would silently invert.
+        uint32 season = population.seasonId();
+        assertEq(season, 1, "the fixture must still be in season 1");
+
+        vm.expectEmit(true, true, true, true, address(population));
+        emit Population.SeasonPrizePaid(season, 1, alice, first);
+        vm.expectEmit(true, true, true, true, address(population));
+        emit Population.SeasonPrizePaid(season, 3, carol, second);
+        vm.expectEmit(true, true, true, true, address(population));
+        emit Population.SeasonPrizePaid(season, 2, bruno, third);
+        vm.expectEmit(true, false, false, true, address(population));
+        emit Population.SeasonEnded(season, pot, first + second + third);
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        assertEq(population.seasonId(), season + 1, "the emitted id must be the season that just finished");
+    }
+
+    /**
+     *  Two consecutive seasons, and the first direct test of `level()` anywhere.
+     *
+     *  `endSeason` anchors the next season at `windowCount` rather than at
+     *  `seasonStartWindow + seasonWindows`, and that choice is what makes `level()`
+     *  fall back to 0 — the ante genuinely restarts at the base rather than
+     *  continuing to escalate across the boundary. Dating the next season from a
+     *  window already past would shorten it by however late the close was; far
+     *  enough late, it would open already over.
+     *
+     *  The pot assertion is the other half: what the standings did not claim in
+     *  season 1 must still be in the pool when season 2 closes. Both seasons here
+     *  earn identical income — same rents, same antes, same skims, no deaths — so
+     *  season 2's pot must be season 1's pot PLUS season 1's rollover, exactly.
+     */
+    function test_level_reAnchorsToZeroWhenTheSeasonRollsOver() public {
+        Population.SeasonParams memory s = _season();
+        s.baseAnte = 1 * ONE;
+        s.levelWindows = 1; // one doubling per window, so the escalation is visible in two
+        s.seasonWindows = 2;
+        _setSeason(s);
+
+        // Breeding out of the way: a child would change both the standings and the
+        // arithmetic, and this test is about the clock.
+        Econ memory e = _econ();
+        e.breedStreak = 1_000;
+        _setEconomics(e);
+
+        assertEq(population.windowCount(), 0, "no window has opened yet");
+        assertEq(population.level(), 0, "a season opens at level 0");
+        assertEq(population.ante(), 1 * ONE, "level 0 must be the base ante exactly");
+
+        address alice = address(0xA11CE);
+        address bruno = address(0xB121);
+        assertEq(_enter(alice, "momentum", 200 * ONE), 1, "ids are assigned in entry order");
+        assertEq(_enter(bruno, "reversion", 200 * ONE), 2, "ids are assigned in entry order");
+        _upWins();
+
+        // SEASON 1. `windowCount` advances in `think()`, before `commitAll` reads the
+        // ante, so these two windows pair at level 1 and level 2.
+        for (uint256 i; i < 2; ++i) {
+            _pushWindow();
+            _think();
+            _answer(1, "UP_MOMENTUM");
+            _answer(2, "DOWN_REVERSION");
+            _commit();
+            _settle();
+        }
+
+        assertEq(population.windowCount(), 2, "two windows should have opened");
+        assertEq(population.level(), 2, "at one window per level, two windows is level 2");
+        assertEq(population.ante(), 4 * ONE, "the ante must have doubled twice");
+
+        uint256 pot1 = population.prizePool();
+        assertGt(pot1, 0, "test is vacuous: season 1 earned nothing");
+        uint256 claimed1 = (pot1 * 6_000) / 10_000 + (pot1 * 3_000) / 10_000;
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        assertEq(population.seasonId(), 2, "season 1 did not close");
+        assertEq(population.seasonStartWindow(), 2, "the new season must be anchored at the closing window");
+        assertEq(population.level(), 0, "level did not fall back to 0 with the new season");
+        assertEq(population.ante(), 1 * ONE, "the ante did not fall back to the base");
+
+        // Third place was vacant, so 10% rolls forward. That number carries the whole
+        // second half of this test, so it must not be zero.
+        uint256 rollover = population.prizePool();
+        assertEq(rollover, pot1 - claimed1, "the unclaimed share was not carried forward");
+        assertGt(rollover, 0, "test is vacuous: nothing rolled over");
+
+        // SEASON 2 — identical shape, so its income must be identical too.
+        for (uint256 i; i < 2; ++i) {
+            _pushWindow();
+            _think();
+            _answer(1, "UP_MOMENTUM");
+            _answer(2, "DOWN_REVERSION");
+            _commit();
+            _settle();
+        }
+
+        assertEq(population.windowCount(), 4, "four windows should have opened in total");
+        assertEq(population.level(), 2, "the second season did not escalate from its own anchor");
+        assertEq(population.ante(), 4 * ONE, "the ante did not escalate again in the second season");
+        assertEq(
+            population.prizePool(), rollover + pot1, "season 2's pot is not season 1's rollover plus its own income"
+        );
+        assertEq(population.aliveCount(), 2, "a death would break the income symmetry this test relies on");
+
+        vm.prank(address(0xDEAD));
+        population.endSeason();
+
+        assertEq(population.seasonId(), 3, "season 2 did not close");
+        assertEq(population.seasonStartWindow(), 4, "the third season must be anchored at ITS closing window");
+        assertEq(population.level(), 0, "level did not fall back to 0 a second time");
+        assertEq(population.ante(), 1 * ONE, "the ante did not fall back to the base a second time");
+    }
+
+    /**
+     *  `level()` clamps at 40, and the clamp is an anti-brick guard rather than a
+     *  nicety: `ante()` multiplies in a loop bounded by exactly this number, and an
+     *  uncaught exponent overflows `ante()` after ~78 doublings — which reverts every
+     *  pairing, every entry and every settlement in a population nobody could rescue
+     *  without an upgrade.
+     *
+     *  Run with no organisms on purpose. `level()` reads nothing but `windowCount` and
+     *  `seasonStartWindow`, an empty living set still advances the phase machine, and
+     *  42 windows of thinking would otherwise cost more cognition than the fixture
+     *  funds.
+     */
+    function test_level_clampsAtFortyDoublings() public {
+        Population.SeasonParams memory s = _season();
+        s.levelWindows = 1;
+        _setSeason(s);
+
+        for (uint256 i; i < 42; ++i) {
+            _pushWindow();
+            _think();
+            _commit();
+            _settle();
+        }
+
+        assertEq(population.windowCount(), 42, "forty-two windows should have opened");
+        assertEq(population.level(), 40, "level must clamp at 40 rather than track the window count");
+        assertEq(population.ante(), population.baseAnte() * (2 ** 40), "the ante must still be computable at the clamp");
+    }
+
     /**
      *  The second entry floor, and the reason there are two.
      *
@@ -2493,12 +3790,261 @@ contract DarwinTest is Test {
         uint256 held = collateral.balanceOf(address(population));
         assertLe(booked, held, "books claim more than the contract holds");
         assertGt(booked - bookedBefore, 0, "test is vacuous: three windows booked no income");
-        assertEq(booked - bookedBefore, held - heldBefore, "the arena's balance moved by something the books do not name");
+        assertEq(
+            booked - bookedBefore, held - heldBefore, "the arena's balance moved by something the books do not name"
+        );
 
         for (uint256 id = 1; id <= 4; ++id) {
             _assertLedgerMatchesBalance(id);
         }
     }
+
+    /*//////////////////////////////////////////////////////////////
+            snapshot() AND sweep() — THE TWO SURFACES WITH NO TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  Does this population actually SEPARATE every pair of same-typed fields?
+     *
+     *  A mirror assertion `assertEq(s.correctCount, p.correctCount())` has no power
+     *  to catch `s.correctCount = p.wrongCount()` unless some organism holds
+     *  different values in the two. `snapshot()` assigns sixteen fields one at a
+     *  time — a shape `Population.sol:1634` documents as load-bearing and forbids
+     *  tidying into a struct literal — and within a type group every such swap
+     *  compiles, produces a byte-identical ABI, and survives `scripts/abi-drift.ts`.
+     *  So the discriminating power of the fixture is asserted here rather than
+     *  assumed, and a future edit that flattens the histories fails HERE, naming the
+     *  pair it stopped separating, instead of quietly making the mirror vacuous.
+     */
+    function _assertSeparated(uint256[][] memory vals, string[] memory names) internal pure {
+        for (uint256 a; a < names.length; ++a) {
+            for (uint256 b = a + 1; b < names.length; ++b) {
+                bool separated;
+                for (uint256 i; i < vals.length; ++i) {
+                    if (vals[i][a] != vals[i][b]) {
+                        separated = true;
+                        break;
+                    }
+                }
+                assertTrue(
+                    separated,
+                    string.concat(
+                        "no organism separates ",
+                        names[a],
+                        " from ",
+                        names[b],
+                        ": swapping those two inside snapshot() would pass every assertion in this test"
+                    )
+                );
+            }
+        }
+    }
+
+    /**
+     *  `snapshot()` is the one read the whole product stands on, and it had no test.
+     *
+     *  `web/js/chain.js`, `app/src/lib/abi.js`, `scripts/cadence.ts`, `scripts/fund.ts`
+     *  and `scripts/monitor.ts` all render from this single call — no indexer sits
+     *  between the chain and the UI — and its sixteen-field tuple is transcribed by
+     *  hand into three ABI mirrors. `scripts/abi-drift.ts` guards the SHAPE of that
+     *  tuple. Nothing guarded its CONTENTS, and the two failures are not the same
+     *  failure: a reordered struct breaks decoding loudly on the first read, while a
+     *  swapped assignment between two `uint32` fields decodes perfectly and puts
+     *  plausible wrong numbers on every surface a judge looks at. That is the gap
+     *  this test closes, and it closes it before the layout freeze rather than after.
+     *
+     *  The fixture is three organisms with deliberately unequal histories, one of
+     *  them retired, because a population where every counter reads 3 would make
+     *  every assertion below true by accident — see `_assertSeparated`.
+     */
+    function test_snapshot_mirrorsEveryOrganismFieldForField() public {
+        _seed(2);
+        address alice = address(0xA11CE);
+        assertEq(_enter(alice, "abstainer", 10 * ONE), 3, "ids are assigned in lineage order");
+
+        // Three windows, with the winning side flipped in the middle so 1 and 2 do
+        // not end up with the same record, and organism 3 abstaining throughout so
+        // the pair is always exactly one up against one down. A third opinion would
+        // leave one organism unpaired, and what an unpaired organism is graded as is
+        // not what this test is about.
+        for (uint256 w; w < 3; ++w) {
+            if (w == 1) settlement.setPayouts(NO_ID, YES_ID);
+            else _upWins();
+            _pushWindow();
+            _think();
+            _answer(1, "UP_MOMENTUM");
+            _answer(2, "DOWN_REVERSION");
+            _answer(3, "ABSTAIN");
+            _commit();
+            _settle();
+        }
+
+        // A DEAD ORGANISM, for two reasons. It is the only way to separate
+        // `birthWindow` from `deathWindow` — both read 0 for everything alive — and
+        // the lineage/living distinction below is exactly what the frontend's
+        // ancestry graph and death display depend on.
+        vm.prank(alice);
+        population.retire(3);
+        assertTrue(_p(3).dead(), "the fixture needs one dead organism");
+
+        uint256 n = population.prophetCount();
+        assertEq(n, 3, "breeding or death changed the lineage under this test");
+
+        // Read the truth out of the organisms themselves. `snapshot()` is a mirror;
+        // the `Prophet` is the thing being mirrored, so it is the only sound source
+        // for the expected values.
+        uint256[][] memory u32 = new uint256[][](n);
+        uint256[][] memory u64 = new uint256[][](n);
+        uint256[][] memory u8s = new uint256[][](n);
+        uint256[][] memory u256 = new uint256[][](n);
+        for (uint256 i; i < n; ++i) {
+            Prophet p = _p(i + 1);
+            u32[i] = new uint256[](6);
+            u32[i][0] = p.generation();
+            u32[i][1] = p.streak();
+            u32[i][2] = p.windowsLived();
+            u32[i][3] = p.correctCount();
+            u32[i][4] = p.wrongCount();
+            u32[i][5] = p.abstainCount();
+            u64[i] = new uint256[](2);
+            u64[i][0] = p.birthWindow();
+            u64[i][1] = p.deathWindow();
+            u8s[i] = new uint256[](2);
+            u8s[i][0] = uint8(p.belief());
+            u8s[i][1] = uint8(p.lastThesis());
+            u256[i] = new uint256[](3);
+            u256[i][0] = p.prophetId();
+            u256[i][1] = p.parentId();
+            u256[i][2] = p.treasury();
+        }
+
+        string[] memory n32 = new string[](6);
+        n32[0] = "generation";
+        n32[1] = "streak";
+        n32[2] = "windowsLived";
+        n32[3] = "correctCount";
+        n32[4] = "wrongCount";
+        n32[5] = "abstainCount";
+        string[] memory n64 = new string[](2);
+        n64[0] = "birthWindow";
+        n64[1] = "deathWindow";
+        string[] memory n8 = new string[](2);
+        n8[0] = "belief";
+        n8[1] = "thesis";
+        string[] memory n256 = new string[](3);
+        n256[0] = "id";
+        n256[1] = "parentId";
+        n256[2] = "treasury";
+
+        _assertSeparated(u32, n32);
+        _assertSeparated(u64, n64);
+        _assertSeparated(u8s, n8);
+        _assertSeparated(u256, n256);
+
+        Population.Snapshot[] memory snap = population.snapshot();
+
+        // THE LINEAGE, NOT THE LIVING SET. `web/` renders the dead — an ancestry
+        // graph with the ancestors missing is not an ancestry graph — so a
+        // `snapshot()` that filtered would break the page without breaking any ABI.
+        assertEq(snap.length, n, "snapshot must cover every organism that ever lived");
+        assertEq(population.livingCount(), 2, "the fixture should have exactly one retired organism");
+
+        for (uint256 i; i < n; ++i) {
+            Prophet p = _p(i + 1);
+            Population.Snapshot memory s = snap[i];
+            string memory at = string.concat(" [organism ", vm.toString(i + 1), "]");
+
+            // ASCENDING BY ID, with no gap left by the dead one. Every consumer
+            // indexes this array positionally and none of them re-sorts it.
+            assertEq(s.id, i + 1, string.concat("out of order", at));
+            assertEq(s.addr, address(p), string.concat("addr", at));
+            assertEq(s.parentId, p.parentId(), string.concat("parentId", at));
+            assertEq(s.generation, p.generation(), string.concat("generation", at));
+            assertEq(s.treasury, p.treasury(), string.concat("treasury", at));
+            assertEq(s.streak, p.streak(), string.concat("streak", at));
+            assertEq(s.windowsLived, p.windowsLived(), string.concat("windowsLived", at));
+            assertEq(s.correctCount, p.correctCount(), string.concat("correctCount", at));
+            assertEq(s.wrongCount, p.wrongCount(), string.concat("wrongCount", at));
+            assertEq(s.abstainCount, p.abstainCount(), string.concat("abstainCount", at));
+            assertEq(s.birthWindow, p.birthWindow(), string.concat("birthWindow", at));
+            assertEq(s.deathWindow, p.deathWindow(), string.concat("deathWindow", at));
+            assertEq(s.dead, p.dead(), string.concat("dead", at));
+            assertEq(s.belief, uint8(p.belief()), string.concat("belief", at));
+            assertEq(s.thesis, uint8(p.lastThesis()), string.concat("thesis", at));
+            assertEq(s.genomeHash, p.genomeHash(), string.concat("genomeHash", at));
+
+            // The ledger invariant, through the snapshot rather than the getter:
+            // `treasury` is what the page shows and a drift here is a wrong number
+            // on screen, not just a wrong number in storage.
+            assertEq(s.treasury, collateral.balanceOf(address(p)), string.concat("snapshot treasury vs balance", at));
+        }
+    }
+
+    /**
+     *  `sweep()` cannot reach an organism, which is the claim its doc comment makes.
+     *
+     *  Worth pinning rather than reading, because the reason is structural and easy
+     *  to lose: an organism custodies its own collateral in its own contract, so
+     *  there is no amount of `sweep` that touches it. The test sweeps the arena down
+     *  to zero — strictly more than any real operator would — and requires every
+     *  treasury to survive it.
+     */
+    function test_sweep_isOwnerOnlyAndCannotReachAnOrganismsTreasury() public {
+        _seed(2);
+        address intruder = address(0xBAD);
+
+        // Parameterized error, so the WHOLE revert data must match. Spelled as a
+        // selector rather than imported: `Ownable` is not in this file's imports and
+        // adding one for a single assertion would be the larger change.
+        vm.prank(intruder);
+        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), intruder));
+        population.sweep(address(collateral), intruder, 1);
+
+        uint256 t1 = _p(1).treasury();
+        uint256 t2 = _p(2).treasury();
+        assertGt(t1, 0, "test is vacuous: the organisms hold nothing to protect");
+
+        uint256 held = collateral.balanceOf(address(population));
+        assertGt(held, 0, "test is vacuous: the arena holds nothing, so the sweep moves nothing");
+        vm.prank(owner);
+        population.sweep(address(collateral), owner, held);
+
+        assertEq(collateral.balanceOf(address(population)), 0, "the sweep did not actually empty the arena");
+        assertEq(_p(1).treasury(), t1, "sweep reached into an organism's ledger");
+        assertEq(_p(2).treasury(), t2, "sweep reached into an organism's ledger");
+        _assertLedgerMatchesBalance(1);
+        _assertLedgerMatchesBalance(2);
+
+        // The native leg, which is the documented remedy for `CognitionUnspent`:
+        // `address(0)` plus the organism's address returns the deposit to the
+        // organism it was drawn from. The address is resolved into a local FIRST —
+        // `_p(1)` is a call, and inline as an argument it would eat the prank and
+        // send this sweep from the test contract. See the `_econ()` note above.
+        address p1 = address(_p(1));
+        vm.deal(address(population), 5 ether);
+        uint256 cognitionBefore = p1.balance;
+        vm.prank(owner);
+        population.sweep(address(0), p1, 2 ether);
+        assertEq(p1.balance, cognitionBefore + 2 ether, "the native residue did not reach the organism");
+        assertEq(address(population).balance, 3 ether, "more native left the arena than was swept");
+    }
+
+    // `test_sweep_canOverdrawTheBooksAndStrandTheSeason` STOOD HERE until 2026-09-05.
+    // It pinned, as a known finding, that `sweep` could draw straight through
+    // `prizePool` and `rakeAccrued` and leave a season that could never close —
+    // `endSeason` reverting on `TransferFailed` forever, `seasonId` frozen. Its
+    // argument against an on-chain guard was that `sweep` is the documented remedy for
+    // stranded cognition and a book-aware cap would block the recovery it exists for.
+    //
+    // That argument over-reaches by one step: the remedy is NATIVE, so a
+    // COLLATERAL-ONLY cap preserves it exactly. `sweep` now carries that cap, so this
+    // test has no subject left — it is deleted rather than inverted, and
+    // `test_sweep_cannotOverdrawTheCollateralBooksButStillRecoversStrandedCognition`
+    // asserts the new behaviour including the remedy as its control.
+    //
+    // `monitor.ts`'s alert 7b (`pool + rake > coll`) STAYS, and deliberately: deleting
+    // a detector because an invariant now holds is how you lose the detector that
+    // would have caught the invariant breaking.
 
     /*//////////////////////////////////////////////////////////////
              THE SECOND VENUE — SETTLEMENT AS A REPLACEABLE PART
@@ -2542,6 +4088,12 @@ contract DarwinTest is Test {
             )
         );
         arena = Population(payable(address(new ERC1967Proxy(address(impl), init))));
+
+        // Its OWN treasury, not the main arena's. Each `Population` deploys its own —
+        // there is no setter to share one — which is also why the duel arena's
+        // founders can never be confused with the DreamDEX arena's on an explorer.
+        vm.prank(owner);
+        arena.deployGenesisTreasury();
 
         vm.deal(address(arena), 100 ether);
         collateral.mint(address(arena), 10_000 * ONE);
@@ -2718,6 +4270,35 @@ contract DarwinTest is Test {
     }
 
     /**
+     *  `positionIdsOf(0)` answers with an error rather than an arithmetic panic.
+     *
+     *  Small, and worth the four lines anyway: ids start at 1 (`++duelCount`), so
+     *  zero is never a duel — it is what a caller passes when it *has* no duel, an
+     *  unset variable or a lookup that came back empty. `0 * 2 - 1` met that with a
+     *  bare panic naming nothing, from a `pure` helper whose entire purpose is to
+     *  save a reader from knowing the id convention. `UnknownDuel(0)` is the same
+     *  answer `outcomeOf` already gives for every other id that does not exist.
+     */
+    function test_directDuel_positionIdsOfZeroIsNotAnArithmeticPanic() public {
+        DirectDuelVenue duel = new DirectDuelVenue(address(collateral), IPriceSource(address(priceSource)), "BTC");
+
+        vm.expectRevert(abi.encodeWithSelector(DirectDuelVenue.UnknownDuel.selector, uint256(0)));
+        duel.positionIdsOf(0);
+
+        // CONTROL. A guard that refuses everything would satisfy the line above, so
+        // the convention it documents is asserted on both sides: duel 1 owns ids 1
+        // and 2, and duel 7 owns 13 and 14 — the `2k-1` / `2k` pairing, from a duel
+        // that need not exist for a `pure` function to describe it.
+        (uint256 upId, uint256 downId) = duel.positionIdsOf(1);
+        assertEq(upId, 1, "duel 1 up id");
+        assertEq(downId, 2, "duel 1 down id");
+
+        (upId, downId) = duel.positionIdsOf(7);
+        assertEq(upId, 13, "duel 7 up id");
+        assertEq(downId, 14, "duel 7 down id");
+    }
+
+    /**
      *  THE CLAIM, EXECUTABLE: a full window — think, answer, commit, settle — through
      *  a `Population` that has never heard of DreamDEX's settlement contract.
      *
@@ -2806,5 +4387,543 @@ contract DarwinTest is Test {
         // nothing — but there was no profit, so nothing was skimmed.
         assertEq(arena.rakeAccrued() + arena.prizePool(), 2 * metabolism, "a void booked something other than rent");
         assertEq(collateral.balanceOf(address(duel)), 0, "the voided backing is stranded in the venue");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+        A SETTLEMENT THAT REVERTS — THE ONE FAILURE THAT COSTS MONEY
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  A `SettleFailed` must not cost the organism its ante.
+     *
+     *  Three mechanisms meet here, each right on its own:
+     *
+     *    1. `Prophet.settleWindow` clears `positionOpen` in its FIRST statement, so a
+     *       revert anywhere below unwinds that write with everything else. The
+     *       organism comes out of the failed transaction still holding an open
+     *       position — which is accurate, because the position genuinely is open.
+     *    2. `Population.settleAll` catches per-organism reverts and emits
+     *       `SettleFailed`, because one bad organism must never halt the population.
+     *    3. `Prophet.noteCommitted` has no guard of its own and cannot have one (see
+     *       the comment at the skip in `commitAll` for why `_pair`'s catch makes that
+     *       impossible), so it will overwrite `currentOutcomeId` on request.
+     *
+     *  Composed naively those three lose collateral: `settleWindow` only ever redeems
+     *  `currentOutcomeId`, a duel may only be redeemed by its own holder, and `Prophet`
+     *  exposes no arbitrary call — so once the id is overwritten, the one address
+     *  permitted to claim the escrow is a contract that no longer knows what to ask
+     *  for. Nothing retries, either: `settleAll` visits each organism once per window.
+     *
+     *  `commitAll` closes it by skipping an organism whose position is still open, which
+     *  turns the failure into a one-window delay: the next `settleAll` finds
+     *  `positionOpen` still true and redeems the ORIGINAL position. This test walks that
+     *  whole path and ends on the assertion that matters — the venue is empty.
+     *
+     *  THE CHEATCODE IS THE POINT, not a shortcut. `Prophet` deliberately does not wrap
+     *  `redeemFor` (CLAUDE.md's conventions, and `Prophet.sol:414`) precisely so a
+     *  genuinely broken settlement aborts rather than being silenced. On the live arena
+     *  that is `BinarySettlement` reverting; in-repo the mocks answer every call and the
+     *  duel venue's escrow can never be short, so no local state produces one.
+     *  `mockCallRevert` supplies the integration break the production code is written to
+     *  expect, scoped to `redeemFor` alone and cleared immediately.
+     */
+    function test_settle_aFailedSettlementIsRetriedRatherThanCommittedOver() public {
+        (Population arena, DirectDuelVenue duel) = _duelArena();
+
+        _duelOpen(arena);
+
+        uint256 escrowed = collateral.balanceOf(address(duel));
+        uint256 openId = _dp(arena, 1).currentOutcomeId();
+        uint256 stake = _dp(arena, 1).currentStake();
+        assertGt(escrowed, 0, "both antes must be escrowed or this test measures nothing");
+        assertGt(openId, 0, "organism 1 must hold a real duel position");
+        assertEq(stake * 2, escrowed, "both legs are equal, so the escrow is exactly two antes");
+
+        _pushClose(101_000 * ONE);
+
+        vm.mockCallRevert(address(duel), abi.encodeWithSelector(IArenaVenue.redeemFor.selector), "settlement down");
+        vm.expectEmit(true, false, false, false, address(arena));
+        emit Population.SettleFailed(1);
+        _duelSettle(arena);
+        vm.clearMockedCalls();
+
+        // 1. The position survived the failure, ante and all, and the window it was
+        //    opened in was not counted as lived.
+        assertTrue(_dp(arena, 1).positionOpen(), "a reverted settlement must leave the position open");
+        assertEq(_dp(arena, 1).currentOutcomeId(), openId, "the position id survived the revert");
+        assertEq(_dp(arena, 1).windowsLived(), 0, "an unsettled window must not count as lived");
+        assertEq(collateral.balanceOf(address(duel)), escrowed, "the ante is still escrowed, as it should be");
+        assertEq(uint8(duel.outcomeOf(1)), uint8(DirectDuelVenue.Outcome.Pending), "nothing adjudicated it");
+
+        // 2. THE FIX. The next window opens and commits normally for everyone else, and
+        //    passes over these two: no new duel is issued, so the venue's balance does
+        //    not move and the stale ids are untouched.
+        _pushWindow();
+        _duelOpen(arena);
+
+        assertEq(_dp(arena, 1).currentOutcomeId(), openId, "the open position was committed over");
+        assertEq(_dp(arena, 2).currentOutcomeId(), openId + 1, "the counterparty was committed over");
+        assertEq(collateral.balanceOf(address(duel)), escrowed, "a second duel was opened over the stale one");
+        assertEq(_dp(arena, 1).currentStake(), stake, "the stake was overwritten");
+
+        // THE ONE THING A RETRY DOES NOT CARRY, asserted here because `settleWindow`
+        // clears `belief` on its way out (`Prophet.sol:528`) and this is the last point
+        // it can be read. Being skipped by `commitAll` does NOT skip `think`: the
+        // organism was asked again and answered again, so its live belief is this
+        // window's, not the one the open position was taken on.
+        //
+        // WHICH IS NOW HARMLESS, and the assertion below is what keeps it that way.
+        // Until 2026-09-05 the grade branch consulted that live belief and booked an
+        // abstain whenever it was Abstain/None, so a retry landing in a window where
+        // the organism happened not to form a belief overwrote a position that won or
+        // lost real money with a non-result — money right, fitness counter lying. It
+        // no longer does: `Prophet.sol:476` branches on `quantity == 0`, and
+        // `quantity` is one of the two fields that actually travelled with the
+        // position. No `__gap` slot was needed to carry the grade, because the fields
+        // the money is already graded from were the right ones all along. The line
+        // below asserts the divergence is real — this belief is THIS window's — and
+        // `correctCount` further down asserts the grade came from the position
+        // anyway.
+        assertEq(uint8(_dp(arena, 1).belief()), uint8(Belief.Up), "the skipped organism was not asked again");
+
+        // 3. The retry. `settleAll` finds `positionOpen` still true and redeems the
+        //    ORIGINAL position, which is why nothing was lost.
+        _pushClose(101_000 * ONE);
+        _duelSettle(arena);
+
+        assertEq(collateral.balanceOf(address(duel)), 0, "the ante was stranded in the venue");
+        assertFalse(_dp(arena, 1).positionOpen(), "the retry did not close the position");
+        assertEq(_dp(arena, 1).windowsLived(), 1, "the recovered window was not counted");
+        assertEq(uint8(duel.outcomeOf(1)), uint8(DirectDuelVenue.Outcome.Up), "the original duel was never adjudicated");
+        _assertDuelLedger(arena, 1);
+        _assertDuelLedger(arena, 2);
+
+        // The GRADE survives the delay too, because it is taken from the position and
+        // not from the forecast: `Prophet.sol:444` decides won/lost on
+        // `collateralOut > currentStake`, and both of those fields came through the
+        // failure untouched. So the retry scores the ORIGINAL window's bet.
+        assertEq(_dp(arena, 1).correctCount(), 1, "the retried winner was not graded correct");
+        assertEq(_dp(arena, 2).wrongCount(), 1, "the retried loser was not graded wrong");
+
+        // THE CONTROL for the measurement above. An empty venue is only evidence of
+        // recovery if the venue can hold a balance at this point in the sequence at all
+        // — otherwise this test would pass just as happily against a venue that never
+        // escrows anything. Same organisms, same venue, one uninterrupted window: the
+        // escrow appears, and only then goes away.
+        (Population clean, DirectDuelVenue cleanDuel) = _duelArena();
+        _duelOpen(clean);
+        assertEq(collateral.balanceOf(address(cleanDuel)), escrowed, "the control never escrowed anything");
+        _pushClose(101_000 * ONE);
+        _duelSettle(clean);
+        assertEq(collateral.balanceOf(address(cleanDuel)), 0, "a settled window must leave nothing behind");
+    }
+
+    /// @dev `treasury == balanceOf` on an organism of a secondary arena. `_assertLedgerMatchesBalance`
+    ///      is bound to the `population` field and cannot be pointed at one.
+    function _assertDuelLedger(Population arena, uint256 id) internal view {
+        Prophet p = Prophet(payable(arena.prophetAt(id)));
+        assertEq(p.treasury(), collateral.balanceOf(address(p)), "ledger drifted from balance");
+    }
+
+    /**
+     *  `POPULATION HOLDS NO STANDING AUTHORITY OVER AN ORGANISM.` This test asserts an
+     *  ABSENCE, which is why it carries its own control at the bottom.
+     *
+     *  Until 2026-09-05 `Prophet.grantPopulation` handed out two of them at birth, from
+     *  every organism ever born: an infinite ERC-20 allowance over the whole treasury,
+     *  and ERC-6909 operator rights over the positions. Nothing used either. The
+     *  earlier version of this test revoked both and ran a window to prove it; the
+     *  grants are now gone from the source, so the same proof is stronger — the window
+     *  runs with authority that was never issued in the first place.
+     *
+     *  Both were worse than the case this codebase already refuses. `executePair`
+     *  approves the venue PER CALL on the stated grounds that *"a standing allowance to
+     *  an address we have since stopped using is a liability nobody is watching"* — and
+     *  `Population` is UUPS-upgradeable, so an allowance to it is not a promise about
+     *  today's bytecode. The failure mode was quiet too: a `transferFrom` against an
+     *  organism moves collateral without decrementing `treasury`, so it breaks the
+     *  `treasury == balanceOf` invariant this suite asserts everywhere rather than
+     *  reverting somewhere a test would see it.
+     *
+     *  Value only ever moves INTO this contract as a push from the organism — the ante
+     *  via `stakeOut` (`Population.sol:1268`), metabolism via `transfer`
+     *  (`Prophet.sol:520`) — and the outcome tokens likewise (`Prophet.sol:404`),
+     *  because the ERC-6909 surface has no `transferFrom` for anyone to pull with. So
+     *  neither grant had a caller, and re-adding one now fails here.
+     */
+    function test_prophet_populationHoldsNoStandingAuthorityOverAnOrganism() public {
+        _seed(2);
+
+        // Nothing was granted at birth. This is the assertion that a restored
+        // `grantPopulation` breaks.
+        for (uint256 id = 1; id <= 2; ++id) {
+            address p = population.prophetAt(id);
+            assertEq(collateral.allowance(p, address(population)), 0, "an organism granted a collateral allowance");
+            assertFalse(outcomeToken.isOperator(p, address(population)), "an organism granted operator rights");
+        }
+
+        // A whole window — think, pair, redeem a winner and a loser, skim, charge rent
+        // — with Population holding no authority over either organism.
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _upWins();
+        _settle();
+
+        assertEq(_p(1).windowsLived(), 1, "the window did not complete without the grants");
+        assertEq(_p(1).correctCount(), 1, "the winner was not graded");
+        assertEq(_p(2).wrongCount(), 1, "the loser was not graded");
+        assertFalse(_p(1).positionOpen(), "the position was not closed");
+        _assertLedgerMatchesBalance(1);
+        _assertLedgerMatchesBalance(2);
+
+        // The window did not quietly grant anything on its way through either — the
+        // absence is a property of the run, not just of the birth.
+        address p1 = population.prophetAt(1);
+        assertEq(collateral.allowance(p1, address(population)), 0, "a window granted a collateral allowance");
+        assertFalse(outcomeToken.isOperator(p1, address(population)), "a window granted operator rights");
+
+        // CONTROL. Four assertions above claim two reads are zero/false, and a read
+        // that is ALWAYS zero/false would satisfy them without watching anything. So
+        // grant both here, on purpose, and require the same two reads to move. Delete
+        // this and the test above can no longer fail.
+        vm.prank(p1);
+        collateral.approve(address(population), type(uint256).max);
+        vm.prank(p1);
+        outcomeToken.setOperator(address(population), true);
+        assertEq(collateral.allowance(p1, address(population)), type(uint256).max, "the allowance read is inert");
+        assertTrue(outcomeToken.isOperator(p1, address(population)), "the operator read is inert");
+    }
+
+    /**
+     *  A TOKEN THAT ANSWERS `false` INSTEAD OF REVERTING IS NOT IGNORED.
+     *
+     *  ERC-6909's `transfer` returns a bool exactly like ERC-20's, and this push was
+     *  the last unchecked return in `src/` until 2026-09-05. Its consequence is not a
+     *  failed transfer — it is a DOUBLE CREDIT: the organism keeps the position
+     *  tokens it was supposed to hand over, and the venue redeems for it anyway.
+     *
+     *  THIS TEST CALLS `settleWindow` DIRECTLY, and that is not a shortcut. Through
+     *  `settleAll` the two versions are indistinguishable: the catch turns both into
+     *  the same `SettleFailed(1)` with the same open position, because the mock
+     *  settlement burns from `msg.sender` (`Mocks.sol:202`) and a venue holding
+     *  nothing underflows one line further on. A test written at that level would
+     *  have passed with the check deleted — verified by deleting it, not by reading.
+     *  So the claim is made where the two actually differ, on the revert reason:
+     *  `TransferFailed` is this contract refusing to proceed, and a panic is the
+     *  counterparty catching it afterwards by luck of implementation.
+     *
+     *  Luck is the right word. The real DreamDEX burns from `msg.sender` too, so
+     *  today the unchecked version fails loudly anyway — but `IArenaVenue` is a seam
+     *  whose whole purpose is that the settlement mechanism is replaceable, and a
+     *  venue that credits a redemption it never received would pay this organism out
+     *  of somebody else's backing. The check is what makes that a revert here rather
+     *  than a property of whoever is on the other side.
+     */
+    function test_settle_aPositionPushThatAnswersFalseAbortsTheSettlement() public {
+        _seed(2);
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _upWins();
+
+        Prophet p = _p(1);
+        uint256 outcomeId = p.currentOutcomeId();
+        uint256 quantity = p.currentQuantity();
+        assertGt(quantity, 0, "the window did not produce a real position to push");
+
+        // The singleton answers `false` without moving anything — an ERC-6909 that
+        // violates the same convention ERC-20's `transfer` does.
+        vm.mockCall(
+            address(outcomeToken),
+            abi.encodeWithSelector(MockOutcomeToken.transfer.selector, address(venue), outcomeId, quantity),
+            abi.encode(false)
+        );
+
+        uint256 cost = population.metabolicCost();
+        uint16 rake = population.rakeBps();
+        vm.prank(address(population));
+        vm.expectRevert(Prophet.TransferFailed.selector);
+        p.settleWindow(address(venue), address(collateral), cost, rake);
+        vm.clearMockedCalls();
+
+        // Nothing was graded and nothing was paid, and the ante is still recoverable —
+        // `positionOpen` is cleared as the FIRST statement of `settleWindow`, so a
+        // revert anywhere below it puts the flag back.
+        assertTrue(p.positionOpen(), "the failed settlement closed the position anyway");
+        assertEq(p.windowsLived(), 0, "a failed settlement must not grade the organism");
+        assertEq(outcomeToken.balanceOf(address(p), outcomeId), quantity, "the position left the organism");
+
+        // CONTROL. Every assertion above is about a settlement that did NOT happen,
+        // which a permanently broken window would satisfy just as well. Same organism,
+        // same position, no mock: it settles.
+        _settle();
+        assertFalse(p.positionOpen(), "the retry did not close the position");
+        assertEq(p.correctCount(), 1, "the retry did not grade the winner");
+        assertEq(outcomeToken.balanceOf(address(p), outcomeId), 0, "the retry did not push the position");
+        _assertLedgerMatchesBalance(1);
+    }
+
+    /**
+     *  A VOID IS THE ONLY SETTLEMENT OUTCOME THAT MOVES NO COUNTER, and that is how
+     *  `monitor.ts` finds one. This test is the contract half of that derivation.
+     *
+     *  `settleWindow` advances `windowsLived` unconditionally and then takes exactly
+     *  one of three branches — abstain, correct, wrong. A window played with a real
+     *  position that is graded as neither leaves all three untouched, so
+     *  `windowsLived - (correct + wrong + abstain)` is an exact void count. Nothing
+     *  else in either contract writes those four (one increment site each, all inside
+     *  `settleWindow`), which is what makes it exact rather than an estimate.
+     *
+     *  Worth pinning here because a void is invisible everywhere else: it is not a
+     *  revert, so no `SettleFailed` fires; `DuelUnadjudicable` is in no off-chain ABI
+     *  the operator runs; and monitor's "nobody took a position" check cannot see one,
+     *  since a void has `currentQuantity > 0` by definition. A population that voids
+     *  every window looks healthy by every other measure and is not selecting at all.
+     *
+     *  THE ABSTAIN LEG IS THE CONTROL, and it is the assertion that earns the test. An
+     *  abstain is the ordinary, uninteresting way for a window to grade nobody, and it
+     *  is far more common than a void — a detector that cannot tell them apart would
+     *  page the operator every time an inference timed out. The gap must NOT move
+     *  there.
+     */
+    function test_void_isTheOnlyOutcomeThatMovesNoCounter() public {
+        (Population arena,) = _duelArena();
+
+        assertEq(_voidGap(arena, 1), 0, "nothing has been settled yet");
+
+        // 1. A void: answered, paired, and unadjudicable because the feed went stale
+        //    between open and settle.
+        _duelOpen(arena);
+        vm.warp(block.timestamp + 181);
+        _duelSettle(arena);
+        assertEq(_dp(arena, 1).windowsLived(), 1);
+        assertEq(_voidGap(arena, 1), 1, "a void must be visible in the counter gap");
+        assertEq(_voidGap(arena, 2), 1, "both sides of a voided duel are ungraded");
+
+        // 2. A graded window: the gap must stay where it was, not grow.
+        _pushWindow();
+        _duelOpen(arena);
+        _pushClose(101_000 * ONE);
+        _duelSettle(arena);
+        assertEq(_dp(arena, 1).windowsLived(), 2);
+        assertEq(_dp(arena, 1).correctCount() + _dp(arena, 1).wrongCount(), 1, "the window was not graded");
+        assertEq(_voidGap(arena, 1), 1, "a graded window must not read as a void");
+
+        // 3. THE CONTROL — an abstain. Neither organism produces a parseable answer, so
+        //    both open an empty position and are counted as abstaining. `windowsLived`
+        //    advances, `abstainCount` advances with it, and the gap must not move.
+        _pushWindow();
+        vm.prank(owner);
+        arena.think();
+        requester.deliver(_dp(arena, 1).pendingBeliefRequestId(), "NOT_AN_ALLOWED_VALUE");
+        requester.deliver(_dp(arena, 2).pendingBeliefRequestId(), "ALSO_NOT_ONE");
+        vm.prank(owner);
+        arena.commitAll();
+        _duelSettle(arena);
+
+        assertEq(_dp(arena, 1).windowsLived(), 3);
+        assertEq(_dp(arena, 1).abstainCount(), 1, "the unparseable answer was not scored as an abstain");
+        assertEq(_voidGap(arena, 1), 1, "an abstain must never read as a void");
+    }
+
+    /// @dev The exact arithmetic `monitor.ts`'s void check runs, over the same four
+    ///      fields `snapshot()` already publishes.
+    function _voidGap(Population arena, uint256 id) internal view returns (uint256) {
+        Prophet p = Prophet(payable(arena.prophetAt(id)));
+        return uint256(p.windowsLived()) - (uint256(p.correctCount()) + p.wrongCount() + p.abstainCount());
+    }
+
+    /*//////////////////////////////////////////////////////////////
+              THE GRADE AND THE PRICE TRAVEL WITH THE POSITION
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  A retried settlement is graded from the POSITION, never from the belief the
+     *  organism happens to hold by the time the retry lands.
+     *
+     *  This is the corner that `commitAll`'s skip opens up, and it is the reason
+     *  `settleWindow` no longer consults `belief` at all when deciding whether a window
+     *  was graded. The sequence below is the only one that reaches it: a settlement
+     *  fails, the position stays open, the organism is skipped by the next `commitAll`
+     *  but is STILL ASKED by the next `think` — and here it answers with something
+     *  unparseable, so its live belief becomes `Abstain` while the position it still
+     *  holds is a directional bet that won real money.
+     *
+     *  Grading on the live belief books that as an abstain. `quantity` and `currentStake`
+     *  are the two fields that actually travelled with the position, so they are what the
+     *  grade is taken from — and `quantity` is nonzero if and only if `_pair` issued a
+     *  real position, because `_openEmpty` always records zero.
+     */
+    function test_settle_aRetryIsGradedFromThePositionNotFromTheLaterWindowsBelief() public {
+        (Population arena, DirectDuelVenue duel) = _duelArena();
+
+        _duelOpen(arena);
+        uint256 escrowed = collateral.balanceOf(address(duel));
+        assertGt(escrowed, 0, "both antes must be escrowed or this test measures nothing");
+
+        _pushClose(101_000 * ONE);
+        vm.mockCallRevert(address(duel), abi.encodeWithSelector(IArenaVenue.redeemFor.selector), "settlement down");
+        _duelSettle(arena);
+        vm.clearMockedCalls();
+        assertTrue(_dp(arena, 1).positionOpen(), "the failure did not leave the position open");
+
+        // THE WINDOW THAT MAKES THIS A TEST. Both organisms are asked again and neither
+        // produces a parseable answer, so `Genome.parseAnswer` maps both to Abstain —
+        // the live belief now contradicts the position still open underneath it.
+        _pushWindow();
+        vm.prank(owner);
+        arena.think();
+        requester.deliver(_dp(arena, 1).pendingBeliefRequestId(), "NOT_AN_ALLOWED_VALUE");
+        requester.deliver(_dp(arena, 2).pendingBeliefRequestId(), "ALSO_NOT_ONE");
+        vm.prank(owner);
+        arena.commitAll();
+
+        assertEq(uint8(_dp(arena, 1).belief()), uint8(Belief.Abstain), "the contradiction was not set up");
+        assertEq(uint8(_dp(arena, 2).belief()), uint8(Belief.Abstain), "the contradiction was not set up");
+        assertTrue(_dp(arena, 1).positionOpen(), "commitAll did not pass over the open position");
+        assertGt(_dp(arena, 1).currentQuantity(), 0, "the directional position did not survive");
+
+        // The retry. The money is recovered and the grade follows the money.
+        _pushClose(101_000 * ONE);
+        _duelSettle(arena);
+
+        assertEq(collateral.balanceOf(address(duel)), 0, "the ante was stranded in the venue");
+        assertEq(_dp(arena, 1).correctCount(), 1, "an abstaining belief graded a winning position as an abstain");
+        assertEq(_dp(arena, 2).wrongCount(), 1, "an abstaining belief graded a losing position as an abstain");
+        assertEq(_dp(arena, 1).abstainCount(), 0, "the winner was booked as an abstain");
+        assertEq(_dp(arena, 2).abstainCount(), 0, "the loser was booked as an abstain");
+        _assertDuelLedger(arena, 1);
+        _assertDuelLedger(arena, 2);
+
+        // THE CONTROL. An unparseable answer must STILL produce an abstain when there is
+        // no position underneath it — otherwise this test would pass just as well against
+        // a build that had stopped counting abstains altogether, which is the cheapest
+        // way to make the four assertions above green for the wrong reason.
+        _pushWindow();
+        vm.prank(owner);
+        arena.think();
+        requester.deliver(_dp(arena, 1).pendingBeliefRequestId(), "STILL_NOT_ONE");
+        requester.deliver(_dp(arena, 2).pendingBeliefRequestId(), "NOR_THIS");
+        vm.prank(owner);
+        arena.commitAll();
+        _pushClose(101_000 * ONE);
+        _duelSettle(arena);
+
+        assertEq(_dp(arena, 1).currentQuantity(), 0, "the control must have no position to grade");
+        assertEq(_dp(arena, 1).abstainCount(), 1, "an unparseable answer with no position is still an abstain");
+        assertEq(_dp(arena, 1).correctCount(), 1, "the control must not have added a second win");
+    }
+
+    /**
+     *  The ante is fixed when the window OPENS, not when it pairs — against the owner.
+     *
+     *  `ante()` is derived from `windowCount - seasonStartWindow` over `levelWindows`,
+     *  and `setSeason` rewrites three of those inputs with no phase guard. So without a
+     *  snapshot an owner could let the population forecast a window at a late-season ante
+     *  and then stake it at an early-season one, or the reverse.
+     */
+    function test_ante_isFrozenWhenTheWindowOpensNotWhenItPairs() public {
+        Population.SeasonParams memory s = _season();
+        s.baseAnte = 1 * ONE;
+        s.levelWindows = 2;
+        s.anteMultBps = 20_000;
+        _setSeason(s);
+
+        _seed(2);
+        _upWins();
+
+        // One full window, so the next one opens at level 1 rather than level 0 and the
+        // frozen number is distinguishable from `baseAnte`.
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        _pushWindow();
+        _think();
+
+        uint256 frozen = population.windowAnte();
+        assertEq(frozen, population.ante(), "the snapshot must be the ante of the window just opened");
+        assertEq(frozen, 2 * ONE, "level 1 of a doubling season is twice the base");
+
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+
+        // MID-WINDOW RE-PRICING: the forecasts exist, nothing is staked yet.
+        Population.SeasonParams memory cheap = s;
+        cheap.baseAnte = ONE / 100;
+        _setSeason(cheap);
+        assertLt(population.ante(), frozen, "the re-pricing did not take, so this proves nothing");
+
+        _commit();
+
+        assertEq(_p(1).currentStake(), frozen, "the window was staked at the re-priced ante");
+        assertEq(_p(2).currentStake(), frozen, "both legs must follow the same snapshot");
+
+        // And the next window does pick the new price up — a snapshot that never
+        // refreshed would satisfy the two assertions above just as well.
+        _settle();
+        _pushWindow();
+        _think();
+        assertEq(population.windowAnte(), population.ante(), "the snapshot did not refresh");
+        assertLt(population.windowAnte(), frozen, "the snapshot outlived the season parameters that made it");
+    }
+
+    /**
+     *  The same guarantee against a STRANGER, which is the path that actually matters.
+     *
+     *  `endSeason` is permissionless on purpose: if it were gated on the phase, a cadence
+     *  that died mid-window would leave the phase at 1 or 2 with `forcePhase` behind
+     *  `onlyDriver`, and the prize pool could then be released by nobody at all. So the
+     *  fix cannot be a guard on the caller or on the phase — it has to be that the price
+     *  of a window in flight is no longer derivable from state a stranger can move.
+     */
+    function test_ante_aStrangerEndingTheSeasonCannotRepriceAWindowInFlight() public {
+        Population.SeasonParams memory s = _season();
+        s.baseAnte = 1 * ONE;
+        s.levelWindows = 2;
+        s.anteMultBps = 20_000;
+        s.seasonWindows = 2;
+        _setSeason(s);
+
+        _seed(2);
+        _upWins();
+
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        // Window 2 opens at level 1, and opening it is also what makes the season due:
+        // `windowCount - seasonStartWindow` is now 2, which is `seasonWindows`.
+        _pushWindow();
+        _think();
+        uint256 frozen = population.windowAnte();
+        assertEq(frozen, 2 * ONE, "the window did not open at level 1");
+
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+
+        address stranger = makeAddr("passerby");
+        vm.prank(stranger);
+        population.endSeason();
+
+        assertEq(population.seasonStartWindow(), population.windowCount(), "the season did not roll");
+        assertEq(population.level(), 0, "a rolled season must be back at level 0");
+        assertEq(population.ante(), 1 * ONE, "the live ante did not fall, so this proves nothing");
+
+        _commit();
+
+        assertEq(_p(1).currentStake(), frozen, "a stranger re-priced a window that was already forecast");
+        assertEq(_p(2).currentStake(), frozen, "both legs must follow the same snapshot");
     }
 }

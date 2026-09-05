@@ -32,6 +32,21 @@ failed inference and one reactive selection. A non-dismissible amber banner says
 in its first two words, because a demo mode that can be mistaken for a live one is worse than no
 demo mode.
 
+**And then it moves.** A frozen snapshot cannot fire a diff-driven timeline, so the whole point of
+`motion.js` was invisible in the only mode anyone can open before Season 0 exists. `fixture.season()`
+scripts the next window as four successive snapshots, handed to the page through the same `advance()`
+path a live poll uses: `settleAll` pays out and #8 starves at 4.2s, `hatchAll` buys #1 a child at
+9.4s, `think` reopens the window at 14s, `commitAll` re-arms the positions at 18s. Nine treasuries
+count at once, a card takes a red ring and dims for good, a newborn arrives on an indigo glow while
+its parent's balance counts *down* by the endowment it just paid.
+
+Three things about it are deliberate. It is **not a simulator** — every number is derived from
+`config` and `Population.sol` rather than chosen, which is why #8's death is forced (it holds 4.0
+against a 3.9 ante and a 0.25 metabolic charge) and why the sole breeder is #1 and not the
+deeper-lineage #11, which clears neither bar. It **runs forward and stops**, because looping would
+resurrect #8 every twenty seconds and this project's loudest claim is that death is irreversible.
+And it changes no rendering code: `main.js` swaps state, the diff does the rest.
+
 This is how to review the frontend before Season 0 exists.
 
 ## Verify it without a browser
@@ -40,13 +55,46 @@ This is how to review the frontend before Season 0 exists.
 npm test --prefix web      # or: node web/test/smoke.mjs
 ```
 
-`test/smoke.mjs` puts a 60-line fake DOM in front of the **real** renderer and calls every exported
-render function on the fixture — twenty of them, including the degraded paths (`grid([])`,
-`detail(null)`, a header with no window, an RPC error banner) — then asserts on the text and CSS
-classes that come back. Forty assertions: that a founder, a child and a paying entrant each
-read differently; that both runway severity bands actually appear; that all 21 log rows render and
-none falls through to the unknown-event fallback; that `fallbackEnabled: true` yields the *weaker*
-claim; that both corpses stay on the page.
+`test/smoke.mjs` puts a 60-line fake DOM in front of the **real** renderer and calls its exported
+render functions on the fixture — fifty call sites, which drive 313 executed renderer calls,
+including the degraded paths (`grid([])`, `detail(null)`, a header with no window, all three RPC
+error banners, a grid rendered with the breeding constants undiscovered, all three branches of the
+settlement-family field, and one call that is *supposed* to render nothing at all) — then asserts on
+the text and CSS classes that come back. One hundred and eighty-nine checks, over one hundred and
+sixty-seven `assert()` call sites: that a founder, a child and a paying entrant each read
+differently; that both runway severity bands actually appear; that all 21 log rows render and none
+falls through to the argument-dump fallback; that no single failed chain read can throw inside a
+panel; that `fallbackEnabled: true` yields the *weaker* claim and `false` yields the stronger one;
+that both corpses stay on the page; and that a chain that never answered is never reported as an
+address with no contract behind it.
+
+Forty-four of those assertions cover the scripted season in `?demo=1` — the block running from
+`test/smoke.mjs:462` to the banner at `:614` that marks its end — and they are the only ones
+in the suite that check a number rather than a rendering. The per-window deltas are recomputed from
+`config` and the breeding rules from `Population.sol`, so the suite fails if someone later tunes a
+figure to make the demo look better: that the window never goes backwards, that nothing is ever
+resurrected, that exactly one organism clears both breeding bars, that the parent's treasury falls
+by a full endowment, and that the child is generation 1 rather than a flattering 3. All six were
+confirmed capable of failing by perturbing the fixture — reviving the corpse and enriching the
+near-miss — and watching them break.
+
+The same eleven-assertion block (`test/smoke.mjs:517-543`) now also checks what the page *says*
+about those bars, because the
+constants that gate breeding are read from the chain rather than implied: that an organism short on
+both is told both shortfalls in its own units, that a card prints `4/4` against the bar instead of a
+bare `4`, that removing the constants falls back to the bare count rather than a default, that a
+corpse is shown no progress at all, and that a full arena is told the truth — "clears both bars, but
+the arena is full" — rather than being promised a child `hatchAll` will not bear. That last pair
+shares the opening phrase, so the discriminator is what each sentence goes on to promise; both were
+confirmed capable of failing by hardcoding the cap check to `false` and by retuning
+`breedSurplusBps`, each of which broke exactly the expected assertions and nothing else.
+
+The honesty-gate check renders **both** branches of `claimPanel()` and compares them, which is the
+only way to assert on it. "no keeper anywhere in the causal chain" appears in either panel — the
+strong one licenses that sentence, the weak one exists to disclaim it — so the discriminator has to
+be the prefix, `Licensed:` against `NOT claimed:`. An earlier version of this check tested for the
+sentence alone and passed on both panels, which is worth knowing about any assertion here: if you
+cannot describe how it fails, it is not yet a test.
 
 It also imports `js/chain.js` and finds its nine exports intact **with no network access at all**,
 which is the load-bearing proof that viem and `js/abi.js` are reached only through lazy `import()`.
@@ -99,7 +147,7 @@ tab is hidden.
 ## Invariants worth not breaking
 
 **No `innerHTML`. Anywhere.** `Population.enter(string genome, uint256 endowment)`
-(`Population.sol:575`) is permissionless: anybody with testnet tUSDC and a little STT can spawn an
+(`Population.sol:654`) is permissionless: anybody with testnet tUSDC and a little STT can spawn an
 organism whose `systemPrompt` is a string of their choosing, and displaying genomes is this page's
 entire job. So genomes, `lastReasoning`, and every `reasoning` in a `Believed` log are **untrusted
 input arriving over a public write path**. `js/dom.js` puts every string child through
@@ -129,13 +177,46 @@ page cannot overstate the honesty gate, because it reads the gate.
 dashed. Death is the primary signal in a population under selection pressure, not an error to
 suppress.
 
+**Motion is a property of the diff, never of rendering.** `main.js` repaints by full teardown, so
+animating on paint would replay the whole page every ten seconds and make a poll where nothing
+happened look identical to a poll where an organism died. Instead `main.js` compares the previous
+snapshot to the next one, `render.js` stamps `data-fx` on the nodes that changed, and `js/motion.js`
+plays a timeline per stamp after mount. Nothing stamped means nothing animates: an organism dies
+once and is mourned once. Five transitions earn a timeline — `born`, `died`, `treasury`, `phase`,
+`new` — and each corresponds to a real state change on chain. Nothing here fires on a timer.
+
+**The page is never worse than un-animated.** Without `window.gsap`, or under
+`prefers-reduced-motion`, every function in `motion.js` becomes a no-op and the page renders
+complete and static. That promise needs more than a library check, because the entrances *hide*
+things before revealing them: `fromTo` applies its from-state synchronously, so a frame clock that
+stalls after script has run would leave the population laid out, sized, and invisible. Two defences
+keep it, in this order. `onClockAlive()` builds every timeline inside the first
+`requestAnimationFrame` callback, so a page that never gets composited never hides anything —
+un-animated, not blank. `guarantee()` then puts a `setTimeout` deadline on the timeline for a clock
+that starts and *then* stops, event-loop driven rather than frame driven, and jumps it to the end if
+it has not finished on its own. **A tween that starts from `opacity: 0` must go into a timeline that
+carries that deadline.**
+
+**Do not time-verify any of this with `--virtual-time-budget`.** Chrome races the virtual clock ahead
+while GSAP's ticker advances on `performance.now()` deltas, so a capture labelled 2200ms shows a
+timeline that has advanced fifty real milliseconds — twelve cards at `opacity: 0`, which looks exactly
+like the failure above and is not it. A `--dump-dom` at the same budget is what settled it: every
+tween sat on its from-state with `.hero-thesis` at `0.1757`. Sample on the wall clock instead — drive
+the page over CDP (Node's global `WebSocket` speaks it with no dependencies) and read computed opacity
+at real intervals. Measured that way the population is fully visible **1.0s** after navigation, the
+last lineage edge lands at **1.6s**, and the scripted season's death and birth frames land on time.
+
 ## Files
 
 | | |
 |---|---|
 | `index.html` | almost empty on purpose — every node is built by `render.js` |
-| `app.css` | one stylesheet, tokens + light mode + reduced motion |
+| `app.css` | the only stylesheet link; `@import`s `fonts.css` then `tokens.css`, and holds no colour literal of its own |
+| `tokens.css` | the design system — colour, size, radius, duration; the same file `app/src/styles.css` imports, so both surfaces cannot drift |
+| `fonts.css` | the five `@font-face` declarations, every `src` pointing into `vendor/fonts/` |
 | `config.js` | chain id, RPC, explorer, scan bounds, settings resolution |
+| `vendor/gsap.min.js` | GSAP 3.13.0 UMD, **committed to the repo**, not fetched |
+| `vendor/fonts/` | Newsreader (upright + italic) and IBM Plex Sans/Mono as `.woff2`, **committed** — no font CDN, so `?demo=1` still holds with the network unplugged |
 | `js/viem.js` | the single pinned CDN import (`esm.sh/viem@2.56.0`) |
 | `js/abi.js` | hand-written ABI fragments — only what this page reads |
 | `js/chain.js` | client, `discover`, `readState`, `readOrganism`, `readFeed`, block stamps |
@@ -144,10 +225,21 @@ suppress.
 | `js/lineage.js` | snapshot array → drawable tree, census, `rootKind` |
 | `js/dom.js` | six functions of DOM plumbing, text-node only |
 | `js/render.js` | every pixel; cannot fetch |
+| `js/motion.js` | the timelines; plays only what the diff stamped, and no-ops without GSAP |
 | `js/main.js` | the only mutable state and the only clock; cannot paint |
 | `js/fixture.js` | the offline population behind `?demo=1` |
 | `test/smoke.mjs` | the renderer, run against the fixture under a fake DOM |
 | `package.json` | one line telling Node these are ES modules; no dependencies, no install |
+
+**The theme is a single fixed dark.** There is no `prefers-color-scheme` block, which is a decision
+rather than an omission: a light fallback is a second design nobody reviewed, and on a projector it
+is the one that shows up. One look means the author, the operator and a judge see the same page.
+
+**GSAP is vendored, not imported.** `vendor/gsap.min.js` is a file in this repository, loaded by a
+plain script tag. `?demo=1` is documented above as working with the network unplugged, and a CDN
+import would have broken exactly that, in a venue, at the worst possible moment. It is also still
+not a dependency: nothing installs it, nothing builds it, and deleting it degrades the page to
+static rather than breaking it.
 
 `render.js` cannot fetch and `chain.js` cannot paint. That split is what keeps the fixture honest:
 `?demo=1` replaces `main.js`'s data source and nothing downstream knows the difference.

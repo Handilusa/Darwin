@@ -8,7 +8,7 @@
  *     parallel demo renderer that could drift from the real one and flatter it.
  *
  *  2. NO `innerHTML`, EVER. Genomes and model reasoning arrive from `Population.enter`, which
- *     is permissionless (Population.sol:575). See the header of `dom.js`.
+ *     is permissionless (Population.sol:654). See the header of `dom.js`.
  *
  *  3. A MISSING VALUE RENDERS AS `—`, NOT AS ZERO. `0` and "the read failed" are different
  *     claims about a treasury, and a dashboard that prints them the same way is lying in the
@@ -17,8 +17,19 @@
 
 import { FEED_ROWS, addressUrl, blockUrl, txUrl } from "../config.js";
 import { $, el, field, frag, link, mount, svg } from "./dom.js";
-import { addr, ago, bps, dur, hash, money, movePct, plural, stt, units, winRate } from "./format.js";
-import { BELIEF, BELIEF_TONE, PHASE_NEXT, PHASE_STATE, THESIS, ZERO } from "./labels.js";
+import { addr, ago, bps, dur, hash, money, moneyFixed, movePct, plural, stt, units, winRate } from "./format.js";
+import {
+  BELIEF_GLOSS,
+  BELIEF_HUMAN,
+  BELIEF_TONE,
+  PHASE_GLOSS,
+  PHASE_NEXT,
+  PHASE_NEXT_HUMAN,
+  PHASE_STATE,
+  THESIS,
+  THESIS_GLOSS,
+  ZERO,
+} from "./labels.js";
 import { rootKind } from "./lineage.js";
 
 const EM = "—";
@@ -57,16 +68,35 @@ export function chip(id, ctx = {}) {
 
 function beliefTag(belief, thesis) {
   const b = Number(belief);
+  const t = Number(thesis);
   return el(
     "span",
-    { class: ["tag", `belief-${idx(BELIEF_TONE, b, "none")}`] },
-    idx(BELIEF, b),
-    Number(thesis) > 0 ? el("span", { class: "tag-sub", text: idx(THESIS, thesis) }) : null,
+    {
+      class: ["tag", `belief-${idx(BELIEF_TONE, b, "none")}`],
+      // The gloss rides along so the tag itself can stay two words wide. The visible text is the
+      // translated label, not the enum name — `None` is what the contract stores and "no call" is
+      // what it means, and after every settlement it is the value on every living organism.
+      title: t > 0 ? `${idx(BELIEF_GLOSS, b, "")} · ${idx(THESIS_GLOSS, t, "")}` : idx(BELIEF_GLOSS, b, ""),
+    },
+    idx(BELIEF_HUMAN, b),
+    t > 0 ? el("span", { class: "tag-sub", text: idx(THESIS, thesis) }) : null,
   );
 }
 
 function money2(v, cfg, places = 2) {
   return dash(v, (x) => `${money(x, cfg.decimals ?? 6, places)} ${cfg.tokenSymbol ?? ""}`.trim());
+}
+
+/**
+ *  `money2`, padded to `places` instead of trimmed.
+ *
+ *  For the metrics strip, where ante, prize pool and rake sit in one row denominated in one token:
+ *  `3.9 tUSDC` beside `3.21 tUSDC` and `1.28 tUSDC` reads as three different precisions of the same
+ *  unit. `money2` is left alone because the feed says "paid 3.9 tUSDC rake on 12.4 tUSDC" in prose,
+ *  and there a padded zero is noise rather than alignment.
+ */
+function money2Fixed(v, cfg, places = 2) {
+  return dash(v, (x) => `${moneyFixed(x, cfg.decimals ?? 6, places)} ${cfg.tokenSymbol ?? ""}`.trim());
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -91,11 +121,31 @@ export function demoBanner() {
   );
 }
 
-export function errorBanner(message, onRetry) {
+/**
+ *  The banner over a page that could not resolve an arena.
+ *
+ *  `kind` comes from `chain.js`'s read verdict and it changes the SENTENCE, not just the wording,
+ *  because the three cases need three different actions from the reader:
+ *
+ *    absent       forty valid hex, no contract → the address is wrong. Check it.
+ *    unreachable  the node did not answer      → the address is unjudged. Do NOT touch it.
+ *    (default)    everything else — a wrong chain id, a dead endpoint, a broken import
+ *
+ *  It printed *"Cannot read the chain"* for all of them until 2026-09-03, which is the wrong
+ *  headline exactly when it matters: over an address with no contract behind it, the chain read
+ *  fine and the page blamed the network for it.
+ */
+export function errorBanner(message, onRetry, kind) {
+  const head =
+    kind === "absent"
+      ? "No arena at that address. "
+      : kind === "unreachable"
+        ? "The chain did not answer. "
+        : "Cannot read the chain. ";
   return el(
     "div",
     { class: "banner banner-error", role: "alert" },
-    el("strong", { text: "Cannot read the chain. " }),
+    el("strong", { text: head }),
     el("span", { text: String(message) }),
     onRetry ? el("button", { class: "btn btn-inline", type: "button", click: onRetry }, "Retry") : null,
   );
@@ -122,37 +172,97 @@ export function readErrors(errors) {
 }
 
 /*//////////////////////////////////////////////////////////////
-                             HEADER
+                              HERO
 //////////////////////////////////////////////////////////////*/
 
 /**
- *  Cadence position, the season climate, and the price window.
+ *  The argument: one sentence, and the paragraph that unpacks it.
  *
- *  `phase` is shown as BOTH the state and the call that advances it, because the two readings
- *  of the same number are off by one step and picking either alone describes a live population
- *  incorrectly to somebody reading the other. See `labels.js`.
+ *  Shared by `header()` and `masthead()` rather than written twice, because the setup page and the
+ *  live console must make the SAME claim. Two copies would drift, and the copy on the setup page is
+ *  the one a visitor reads first — today it is the only one they read at all.
+ */
+function heroArgument(symbol) {
+  return el(
+    "div",
+    { class: "hero-argument" },
+    // The thesis. One sentence, and it is the load-bearing one — the whole design exists to make
+    // this sentence obviously true of the screen under it.
+    el("p", { class: "hero-thesis" }, "Organisms that lose money ", el("em", { text: "die" }), "."),
+    el("p", {
+      class: "hero-lede",
+      text:
+        `Each one is a contract carrying a trading thesis written in English. Every window it ` +
+        `forecasts ${symbol || "the market"} — paying STT to think and collateral to stay alive — ` +
+        `and the market settles the answer. Winners breed. Losers starve.`,
+    }),
+  );
+}
+
+/**
+ *  The masthead for the page with nothing behind it yet.
+ *
+ *  Before Season 0 there is no address in `config.js`, so `paint()` renders the setup panel — and it
+ *  used to render it under an EMPTY header, because `header()` needs a snapshot and a resolved config
+ *  and has neither here. The result was a front door with no wordmark and no claim: a form, floating
+ *  in the dark. That is the page a judge opens today, so it gets the two things a header can honestly
+ *  carry with no chain to read — who this is, and what it asserts.
+ *
+ *  Deliberately NOT a degraded `header()`. Everything else that header shows is a live reading, and a
+ *  masthead printing an em dash where the block number goes would look broken rather than early.
+ */
+export function masthead() {
+  return el(
+    "header",
+    { class: "hero hero-plain" },
+    el(
+      "div",
+      { class: "hero-top" },
+      el("h1", {}, "DARWIN", el("span", { class: "sub", text: "arena" })),
+      el("div", { class: "hero-meta" }, el("span", { text: "not connected" })),
+    ),
+    el("div", { class: "hero-grid" }, heroArgument(null)),
+  );
+}
+
+/**
+ *  What DARWIN is, and how the population is doing — in that order.
+ *
+ *  The previous version of this header rendered seven stats at identical weight: phase, window,
+ *  alive, level, ante, prize pool and rake. All seven are true and two of them are the story, so a
+ *  reader arriving cold had no way to tell that generation depth and the living count carry the
+ *  claim while `rake` is a parameter. This promotes those two to hero scale, demotes the rest to a
+ *  rail, and puts one sentence of prose above both — because somebody seeing this for the first
+ *  time has to be told what they are looking at before being shown how it is going.
+ *
+ *  `phase` is drawn as a three-node machine rather than printed as a word, and it shows BOTH the
+ *  state and the call that advances it: the two readings of the same integer are off by one step,
+ *  and either alone describes a live population incorrectly to somebody reading the other. See
+ *  `labels.js`.
  */
 export function header(state, cfg, ctx = {}) {
   const phase = state.phase == null ? null : Number(state.phase);
   const w = state.window;
+  const depth = depthOf(state, ctx);
 
   const seasonProgress =
     state.windowCount != null && state.seasonStartWindow != null && cfg.seasonWindows
       ? `${Number(state.windowCount - state.seasonStartWindow)} / ${Number(cfg.seasonWindows)}`
       : EM;
 
-  const move = w ? movePct(w.openPrice, w.lastPrice) : null;
+  const alive = state.aliveCount == null ? null : Number(state.aliveCount);
+  const roll = deadRoll(state, ctx);
 
   return el(
     "header",
-    { class: "topbar" },
+    { class: "hero" },
     el(
       "div",
-      { class: "topbar-title" },
+      { class: "hero-top" },
       el("h1", {}, "DARWIN", el("span", { class: "sub", text: cfg.symbol ? `${cfg.symbol} arena` : "arena" })),
       el(
         "div",
-        { class: "topbar-meta" },
+        { class: "hero-meta" },
         cfg.population
           ? link(addressUrl(cfg.population), addr(cfg.population, 8, 6), { class: "mono", title: cfg.population })
           : EM,
@@ -167,74 +277,249 @@ export function header(state, cfg, ctx = {}) {
       ),
     ),
 
+    // Three zones, and the order is an argument: what this is, how the population is doing, what the
+    // market is doing. The prose and the numbers are separated by a rule rather than sharing a column
+    // because they are different kinds of statement — one is a claim and the other is its evidence.
     el(
       "div",
-      { class: "stats" },
+      { class: "hero-grid" },
+      heroArgument(cfg.symbol),
+
       el(
         "div",
-        { class: ["stat", "stat-phase", phase != null && `phase-${phase}`] },
-        el("span", { class: "stat-label", text: "phase" }),
-        el("span", { class: "stat-value", text: phase == null ? EM : idx(PHASE_STATE, phase) }),
-        el("span", { class: "stat-note", text: phase == null ? "" : `next: ${idx(PHASE_NEXT, phase, "?")}` }),
+        { class: "hero-vitals" },
+        // Generation depth is the headline metric the docs name, so it is the number in brand
+        // colour: it is the arena's own result, not any one organism's.
+        metric(
+          "generation",
+          frag(el("span", { class: "metric-unit", text: "G" }), depth == null ? EM : String(depth.living)),
+          depth == null ? "" : `deepest living line · G${depth.ever} ever reached`,
+          "metric-gen",
+        ),
+        // THE STANDING BODY COUNT, on a line that already exists.
+        //
+        // `alive` alone is a head count, and a head count is exactly what a viewer cannot read a
+        // death out of: 10 means nothing without the 12, and the 12 means nothing without the two
+        // corpses it implies. All three now sit on the metric's own note line, which costs the hero
+        // ZERO height — `.metric` is a flex column and this is one more inline child of a span that
+        // already renders.
+        //
+        // Rendered from `state.organisms`, not from the diff: two organisms are dead at first paint
+        // with nothing to stamp, so a toll that appeared only when something died would be a motion
+        // cue pretending to be information. The stamp is the loud half and it is optional; the
+        // sentence is the true half and it is unconditional.
+        metric(
+          "alive",
+          alive == null ? EM : String(alive),
+          state.prophetCount == null
+            ? null
+            : frag(
+                `of ${state.prophetCount} ever born`,
+                roll.count > 0
+                  ? el(
+                      "span",
+                      { class: "toll", dataset: roll.justDied ? { fx: "toll" } : undefined },
+                      el("span", { class: "toll-mark", text: "†" }),
+                      `${roll.count} dead`,
+                      roll.lastWindow == null ? null : el("span", { class: "toll-when", text: `· last w${roll.lastWindow}` }),
+                    )
+                  : null,
+              ),
+          ["metric-alive", alive === 0 && "all-dead"],
+        ),
       ),
-      stat("window", dash(state.windowCount, String), `season ${dash(state.seasonId, String)} · ${seasonProgress}`),
-      stat(
-        "alive",
-        state.aliveCount == null ? EM : `${state.aliveCount}`,
-        state.prophetCount == null ? "" : `of ${state.prophetCount} ever born`,
-      ),
-      stat("level", dash(state.level, String), cfg.levelWindows ? `every ${cfg.levelWindows} windows` : ""),
-      stat(
-        "ante",
-        money2(state.ante, cfg),
-        cfg.baseAnte != null && cfg.anteMultBps
-          ? `base ${money(cfg.baseAnte, cfg.decimals ?? 6, 2)} × ${Number(cfg.anteMultBps) / 10_000}`
-          : "",
-      ),
-      stat("prize pool", money2(state.prizePool, cfg), cfg.prizeShareBps ? `${bps(cfg.prizeShareBps)} of rake` : ""),
-      stat("rake", money2(state.rakeAccrued, cfg), cfg.rakeBps ? `${bps(cfg.rakeBps)} of profit` : ""),
+
+      el("div", { class: "hero-readout" }, priceBlock(state, w), phaseTrack(phase, ctx)),
     ),
 
     el(
       "div",
-      { class: "price" },
-      w
-        ? frag(
-            el(
-              "div",
-              { class: "price-main" },
-              el("span", { class: "price-open", text: money(w.openPrice, w.priceDecimals, 2) }),
-              el("span", { class: "price-arrow", text: "→" }),
-              el("span", { class: "price-last", text: money(w.lastPrice, w.priceDecimals, 2) }),
-              el("span", {
-                class: ["price-move", move.sign > 0 ? "up" : move.sign < 0 ? "down" : "flat"],
-                text: move.text,
-              }),
-            ),
-            el(
-              "div",
-              { class: "price-meta" },
-              el("span", { text: `${dur(w.secondsRemaining)} left` }),
-              el("span", { class: "dot" }),
-              el("span", {
-                class: w.tradeable ? "ok" : "bad",
-                text: w.tradeable ? "tradeable" : "not tradeable",
-              }),
-              w.marketId
-                ? frag(el("span", { class: "dot" }), el("span", { class: "mono", text: hash(w.marketId, 8, 4) }))
-                : null,
-            ),
-          )
-        : el(
-            "div",
-            { class: "price-none" },
-            el("strong", { text: "no price window" }),
-            // NoWindow and StalePrice are both ORDINARY states between cadence ticks, not
-            // faults, and saying which one it is turns a blank panel into a diagnosis.
-            el("span", { class: "price-why", text: windowExcuse(state.windowError) }),
-          ),
+      { class: "stats" },
+      stat("window", dash(state.windowCount, String), `season ${dash(state.seasonId, String)} · ${seasonProgress}`),
+      stat("level", dash(state.level, String), cfg.levelWindows ? `every ${cfg.levelWindows} windows` : ""),
+      stat(
+        "ante",
+        money2Fixed(state.ante, cfg),
+        cfg.baseAnte != null && cfg.anteMultBps
+          ? `base ${money(cfg.baseAnte, cfg.decimals ?? 6, 2)} × ${Number(cfg.anteMultBps) / 10_000}`
+          : "",
+      ),
+      stat("prize pool", money2Fixed(state.prizePool, cfg), cfg.prizeShareBps ? `${bps(cfg.prizeShareBps)} of rake` : ""),
+      stat("rake", money2Fixed(state.rakeAccrued, cfg), cfg.rakeBps ? `${bps(cfg.rakeBps)} of profit` : ""),
     ),
   );
+}
+
+/**
+ *  Deepest living generation, and the deepest ever reached.
+ *
+ *  `main.js` computes this off the laid-out tree and threads it in as `ctx.depth`, which is the
+ *  reading to prefer: it is the same object `censusPanel` prints, so the hero and the table cannot
+ *  disagree. The fallback derives it straight from the snapshot for callers that hold no tree, and
+ *  exists because a hero metric reading `—` while the data to compute it sits in the argument list
+ *  would be a worse outcome than one `max()` written in two places.
+ */
+function depthOf(state, ctx) {
+  if (ctx.depth) return ctx.depth;
+  const rows = state.organisms || [];
+  if (!rows.length) return null;
+  let living = 0;
+  let ever = 0;
+  for (const o of rows) {
+    const g = Number(o.generation);
+    if (g > ever) ever = g;
+    if (!o.dead && g > living) living = g;
+  }
+  return { living, ever };
+}
+
+/**
+ *  The standing body count, when the most recent one fell, and whether one fell on THIS paint.
+ *
+ *  Derived from the same snapshot rows `grid()` partitions, so the hero and the corpse band cannot
+ *  disagree. The `prophetCount - aliveCount` fallback covers a snapshot carrying the counters but not
+ *  the roster; if neither reading is present the count is zero and the toll is simply absent, because
+ *  a number invented for a page with no data is the same error class as a mock.
+ *
+ *  `justDied` is the ONLY thing here that consults the diff, and it consults the stamp vocabulary
+ *  that already exists — `main.js`'s `fx.organisms` map, values "died" / "born". Nothing new is
+ *  computed in `advance()` for this.
+ */
+function deadRoll(state, ctx) {
+  const rows = state.organisms || [];
+  const dead = rows.filter((o) => o.dead);
+
+  let lastWindow = null;
+  for (const o of dead) {
+    const w = o.deathWindow == null ? null : Number(o.deathWindow);
+    if (w != null && (lastWindow == null || w > lastWindow)) lastWindow = w;
+  }
+
+  const count = dead.length
+    ? dead.length
+    : state.prophetCount != null && state.aliveCount != null
+      ? Math.max(0, Number(state.prophetCount) - Number(state.aliveCount))
+      : 0;
+
+  let justDied = false;
+  for (const kind of ctx.fx?.organisms?.values() || []) if (kind === "died") justDied = true;
+
+  return { count, lastWindow, justDied };
+}
+
+function metric(label, value, note = "", extra) {
+  return el(
+    "div",
+    { class: ["metric", ...(Array.isArray(extra) ? extra : [extra])] },
+    el("span", { class: "metric-value" }, value),
+    el("span", { class: "metric-label", text: label }),
+    // The note takes a NODE as readily as a string, because the death toll has to be a node: part of
+    // it gets stamped and part of it gets a hue. Both forms land in the SAME one-line span, which is
+    // the point — a caller cannot cost the hero a row of height here. This is the shape `value`
+    // already has: the generation metric passes a `frag()` into `.metric-value`.
+    note ? el("span", { class: "metric-note" }, note) : null,
+  );
+}
+
+/**
+ *  The cadence, as the state machine it is: three nodes on a track, the live one lit, the call that
+ *  advances it named at the end. Position carries the state and the label carries the next action,
+ *  which is the only arrangement in which the off-by-one between them cannot be misread.
+ */
+function phaseTrack(phase, ctx) {
+  const parts = [];
+  for (let i = 0; i < PHASE_STATE.length; i += 1) {
+    const live = phase === i;
+    const past = phase != null && i < phase;
+    parts.push(
+      el(
+        "span",
+        { class: ["phase-node", live && "is-live", past && "is-past"], "aria-current": live ? "step" : null,
+          title: PHASE_GLOSS[i] },
+        // A real element rather than a `::before`, so the advance animation has something to
+        // scale that is not also the label. See `motion.js`.
+        el("i", { class: "phase-dot", dataset: live && ctx.fx?.phase ? { fx: "phase" } : undefined }),
+        el("span", { text: PHASE_STATE[i] }),
+      ),
+    );
+    if (i < PHASE_STATE.length - 1) parts.push(el("span", { class: ["phase-rail", past && "is-past"] }));
+  }
+  return el(
+    "div",
+    { class: "phase-track", role: "group", "aria-label": "cadence phase" },
+    parts,
+    el(
+      "span",
+      { class: "phase-next" },
+      "next ",
+      el("b", { text: phase == null ? EM : idx(PHASE_NEXT_HUMAN, phase, "?") }),
+      // The selector stays, quietly. It is exactly what a reader who intends to check the cadence
+      // against the contract needs, and exactly the wrong thing to lead with for a reader who is
+      // still working out what this page is — so the sentence goes first and the call follows it.
+      phase == null ? null : el("code", { class: "phase-call", text: idx(PHASE_NEXT, phase, "?") }),
+    ),
+  );
+}
+
+function priceBlock(state, w) {
+  const move = w ? movePct(w.openPrice, w.lastPrice) : null;
+  return el(
+    "div",
+    { class: "price" },
+    w
+      ? frag(
+          el(
+            "div",
+            { class: "price-main" },
+            el("span", { class: "price-open", text: money(w.openPrice, w.priceDecimals, 2) }),
+            el("span", { class: "price-arrow", text: "→" }),
+            el("span", { class: "price-last", text: money(w.lastPrice, w.priceDecimals, 2) }),
+            el("span", {
+              class: ["price-move", move.sign > 0 ? "up" : move.sign < 0 ? "down" : "flat"],
+              text: move.text,
+            }),
+          ),
+          el(
+            "div",
+            { class: "price-meta" },
+            // `data-clock` is the handle `retime()` writes through once a second, so the ticker
+            // no longer has to rebuild this whole subtree to change four characters.
+            el("span", { dataset: { clock: "1" }, text: `${dur(w.secondsRemaining)} left` }),
+            el("span", { class: "dot" }),
+            el("span", {
+              class: w.tradeable ? "ok" : "bad",
+              text: w.tradeable ? "tradeable" : "not tradeable",
+            }),
+            w.marketId
+              ? frag(el("span", { class: "dot" }), el("span", { class: "mono", text: hash(w.marketId, 8, 4) }))
+              : null,
+          ),
+        )
+      : el(
+          "div",
+          { class: "price-none" },
+          el("strong", { text: "no price window" }),
+          // NoWindow and StalePrice are both ORDINARY states between cadence ticks, not
+          // faults, and saying which one it is turns a blank panel into a diagnosis.
+          el("span", { class: "price-why", text: windowExcuse(state.windowError) }),
+        ),
+  );
+}
+
+/**
+ *  Rewrite the countdown in place.
+ *
+ *  `main.js` used to re-render the entire header once a second to move this number, which threw
+ *  away the browser's layout work for a four-character change and destroyed any animation still in
+ *  flight. This patches the single node whose value actually changes per tick. It is the only
+ *  mutation in this file, and it writes through `textContent` — never markup, for the same reason
+ *  nothing else here does.
+ */
+export function retime(seconds) {
+  const node = $("[data-clock]");
+  if (!node) return false;
+  node.textContent = seconds == null ? EM : `${dur(seconds)} left`;
+  return true;
 }
 
 function stat(label, value, note = "") {
@@ -348,20 +633,36 @@ export function claimPanel(state, logs = []) {
 //////////////////////////////////////////////////////////////*/
 
 /**
- *  Living organisms first, then the dead. Within each, richest first.
+ *  Two populations, not one list with the dead sorted to the back.
  *
- *  Treasury order rather than win rate on purpose: treasury is what actually decides survival
- *  and breeding, and a 100% win rate over two windows would otherwise sit above an organism
+ *  `dead ? 1 : -1` was the whole of how a death was expressed on this page, and a sort key cannot
+ *  bound where its output lands: the grid starts 564px down, the pitch is 165px, so the tail of a
+ *  three-column flow is at y=1060 on FIRST PAINT — 60px below a 1000px fold, before any animation
+ *  runs, with #3 and #5 already in it. The resting state had therefore never shown a corpse to
+ *  anyone. Measured over CDP at 1600x1000, not inferred.
+ *
+ *  Living: treasury order rather than win rate on purpose — treasury is what actually decides
+ *  survival and breeding, and a 100% win rate over two windows would otherwise sit above an organism
  *  that has survived forty.
+ *
+ *  Dead: most recent death first, off `deathWindow`, a snapshot field — so the band's order is the
+ *  same on a cold load as on the paint where a death lands. Nothing here reads `ctx.fx` for
+ *  PLACEMENT; the diff still stamps `data-fx="died"` but no longer decides where anything sits,
+ *  which is the only way the fix survives GSAP being absent.
  */
 export function grid(rows, cfg, ctx = {}) {
-  const list = [...(rows || [])].sort((a, b) => {
-    if (a.dead !== b.dead) return a.dead ? 1 : -1;
+  const population = [...(rows || [])];
+
+  const byTreasury = (a, b) => {
     const t = BigInt(b.treasury ?? 0n) - BigInt(a.treasury ?? 0n);
     return t > 0n ? 1 : t < 0n ? -1 : Number(a.id) - Number(b.id);
-  });
+  };
+  const living = population.filter((o) => !o.dead).sort(byTreasury);
+  const dead = population
+    .filter((o) => o.dead)
+    .sort((a, b) => Number(b.deathWindow ?? 0) - Number(a.deathWindow ?? 0) || Number(a.id) - Number(b.id));
 
-  if (!list.length) {
+  if (!population.length) {
     return el(
       "section",
       { class: "panel" },
@@ -376,30 +677,156 @@ export function grid(rows, cfg, ctx = {}) {
     el(
       "div",
       { class: "panel-head" },
-      el("h2", { text: "Population" }),
-      el("span", { class: "muted", text: `${list.filter((o) => !o.dead).length} alive · ${list.length} ever` }),
+      // The unit is stated ONCE, here, instead of after each of twelve identical balances. An arena
+      // settles in exactly one collateral token, so `TUSDC` repeated down the grid is the same
+      // string twelve times — it distinguishes nothing between organisms while costing each card
+      // about 40px, which is precisely the room the belief tag needs to sit beside the number.
+      el("h2", {}, "Population", cfg.tokenSymbol ? el("span", { class: "sub", text: `balances in ${cfg.tokenSymbol}` }) : null),
+      el("span", { class: "muted", text: `${living.length} alive · ${population.length} ever` }),
     ),
-    el("div", { class: "grid" }, list.map((o) => card(o, cfg, ctx))),
+    dead.length ? band(dead, cfg, ctx) : null,
+    el(
+      "div",
+      { class: "grid" },
+      living.map((o) => card(o, cfg, ctx)),
+    ),
+  );
+}
+
+/**
+ *  THE CORPSE BAND.
+ *
+ *  A corpse is a different KIND of row, not a dimmer instance of a living one. `vitals()` forces its
+ *  bar to 0, its belief tag is the literal string "dead", and it has no next window. 153px was being
+ *  spent to say "this one stopped". Forty-five buys everything still true: who it was, its
+ *  generation, whether it paid in, what it held when it stopped, and the window it died in — the same
+ *  fact `card-foot` used to print where nobody could read it.
+ *
+ *  Three fit on ONE line at the top of the panel, where the fold cannot reach them.
+ */
+function band(dead, cfg, ctx) {
+  return el(
+    "div",
+    { class: "tomb-band" },
+    el(
+      "div",
+      { class: "tomb-head" },
+      el("span", { text: `${dead.length} ${plural(dead.length, "death")}` }),
+      el("span", { class: "tomb-note", text: "newest first · irreversible" }),
+    ),
+    el(
+      "div",
+      { class: "tomb-rows" },
+      dead.map((o) => tomb(o, cfg, ctx)),
+    ),
+  );
+}
+
+/**
+ *  One corpse, one line.
+ *
+ *  `.card` and `.card-dead` are kept verbatim rather than replaced by a band-specific class, because
+ *  `saturate(0.15)` in `app.css` and in `motion.js`'s `died()` is the one duplicated value in this
+ *  codebase and it must keep exactly ONE pair of sites to agree on. A third dead-state rule is how
+ *  that drift starts, and the drift is visible as a jump.
+ *
+ *  The identity row is composed exactly as `card()`'s is — id, name, generation, paid-in badge — so
+ *  the population's per-class counts in `smoke.mjs` do not depend on which organisms happen to be
+ *  dead.
+ */
+function tomb(o, cfg, ctx) {
+  const id = Number(o.id);
+  const name = ctx.labels?.get(id);
+  const selected = ctx.selected != null && Number(ctx.selected) === id;
+  const dec = cfg.decimals ?? 6;
+
+  // The stamp, and ONLY the stamp, comes from the diff. Placement above reads `o.dead` and
+  // `o.deathWindow` only, so a cold load with `ctx.fx == null` renders this same band, static and
+  // complete. That is rule 3's corollary, satisfied by construction rather than by care.
+  const fx = ctx.fx?.organisms?.get(id) || null;
+  const prev = ctx.fx?.prev?.get(id);
+  const now = o.treasury == null ? null : BigInt(o.treasury);
+  const moved = prev != null && now != null && BigInt(prev) !== now;
+
+  return el(
+    "article",
+    {
+      class: ["card", "card-dead", "card-tomb", selected && "card-selected"],
+      dataset: fx ? { fx } : undefined,
+      tabindex: "0",
+      role: "button",
+      click: ctx.onSelect ? () => ctx.onSelect(id) : null,
+      keydown: ctx.onSelect
+        ? (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              ctx.onSelect(id);
+            }
+          }
+        : null,
+    },
+    el(
+      "div",
+      { class: "tomb-line" },
+      el("span", { class: "card-id", text: `#${o.id}` }),
+      name ? el("span", { class: "card-name", text: name }) : null,
+      el("span", { class: "card-gen", title: "generation", text: `G${o.generation}` }),
+      rootKind(o) === "entrant"
+        ? el("span", {
+            class: "card-gen card-entrant",
+            title: `born at window ${o.birthWindow} with no parent — paid in through enter()`,
+            text: "paid in",
+          })
+        : null,
+      el("span", { class: "amount", text: moneyFixed(o.treasury ?? 0n, dec, 2) }),
+      el("span", {
+        class: "tomb-when",
+        title: `died at window ${o.deathWindow} — no path anywhere clears this`,
+        text: `w${o.deathWindow}`,
+      }),
+    ),
+
+    // The drained bar, from the SAME call a living card makes. `died()`'s third beat tweens
+    // `.vitals-fill` from `data-was` to 0% and that is the beat that reads as a death rather than as
+    // an error; moving the corpse must not cost the drain its target. `vitals()` already knows a dead
+    // organism's fill is 0 and stamps `data-was`, not `data-fx`, when fx === "died".
+    vitals(o, cfg, moved ? prev : null, fx),
   );
 }
 
 function card(o, cfg, ctx) {
   const wr = winRate(o.correctCount, o.wrongCount);
-  const name = ctx.labels?.get(Number(o.id));
-  const selected = ctx.selected != null && Number(ctx.selected) === Number(o.id);
+  const id = Number(o.id);
+  const name = ctx.labels?.get(id);
+  const selected = ctx.selected != null && Number(ctx.selected) === id;
+
+  // What changed about THIS organism since the last paint, if anything.
+  //
+  // `main.js` owns the diff — it holds the only mutable state — and this function only stamps it
+  // onto the node it builds; `motion.js` reads the stamps after mount. An organism that did not
+  // change carries no stamp and therefore does not animate, which is what stops a ten-second poll
+  // from replaying birth and death on a page where nothing happened. Rendering stays pure: these
+  // are attributes describing data, not calls into an animation library.
+  const fx = ctx.fx?.organisms?.get(id) || null;
+  const prev = fx === "born" ? null : ctx.fx?.prev?.get(id);
+  const now = o.treasury == null ? null : BigInt(o.treasury);
+  const moved = prev != null && now != null && BigInt(prev) !== now;
+  const dec = cfg.decimals ?? 6;
+  const breed = breeding(o, cfg, ctx);
 
   return el(
     "article",
     {
       class: ["card", o.dead && "card-dead", selected && "card-selected"],
+      dataset: fx ? { fx } : undefined,
       tabindex: "0",
       role: "button",
-      click: ctx.onSelect ? () => ctx.onSelect(Number(o.id)) : null,
+      click: ctx.onSelect ? () => ctx.onSelect(id) : null,
       keydown: ctx.onSelect
         ? (e) => {
             if (e.key === "Enter" || e.key === " ") {
               e.preventDefault();
-              ctx.onSelect(Number(o.id));
+              ctx.onSelect(id);
             }
           }
         : null,
@@ -426,14 +853,31 @@ function card(o, cfg, ctx) {
             text: "paid in",
           })
         : null,
-      o.dead ? el("span", { class: "tag tag-dead", text: "dead" }) : beliefTag(o.belief, o.thesis),
     ),
 
+    // THE TAG SITS WITH THE BALANCE, not in the header above it.
+    //
+    // It used to close the identity row, where `.tag`'s `margin-left: auto` pushed it to the right
+    // edge — and on any card whose label was long enough it wrapped to a second line instead. That
+    // made the header one row tall on some cards and two on others, so the treasuries fell out of
+    // alignment across the grid and the one number a viewer scans down a column of could not be
+    // scanned down a column. Beside the balance it also reads better: this is what the organism
+    // has, and this is what it is saying to do with it.
     el(
       "div",
       { class: "card-treasury" },
-      el("span", { class: "amount", text: money(o.treasury ?? 0n, cfg.decimals ?? 6, 2) }),
-      el("span", { class: "unit", text: cfg.tokenSymbol ?? "" }),
+      el("span", {
+        class: "amount",
+        text: moneyFixed(o.treasury ?? 0n, dec, 2),
+        // Both endpoints are the exact BigInt-derived strings. `motion.js` counts between them on
+        // a display-only float and writes `data-fx-to` back on the final frame, so the resting
+        // value on screen is never a rounded float. See the note above `grouped()` there.
+        dataset:
+          moved && !o.dead
+            ? { fx: "treasury", fxFrom: moneyFixed(prev, dec, 2), fxTo: moneyFixed(now, dec, 2) }
+            : undefined,
+      }),
+      o.dead ? el("span", { class: "tag tag-dead", text: "dead" }) : beliefTag(o.belief, o.thesis),
     ),
 
     el(
@@ -444,8 +888,22 @@ function card(o, cfg, ctx) {
       el("span", { title: `${wr.decided} decided ${plural(wr.decided, "window")}`, text: wr.text }),
       el("span", { class: "dot" }),
       el("span", { title: "windows lived", text: `${o.windowsLived}w` }),
+      // A STREAK IS ONLY A NUMBER IF YOU KNOW WHAT IT IS COUNTING TOWARDS. `breedStreak` is read
+      // from the chain, so when it is known this reads `3/4🔥` and the card says how close the
+      // organism is to a child; when discovery could not get it, it falls back to the bare count
+      // rather than inventing a denominator. It stays hidden at streak 0 either way — a grid of
+      // `0/4` on every card would make the bar look like the population's main event.
       Number(o.streak) > 0
-        ? frag(el("span", { class: "dot" }), el("span", { class: "streak", text: `${o.streak}🔥` }))
+        ? frag(
+            el("span", { class: "dot" }),
+            el("span", {
+              class: ["streak", breed?.streakOk && "streak-ready"],
+              title: breed
+                ? `${o.streak} of ${breed.needStreak} consecutive correct calls — the streak bar for breeding`
+                : "consecutive correct calls",
+              text: breed ? `${o.streak}/${breed.needStreak}🔥` : `${o.streak}🔥`,
+            }),
+          )
         : null,
     ),
 
@@ -454,6 +912,64 @@ function card(o, cfg, ctx) {
     o.dead
       ? el("div", { class: "card-foot", text: `died at window ${o.deathWindow}` })
       : el("div", { class: "card-foot" }, runway(o.treasury, cfg)),
+
+    vitals(o, cfg, moved ? prev : null, fx),
+  );
+}
+
+/**
+ *  The vitals bar — how much life is left, against how much it was given.
+ *
+ *  `runway()` already prints the honest number: treasury ÷ metabolicCost, in windows. This draws
+ *  the same quotient as a bar whose full scale is `endowment ÷ metabolicCost`, so a full bar means
+ *  "this organism still has as much runway as it was born with" and a sliver means it has spent
+ *  almost all of it. The denominator is read off chain config rather than chosen, which is the
+ *  difference between a measurement and a decorative gauge with an invented maximum.
+ *
+ *  It is here because the grid is the one place a judge looks first, and twelve numbers cannot be
+ *  compared at a glance while twelve bars can — this is what makes the population read as a
+ *  population under pressure rather than a table of balances. Colour comes off `runway()`'s own
+ *  5/20 thresholds rather than restating them, so the bar and the line above it can never disagree
+ *  about whether an organism is starving.
+ */
+function vitals(o, cfg, prev, fx) {
+  const cost = cfg.metabolicCost == null ? null : BigInt(cfg.metabolicCost);
+  if (!cost || cost === 0n || cfg.endowment == null) return null;
+  const born = BigInt(cfg.endowment) / cost;
+  if (born === 0n) return null;
+
+  const pct = (t) => {
+    const windows = BigInt(t) / cost;
+    return windows >= born ? 100 : Number((windows * 100n) / born);
+  };
+
+  const left = o.dead ? 0n : BigInt(o.treasury ?? 0n) / cost;
+  const was = prev == null ? null : `${pct(prev)}%`;
+
+  return el(
+    "div",
+    {
+      class: "vitals",
+      title: o.dead
+        ? "no runway — this organism is dead"
+        : `${left} of ${born} ${plural(born, "window")} of metabolism left`,
+    },
+    el("div", {
+      class: ["vitals-fill", left < 5n ? "bad" : left < 20n ? "warn" : null],
+      style: { width: `${o.dead ? 0 : pct(o.treasury ?? 0n)}%` },
+      // Three cases, and only one of them animates on its own. A death drains the bar as part of
+      // the death timeline (`data-was` is read there, and is deliberately not a `data-fx` so the
+      // generic handler does not also claim it); a live balance change slides the bar; a birth
+      // animates as a whole card and needs no separate stamp.
+      dataset:
+        was == null
+          ? undefined
+          : fx === "died"
+            ? { was }
+            : fx == null
+              ? { fx: "vitals", fxFrom: was }
+              : undefined,
+    }),
   );
 }
 
@@ -480,15 +996,94 @@ function runwayTone(treasury, cfg) {
   return windows < 5n ? "bad" : windows < 20n ? "warn" : undefined;
 }
 
+/**
+ *  `_breedThreshold()` (`Population.sol:1408`): `endowment + endowment * breedSurplusBps / 10_000`.
+ *
+ *  One function so the detail pane and the wiring panel cannot print two different thresholds — the
+ *  same reason `runwayTone` is derived from `runway`'s bands instead of repeating them. Returns null
+ *  when either constant is missing; every caller renders a dash rather than a default.
+ */
+function breedThreshold(cfg) {
+  if (cfg.endowment == null || cfg.breedSurplusBps == null) return null;
+  const endowment = BigInt(cfg.endowment);
+  return endowment + (endowment * BigInt(cfg.breedSurplusBps)) / 10_000n;
+}
+
+/**
+ *  How close an organism is to reproducing — the other end of the same story `runway()` tells.
+ *
+ *  `Population.sol:1376` gates reproduction on TWO bars at once, `streak() >= breedStreak` AND
+ *  `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`:1408`) is
+ *  `endowment + endowment * breedSurplusBps / 10_000`. Both constants are `setEconomics` values that
+ *  `discover()` reads once, and until this existed the page rendered `streak` as a bare number: a 3
+ *  with no scale, on a page whose headline metric is generation. An organism one correct call from
+ *  a child looked exactly like one that had just started counting.
+ *
+ *  IT RETURNS null RATHER THAN A GUESS. If either constant is missing — a failed discovery call, an
+ *  older deployment — the caller omits the row entirely. A default substituted here would render as
+ *  a reading, and a reader has no way to tell the two apart; a missing row is at least honest about
+ *  being missing. Dead organisms return null for the same reason: `alive` gates every transition, so
+ *  a corpse's streak is a fossil, not progress.
+ */
+function breeding(row, cfg, ctx = {}) {
+  if (!row || row.dead) return null;
+
+  const needStreak = cfg.breedStreak == null ? null : Number(cfg.breedStreak);
+  const need = breedThreshold(cfg);
+  if (needStreak == null || !Number.isFinite(needStreak) || need == null) return null;
+
+  const streak = Number(row.streak ?? 0);
+  const treasury = row.treasury == null ? 0n : BigInt(row.treasury);
+
+  // The third gate, and the reason the summary hedges instead of promising a child: `hatchAll`
+  // BREAKS at the cap (`:1347`), so a population at `maxPopulation` leaves an organism that has
+  // cleared both bars with nowhere to put the child it earned. `living` is threaded through `ctx`
+  // for the same reason `depth` is — it belongs to the live state, not to the discovered config,
+  // and deriving it separately in two renderers is how two numbers that agree today disagree later.
+  const cap = cfg.maxPopulation == null ? null : Number(cfg.maxPopulation);
+  const living = ctx.living == null ? null : Number(ctx.living);
+  const full = cap != null && living != null && living >= cap;
+
+  return {
+    needStreak,
+    need,
+    streak,
+    short: need > treasury ? need - treasury : 0n,
+    streakOk: streak >= needStreak,
+    treasuryOk: treasury >= need,
+    ready: streak >= needStreak && treasury >= need,
+    full,
+  };
+}
+
+/**
+ *  The same reading as a sentence. Deliberately says what is MISSING rather than a percentage:
+ *  "needs 2 more in a row" is actionable and a 67% is not, and the two bars are different units
+ *  that no single bar could honestly combine.
+ */
+function breedingSummary(b, cfg) {
+  if (b.ready) {
+    return b.full
+      ? "clears both bars, but the arena is full"
+      : "clears both bars — a mutation is requested at the next settlement";
+  }
+  const wants = [];
+  if (!b.streakOk) {
+    const n = b.needStreak - b.streak;
+    wants.push(`${n} more correct in a row`);
+  }
+  if (!b.treasuryOk) wants.push(`${money2(b.short, cfg)} more`);
+  return `needs ${wants.join(" and ")}`;
+}
+
 /*//////////////////////////////////////////////////////////////
                           ORGANISM DETAIL
 //////////////////////////////////////////////////////////////*/
-
 /**
  *  Where an organism came from.
  *
- *  `parentId 0` is NOT one thing. Both `spawnGenesis` (Population.sol:489) and the permissionless
- *  `enter` (:594) spawn with `parentId 0, generation 0`, so a stranger who paid the ante is
+ *  `parentId 0` is NOT one thing. Both `spawnGenesis` (Population.sol:528) and the permissionless
+ *  `enter` (:678) spawn with `parentId 0, generation 0`, so a stranger who paid the ante is
  *  structurally a root, indistinguishable from a founder except by `birthWindow`. Printing
  *  "none (root)" for both would erase the single most interesting fact this page can show about a
  *  permissionless arena: that somebody outside the operator bought in and is being selected over.
@@ -523,15 +1118,35 @@ function parentField(row, ctx) {
  */
 export function detail(row, info, cfg, ctx = {}) {
   if (!row) {
+    // THE PANE BEFORE ANYTHING IS SELECTED.
+    //
+    // On first load this panel sits beside the population, which makes it the second thing on the
+    // page a stranger looks at — and it used to hold one italic sentence in a box, which read as a
+    // gap in the layout rather than as an invitation. It now spends that space on the one concept
+    // the grid cannot show. A card can show a balance, a record and a bar; it cannot show that the
+    // organism IS a sentence, which is the whole idea and the reason `generation` is the headline
+    // metric instead of PnL. Nothing here is a feature — it is the copy this pane needed.
     return el(
       "aside",
-      { class: "panel panel-detail" },
-      el("p", { class: "empty", text: "Select an organism to read its genome." }),
+      { class: "panel panel-detail detail-invite" },
+      el("div", { class: "panel-head" }, el("h2", { text: "Genome" })),
+      el("p", {
+        text:
+          "Every organism is one English sentence — a trading thesis, stored on chain as a string. " +
+          "That sentence is the entire strategy. Nothing else tells one organism from another.",
+      }),
+      el("p", {
+        text:
+          "Thinking costs it real value every window, and a child inherits the sentence mutated. " +
+          "What survives a season is a sentence that kept paying for its own thinking.",
+      }),
+      el("p", { class: "empty", text: "Pick an organism to read its genome, its last reasoning and its open position." }),
     );
   }
 
   const name = ctx.labels?.get(Number(row.id));
   const wr = winRate(row.correctCount, row.wrongCount);
+  const breed = breeding(row, cfg, ctx);
   const pending = info && (BigInt(info.pendingBeliefRequestId ?? 0n) > 0n || BigInt(info.pendingMutationRequestId ?? 0n) > 0n);
 
   return el(
@@ -555,7 +1170,20 @@ export function detail(row, info, cfg, ctx = {}) {
       }),
       field("belief", beliefTag(row.belief, row.thesis)),
       field("record", `${row.correctCount}W / ${row.wrongCount}L / ${row.abstainCount}A · ${wr.text}`),
-      field("streak", String(row.streak)),
+      field("streak", breed ? `${row.streak} / ${breed.needStreak}` : String(row.streak), {
+        tone: breed?.streakOk ? "ok" : undefined,
+        title: breed ? "consecutive correct calls, against the streak bar for breeding" : undefined,
+      }),
+      // THE OTHER END OF THE STORY `runway` TELLS. Metabolism says how many windows an organism has
+      // left; this says what it still owes to earn a child. Both bars come off the chain
+      // (`breedStreak`, `breedSurplusBps`), so the row is omitted entirely — never guessed — when
+      // discovery could not read them, and never shown for a corpse.
+      breed
+        ? field("breeding", breedingSummary(breed, cfg), {
+            tone: breed.ready && !breed.full ? "ok" : undefined,
+            title: `streak >= ${breed.needStreak} and treasury >= ${money2(breed.need, cfg)} (Population.sol:1376)`,
+          })
+        : null,
       field("windows lived", String(row.windowsLived)),
       field("address", link(addressUrl(row.addr), addr(row.addr, 10, 8), { class: "mono", title: row.addr })),
       field("genome hash", el("span", { class: "mono", title: row.genomeHash, text: hash(row.genomeHash, 10, 8) })),
@@ -654,6 +1282,11 @@ export function tree(t, cfg, ctx = {}) {
     viewBox: `0 0 ${width} ${height}`,
     width,
     height,
+    // `.tree` is `min-width: 100%` so the panel never shows a collapsed canvas, and the default
+    // `xMidYMid` was therefore centring a 480px tree inside a 1440px box — half the lineage panel
+    // was empty on the left and the generation axis floated in the middle of nowhere. Pinning to
+    // xMin means the tree grows rightwards from G0, which is also the direction descent reads in.
+    preserveAspectRatio: "xMinYMin meet",
     role: "img",
     "aria-label": "lineage tree",
   });
@@ -674,6 +1307,10 @@ export function tree(t, cfg, ctx = {}) {
       svg("path", {
         class: ["tree-edge", e.dead && "is-dead"].filter(Boolean).join(" "),
         d: `M ${x(a)} ${y(a)} H ${mid} V ${y(b)} H ${x(b)}`,
+        // An edge into an organism born since the last paint draws itself, parent to child. Set as
+        // a raw attribute because `svg()` takes no `dataset` — SVG elements still expose `.dataset`
+        // to `motion.js` on the reading side.
+        "data-fx": ctx.fx?.organisms?.get(e.to) === "born" ? "edge" : null,
       }),
     );
   }
@@ -859,9 +1496,31 @@ const SUMMARY = {
     " of outcome ",
     el("span", { class: "mono", text: String(a.outcomeId).slice(0, 12) + "…" }),
   ],
+  // `Settled.correct` IS NOT THE FORECAST GRADE, despite its name. `Prophet.sol:444` assigns it
+  // `won = collateralOut > staked` and emits that at `:520` — a statement about money. The grade is
+  // three-valued and lives elsewhere in the same function (`:474-495`): `quantity == 0` or a belief
+  // of `Abstain`/`None` increments `abstainCount`, a real loss increments `wrongCount`, and a voided
+  // duel that refunds both antes (`collateralOut == staked`) increments NOTHING at all. All three
+  // arrive here as `correct: false`, and the event carries neither `quantity` nor `belief`, so this
+  // row cannot tell them apart and must not pretend to.
+  //
+  // It used to print red "wrong" for all three. That contradicted the organism's own W/L/A record on
+  // the card beside it — and abstaining is ordinary by design, not an edge case: an organism that
+  // cannot afford its inference deposit abstains, and a non-`Success` inference collapses to
+  // `Abstain` rather than reverting. So the false branch says only what the flag licenses, in amber
+  // rather than the red that would assert a wrong call, and names the record as the authority.
   Settled: (a, cfg, ctx) => [
     chip(a.prophetId, ctx),
-    a.correct ? el("span", { class: "ok", text: " correct" }) : el("span", { class: "bad", text: " wrong" }),
+    a.correct
+      ? el("span", { class: "ok", text: " correct" })
+      : el("span", {
+          class: "warn",
+          text: " no win",
+          title:
+            "Settled.correct is collateralOut > staked (Prophet.sol:444), not the forecast grade. " +
+            "A loss, an abstain and a voided duel are indistinguishable in this event — the " +
+            "organism's correct/wrong/abstain record is the authority.",
+        }),
     " · out ",
     money2(a.collateralOut, cfg),
     " · treasury ",
@@ -938,21 +1597,26 @@ export function feed(logs, cfg, ctx = {}) {
         text: ctx.range ? `${rows.length} events over ${ctx.range} blocks` : `${rows.length} events`,
       }),
     ),
-    el("ol", { class: "feed" }, shown.map((l) => feedRow(l, cfg, ctx))),
+    el("ol", { class: "feed" }, shown.map((l, i) => feedRow(l, cfg, ctx, i))),
     rows.length > shown.length
       ? el("p", { class: "muted", text: `${rows.length - shown.length} older events not shown` })
       : null,
   );
 }
 
-function feedRow(l, cfg, ctx) {
+function feedRow(l, cfg, ctx, i = -1) {
   const make = SUMMARY[l.eventName];
   const body = make ? make(l.args || {}, cfg, ctx) : generic(l.args);
   const ts = ctx.stamps?.get(String(l.blockNumber));
 
   return el(
     "li",
-    { class: ["feed-row", SEVERITY[l.eventName] && `sev-${SEVERITY[l.eventName]}`] },
+    {
+      class: ["feed-row", SEVERITY[l.eventName] && `sev-${SEVERITY[l.eventName]}`],
+      // The feed is newest-first and append-only, so "the rows added since the last paint" is
+      // exactly its first N — which means `main.js` can report a count and never has to key logs.
+      dataset: i >= 0 && i < (ctx.fx?.newRows ?? 0) ? { fx: "new" } : undefined,
+    },
     el(
       "div",
       { class: "feed-when" },
@@ -973,15 +1637,198 @@ function feedRow(l, cfg, ctx) {
 }
 
 /*//////////////////////////////////////////////////////////////
+                           THE PRIMER
+//////////////////////////////////////////////////////////////*/
+
+/** One numbered beat of the mechanism. The number is an element, not a list marker, so it can be
+ *  aligned against the claim rather than against the prose. */
+function beat(n, claim, ...body) {
+  return el(
+    "li",
+    { class: "beat" },
+    el("span", { class: "beat-n", text: String(n) }),
+    el(
+      "div",
+      { class: "beat-body" },
+      el("h3", { class: "beat-claim", text: claim }),
+      ...body.filter(Boolean),
+    ),
+  );
+}
+
+/**
+ *  THE THREE FOUNDER GENOMES, OF WHICH THE FRONT DOOR NOW QUOTES ONE.
+ *
+ *  Every string here is a **verbatim** substring of the matching organism's `genome` in
+ *  `genomes/genesis.json` — the file `script/Seed.s.sol` loads — so a reader who goes looking finds
+ *  the same words on chain. That is the entire reason to quote instead of describing, and it is why
+ *  `specimen()` captions each one with the filename.
+ *
+ *  The rules, and they are strict because the caption makes a claim on the reader's behalf:
+ *
+ *    - An `…` marks material removed. Every run of text BETWEEN ellipses must appear in the genome
+ *      character for character, punctuation included.
+ *    - A fragment must end where the genome ends a sentence. Closing an elision with a full stop
+ *      where the source has a comma is the specific defect this constant was extracted to prevent:
+ *      it presents a mid-sentence clause as a sentence the organism never ends there, and REVERSION
+ *      and SKEPTIC both did exactly that until 2026-09-01.
+ *    - Nothing is reworded, reordered, or tightened for the layout. If a quote is too long, cut a
+ *      whole sentence and mark it with an `…`.
+ *
+ *  ALL THREE STAY, though `primer()` now renders only MOMENTUM. The rules above are asserted against
+ *  `genesis.json` by `test/smoke.mjs` over this constant, not over the page, so a mis-transcribed
+ *  REVERSION or SKEPTIC still fails the build while it sits unrendered. Trimming this to what the
+ *  page happens to show would silently retire two thirds of that check, and the two quotes are what a
+ *  second specimen would have to be built from if one is ever wanted back.
+ *
+ *  Exported for that reason. Note what is and is not recoverable from the DOM, because `smoke.mjs`
+ *  depends on the distinction: a `blockquote.genome` holds exactly one text node, so ONE quote reads
+ *  back out of it character for character. The surrounding PANEL does not — inline elements
+ *  concatenate without whitespace, and `UP_MOMENTUM` contains the string `MOMENTUM`, so a
+ *  whole-panel `textContent.includes(quote)` is both fragile and satisfiable by accident.
+ *
+ *  MOMENTUM and REVERSION are unbroken runs — no `…` at all — because each was eliding exactly one
+ *  sentence, and that sentence ("Your rule is simple and you apply it without flinching." / "So you
+ *  fade.") is the stance the thesis takes. That is why MOMENTUM is the one the primer shows: its
+ *  elided sentence is the mechanism the five beats describe.
+ */
+export const FOUNDER_QUOTES = {
+  MOMENTUM:
+    "You believe short-horizon price moves persist. Order flow is autocorrelated over " +
+    "minutes: whoever is pushing price is usually still pushing at the close of a " +
+    "15-minute window. Your rule is simple and you apply it without flinching. If price " +
+    "is above the window's opening level, answer UP_MOMENTUM. If below, answer DOWN_MOMENTUM.",
+  REVERSION:
+    "You believe short-horizon moves overshoot. Within a 15-minute window most displacement " +
+    "from the opening level is liquidity being consumed, not information arriving, and thin " +
+    "books overshoot before settling back. So you fade. If price is above the window's open, " +
+    "answer DOWN_REVERSION, expecting the move to exhaust. If below, answer UP_REVERSION.",
+  SKEPTIC:
+    "Unless price has moved dramatically from the opening level and there is very little " +
+    "time left for it to reverse, answer ABSTAIN. … You would rather say nothing than be " +
+    "wrong, and you regard the willingness to abstain as your central discipline rather " +
+    "than a weakness.",
+};
+
+/**
+ *  A real founder genome, quoted. `.genome` is the same italic-serif, left-ruled treatment the
+ *  detail pane gives a living organism's genome, because it is the same kind of object.
+ *
+ *  Pass the text from `FOUNDER_QUOTES` above, never a literal written at the call site — the
+ *  constant is what `test/smoke.mjs` checks against `genomes/genesis.json`, so a quote written
+ *  inline here would be a quote nothing verifies.
+ */
+function specimen(name, text) {
+  return el(
+    "figure",
+    { class: "specimen" },
+    el("blockquote", { class: "genome", text }),
+    el(
+      "figcaption",
+      {},
+      el("b", { class: "specimen-name", text: name }),
+      " · founder genome, quoted from ",
+      el("code", { text: "genomes/genesis.json" }),
+    ),
+  );
+}
+
+/**
+ *  What this page is, in the fewest words that still say something true.
+ *
+ *  This was five prose paragraphs — roughly 750 words — and every one of them restated a beat the
+ *  landing page at `/` already makes, animated, as its entire job. So the front door of the
+ *  telescope was a second and worse explanation of the same system, on the surface whose job is to
+ *  SHOW it. What survives is the five CLAIMS, one line each. They are assertions rather than
+ *  teasers, so a reader who stops here still leaves knowing what the thing does, and the long
+ *  version is one click away behind the primary action.
+ *
+ *  Beat 4 earns its line twice over: "only disagreement can open a position" is the one thing
+ *  `/`'s own five animated beats never say.
+ *
+ *  ONE genome, not three. A strategy you can read is the most concrete object this project has, and
+ *  beat 1 is the claim it proves, so exactly one stays. `FOUNDER_QUOTES` keeps all three, because
+ *  the constant — not the page — is what `test/smoke.mjs` checks against `genomes/genesis.json`,
+ *  and a mis-transcribed quote must still fail that check while it sits unrendered.
+ *
+ *  It cites NO magnitudes. `config.js` deliberately carries no economics — no ante, no metabolic
+ *  cost, no endowment — so any number here would have to be invented, and a page that prints an
+ *  invented ante is the same class of error as a mock. What it can state is MECHANISM, which is
+ *  fixed by deployed contract logic rather than by a tunable parameter, and it can quote a real
+ *  genome. Both survive the deploy without becoming false.
+ *
+ *  Static by construction: no chain read, no `data-fx` stamp, nothing starting at `opacity: 0`.
+ *  A visitor with no wallet, no JavaScript-driven data and no deployed population still gets the
+ *  whole argument.
+ */
+export function primer() {
+  return el(
+    "section",
+    { class: "panel panel-primer" },
+    el("div", { class: "panel-head" }, el("h2", { text: "What this page is" })),
+
+    el(
+      "p",
+      { class: "primer-status" },
+      "A living population of AI forecasters, watched from outside. This page reads the chain " +
+        "directly — no wallet, no account, nothing to sign.",
+    ),
+    el(
+      "p",
+      { class: "primer-status" },
+      "Season 0 is not deployed yet, so there is nothing running to watch.",
+    ),
+
+    el(
+      "ol",
+      { class: "beats beats-terse" },
+      beat(1, "An organism is a strategy written in English.", specimen("MOMENTUM", FOUNDER_QUOTES.MOMENTUM)),
+      beat(2, "Every fifteen minutes, the market asks one question."),
+      beat(3, "Each one answers by thinking, and thinking is metered."),
+      beat(4, "Only disagreement can open a position."),
+      beat(5, "The close pays, charges, and kills."),
+    ),
+
+    el(
+      "div",
+      { class: "primer-actions" },
+      el("a", { class: "btn btn-primary", href: "/" }, "How it works, and how to enter"),
+      el("a", { class: "btn btn-ghost", href: "?demo=1" }, "See it with sample data"),
+    ),
+  );
+}
+
+/*//////////////////////////////////////////////////////////////
                          SETUP / PRE-DEPLOY
 //////////////////////////////////////////////////////////////*/
 
 /**
- *  What the page shows when it has no address — which, until the Season 0 deploy, is ALWAYS.
+ *  The operator's tool, folded away — which before the Season 0 deploy is the honest place for it.
  *
- *  It is not an error state and is deliberately not styled as one. Nothing is deployed yet, so
- *  this is the honest resting state of the repo, and it offers the two things a visitor can
- *  actually do: point the page at a population, or look at the fixture.
+ *  It used to be the second half of the front door, under a heading reading "If you already have a
+ *  population address". That heading taught the WRONG MODEL of the system, and did it reliably: a
+ *  reader took it to mean an organism has an address of its own and that acquiring one is step one.
+ *  It is not. There is ONE `Population` proxy per season, every organism is a row inside it
+ *  identified by a number, the proxy's address is written into
+ *  `contracts/deployments/<chainid>.json` by the deploy, and both surfaces resolve it from there in
+ *  the same order — so nobody, the operator included, types it in the normal case. This field is for
+ *  the abnormal ones: a second deploy, a local fork, a stale manifest.
+ *
+ *  Its button said "Connect", in `btn-primary`, and was therefore the loudest thing on the page.
+ *  That word means "connect a wallet" to anybody who has ever used one, and THIS PAGE HAS NO WALLET:
+ *  `chain.js` builds an `http()` transport and nothing else — no `createWalletClient`, no
+ *  `writeContract`, no `window.ethereum` anywhere under `web/`. So the loudest affordance on the
+ *  page was a promise the surface cannot keep, which is the same hierarchy inversion `.beat-claim`
+ *  had, expressed in copy instead of in CSS. The primary action now belongs to `primer()` and points
+ *  at `/`, which is where a wallet actually is.
+ *
+ *  The RPC is likewise no longer a question asked of a visitor. `DEFAULT_RPC` is used unless
+ *  something overrides it, `?rpc=` and `localStorage` still do, and the field is here for the person
+ *  who needs it rather than in front of the person who does not.
+ *
+ *  Collapsed, not removed: same form, same two inputs, same `onConnect`, same discovery guarantee.
+ *  A `badQuery` forces it OPEN, because an address that was silently ignored has to be explained at
+ *  the moment it is ignored, and an explanation folded inside a closed disclosure is not one.
  */
 export function setupCard(ctx, handlers) {
   const input = el("input", {
@@ -1006,17 +1853,9 @@ export function setupCard(ctx, handlers) {
   const submit = () => handlers?.onConnect?.(input.value.trim(), rpc.value.trim());
 
   return el(
-    "section",
-    { class: "panel panel-setup" },
-    el("h2", { text: "Point this page at a population" }),
-    el(
-      "p",
-      { class: "lede" },
-      "One address is all it needs. The collateral, price source, venue, selection engine and " +
-        "traded symbol are read off the ",
-      el("code", { text: "Population" }),
-      " proxy itself, so this page cannot be aimed at a venue the population no longer uses.",
-    ),
+    "details",
+    { class: "panel panel-setup", open: !!(ctx.badQuery || ctx.noContract) },
+    el("summary", {}, "Advanced — point this page at another population"),
 
     ctx.badQuery
       ? el(
@@ -1024,6 +1863,18 @@ export function setupCard(ctx, handlers) {
           { class: "bad" },
           el("code", { text: ctx.badQuery }),
           " is not a valid address, so it was ignored.",
+        )
+      : null,
+
+    ctx.noContract
+      ? el(
+          "p",
+          { class: "bad" },
+          el("code", { text: ctx.noContract }),
+          " is a valid address but holds no contract on chain ",
+          el("code", { text: String(ctx.chainId) }),
+          ", so every read came back empty. Edit it below. Nothing is wrong with the network — an " +
+            "unreachable node leaves this field closed instead.",
         )
       : null,
 
@@ -1038,30 +1889,26 @@ export function setupCard(ctx, handlers) {
       },
       el("label", { for: "pop-input", text: "Population proxy" }),
       input,
-      el("label", { for: "rpc-input", text: "RPC (optional)" }),
+      el("label", { for: "rpc-input", text: "RPC endpoint" }),
       rpc,
       el(
         "div",
         { class: "setup-actions" },
-        el("button", { class: "btn btn-primary", type: "submit" }, "Connect"),
-        el("a", { class: "btn btn-ghost", href: "?demo=1" }, "View the fixture instead"),
+        el("button", { class: "btn btn-ghost", type: "submit" }, "Load it"),
       ),
     ),
 
     el(
-      "div",
+      "p",
       { class: "setup-note" },
-      el("h3", { text: "Nothing is deployed yet" }),
-      el(
-        "p",
-        {},
-        "Season 0 deploys at the storage freeze. Until then there is no address to ship, and " +
-          "inventing one here would give you a page that renders confident zeroes for a " +
-          "contract that does not exist. ",
-        el("a", { href: "?demo=1", text: "The fixture" }),
-        " shows every surface with synthetic data instead.",
-      ),
-      el("p", { class: "muted" }, "Chain ", el("code", { text: String(ctx.chainId) }), " · Somnia Shannon testnet."),
+      "Leave the RPC blank for ",
+      el("code", { text: ctx.defaultRpc }),
+      " on chain ",
+      el("code", { text: String(ctx.chainId) }),
+      ". Everything else — collateral, price source, venue, selection engine, traded symbol — is read " +
+        "off the ",
+      el("code", { text: "Population" }),
+      " proxy itself, so this page cannot be aimed at a venue the population no longer uses.",
     ),
   );
 }
@@ -1099,8 +1946,29 @@ export function wiringPanel(cfg) {
       field("metabolic cost", money2(cfg.metabolicCost, cfg, 4)),
       field("min stake", money2(cfg.minStake, cfg)),
       field("min endowment", money2(cfg.minEndowment, cfg)),
-      field("cognition endowment", `${stt(cfg.cognitionEndowment)} STT`),
-      field("request deposit", `${stt(cfg.requestDeposit)} STT`),
+      // `dash`, not a template literal, and the reason is `discover()`'s shape. It settles all
+      // twenty-two keys independently (`chain.js:174`) and writes `null` for any one that reverted,
+      // because a partial discovery is meant to degrade — `readErrors` exists to name exactly which
+      // key failed. But `stt` is `units`, and `units` starts with `BigInt(value)`, which THROWS on
+      // null. Every money field here was already guarded by `money2`; these two were not, so one
+      // flaky response out of twenty-two threw inside this panel, and `paint()` builds `#body` from
+      // a single argument list (`main.js:232-241`) — so the throw discarded the grid, the tree, the
+      // feed and the error panel that would have reported it, and left a masthead over a blank page.
+      //
+      // The guard belongs here and NOT in `units`: it is the character-for-character port of `fmt`
+      // in `scripts/lib/darwin.ts`, kept identical so the page and `monitor.ts` never disagree about
+      // a treasury. Teaching it to swallow null would hide the next unguarded call site instead.
+      field("cognition endowment", dash(cfg.cognitionEndowment, (x) => `${stt(x)} STT`)),
+      field("request deposit", dash(cfg.requestDeposit, (x) => `${stt(x)} STT`)),
+      // The reproduction gates, printed as the rule rather than as three loose numbers, because
+      // separately they say nothing: the threshold is derived from `endowment` and the surplus, and
+      // the cap is a gas bound rather than a design limit (Population.sol:73).
+      cfg.breedStreak == null
+        ? null
+        : field("breeds at", `${Number(cfg.breedStreak)} in a row · ${money2(breedThreshold(cfg), cfg)}`, {
+            title: "streak bar and treasury bar, both from setEconomics — Population.sol:1376",
+          }),
+      cfg.maxPopulation == null ? null : field("max population", `${Number(cfg.maxPopulation)} alive at once`),
     ),
   );
 }

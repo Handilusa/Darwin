@@ -77,8 +77,11 @@ contract DreamDEXVenue is IArenaVenue {
 
         // Per-call approval, not infinite: pools are recycled across windows, and
         // a standing allowance to a recycled address is a liability nobody is
-        // watching.
-        IERC20Like(collateralToken).approve(pool, amount);
+        // watching. Checked like every other value movement here — an `approve`
+        // answering `false` instead of reverting would send `mintSet` into a pull it
+        // cannot make, and the caller would read the resulting failure as the
+        // market's rather than the token's.
+        if (!IERC20Like(collateralToken).approve(pool, amount)) revert TransferFailed();
         IBinaryPool(pool).mintSet(up, down, amount);
 
         poolOf[upId] = pool;

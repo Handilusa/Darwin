@@ -5,6 +5,23 @@ DARWIN build, Somnia × DreamDEX Event Contracts Hackathon (closes 2026-09-08).
 Plan unchanged: `C:\Users\Handi\.claude\plans\delightful-coalescing-grove.md`.
 Working directory: `C:\Users\Handi\Desktop\somnia_predict\darwin`.
 
+> **WHERE THE CURRENT STATE IS — read this before anything below it.** This file is an
+> **append-only dated log**, and its title date is its *first* segment, not its last. The newest
+> state is the **`## 2026-09-05`** section at the very end; everything above that is a dated record
+> of what was true on the day it was written, kept deliberately un-rewritten so that it stays
+> evidence. Live descriptions get re-stamped in place with a date; dated run records get a forward
+> pointer instead, never a silent edit.
+>
+> The **live status list** is `bugs_jueves.txt` at the **repo root** — one level *above* this project,
+> which is why the 2026-09-05 section restates its contracts-and-ops half here: that file will not
+> travel with `darwin/`. For the frontend, `FRONTEND_CHECKPOINT.md` §8.17 is the newest section, and
+> `darwin/CLAUDE.md` is the one document that is always kept current.
+>
+> As of 2026-09-05 the whole suite is green — Solidity **124/124**, web **189 PASS / 0 FAIL** over 167
+> `assert()` call sites, typecheck clean, `reads.mjs` 21 checks, cadence 13 checks / 2 controls, ABI
+> 256/257 guarded, both CDP harnesses PASS — and **nothing is deployed**. `contracts/deployments/` is
+> empty. Deploying and broadcasting are the user's call.
+
 This segment produced **no new architecture**, by instruction. It closed empirical gaps
 using installed ABIs, primary docs and live Shannon reads, and recorded the results.
 
@@ -122,7 +139,7 @@ requestId 12650214, agentId matches). It decodes as
 
 1. `inferString(string prompt, string system, bool chainOfThought, string[] allowedValues)`
    is correct as declared — **arg1 is a system prompt, not a model name**, which is exactly
-   what `Population.think` passes (`p.systemPrompt()`, `Population.sol:366`). This was the
+   what `Population.think` passes (`p.systemPrompt()`, `Population.sol:1084`). This was the
    one thing in this segment that looked like it might be a live bug in our code. It is not.
 2. `abi.encodeCall(ILLMAgent.inferString, ...)` matches the live payload encoding: the
    selector computed from our declaration, `0xfe7ca098`, is the selector live requests
@@ -521,7 +538,7 @@ the floor is a per-validator price, not a fixed fee, and it **corroborates §2.1
 the 0.0309 STT that real payers spend is `3 x (0.01 + 0.0003)`.
 
 **2. The cost is a request count, and the floor dominates it.** One request per alive organism
-per window (`Population.sol:367-388`, `dep = requestDeposit()` inside the loop), so:
+per window (`Population.sol:1065`, `dep = requestDeposit()` inside the loop), so:
 
 > cost = `subcommitteeSize x (0.01 + perAgentReward) x aliveCount x windows`
 
@@ -543,7 +560,7 @@ live rate, so it keeps the margin `requestDeposit()`'s own comment argues for, a
 window 45%. 56/56 tests pass; no state variable declaration changed, so **no storage layout
 change is possible**, and `test_upgrade_preservesEveryOrganismField` still passes.
 
-**What must NOT be cut:** `subcommitteeSize` to 1. `Prophet.sol:209` requires `agree >= 2`
+**What must NOT be cut:** `subcommitteeSize` to 1. `Prophet.sol:252` requires `agree >= 2`
 independently of the platform's own tally, so a subcommittee of 1 abstains every window while
 still paying. A subcommittee of 2 works but requires **unanimity**, so one dissenting
 validator becomes an abstention — real reliability lost for 0.011 STT/request. Keep 3 unless
@@ -688,10 +705,19 @@ forge inspect Population storage-layout --root contracts
 LLM_AGENT_ID=12847293847561029384 \
   forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia --broadcast
 
-# 3. collateral. On-chain faucet call, capped at 10,000 tUSDC per account (fund.ts:FAUCET_CAP).
-npm run fund -- --faucet --collateral 200
+# 3. collateral, AND the genesis birth float in the same call. `spawnGenesis` is payable and
+#    `_spawn` endows each founder out of `address(this).balance`, so the STT has to already be
+#    there when step 4 runs — 8 founders x 0.33 STT = 2.64, hence 3. Omit `--house` and nothing
+#    tells you: `_houseCognition` (`Population.sol:548-550`) is a view that silently returns 0
+#    when the balance is short — no revert, no event — and generation 0 is born brain-dead,
+#    which you discover only when the organisms never think. THE FLOAT ONLY MATTERS AT GENESIS:
+#    `_hatch` (`Population.sol:1495-1531`) draws a child's cognition from the PARENT via
+#    `drawCognition`, never from the house, so this is a one-shot requirement, not a standing
+#    balance. Faucet is capped at 10,000 tUSDC per account (fund.ts:FAUCET_CAP).
+npm run fund -- --faucet --collateral 200 --house 3
 
-# 4. seed the 8 founding organisms. MUST come before step 5 — see the ordering trap below.
+# 4. seed the 8 founding organisms. MUST come before step 5, which can only fund organisms
+#    that already exist — see the note below.
 LLM_AGENT_ID=12847293847561029384 \
   forge script script/Seed.s.sol:Seed --root contracts --rpc-url somnia --broadcast
 
@@ -711,10 +737,18 @@ npm run prove
 per-window cost and remaining runway in windows and hours, and spends nothing. Safe to run
 at any point, and the fastest way to see whether the population is about to go quiet.
 
-**Ordering trap in step 5, verified by reading `fund.ts:88-101`.** `--windows` sizes the
-top-up as `requestDeposit() * aliveCount()`, and it falls back to `1n` when `aliveCount()`
-is 0. Run it before seeding and it funds **one** organism, not eight — 24 STT instead of
-192, with no warning, and the population starves after ~50 windows instead of 400.
+**Step 5 has to follow step 4, verified by reading `fund.ts:111-148` and `fund.ts:196-215`.**
+`--windows` sizes the top-up from `runways()`, which reads `snapshot()` and keeps the rows where
+`dead` is false — so it can only fund organisms that already exist. Run it before seeding and
+there are no rows: it prints *"no living organisms — nothing to fund. Seed the population
+first."* and sends nothing. That is a **refusal**, not the silent under-funding an earlier
+version of this note described — there is no `1n` fallback and no STT is wasted. What it costs is
+attention: skip past the warning and the founders enter the run holding only the 0.33 STT
+`spawnGenesis` gave them, which is ten windows, not 400. The remedy is just to run it again
+after step 4 — it tops each organism **up to** the runway rather than adding to it, so twice is
+idempotent and an organism already flush is skipped instead of being handed STT that only
+`retire` can get back out. It is also the step that spends the most STT of any here, so read
+what it prints before letting it run.
 
 Two path traps, both hit for real: the script argument needs the **`:Deploy`** suffix, and
 `forge script script/Deploy.s.sol --root contracts` run from `darwin/` fails with *"contract
@@ -1008,6 +1042,10 @@ Still open beyond the plan: the live reactivity subscription and `npm run prove`
 deploy, which is the user's call), and `web/`, which does not exist and is the largest schedule
 risk.
 
+> **Superseded 2026-08-30: `web/` exists.** Left as written because this section is the record of
+> where that session stopped. See the live "Resume here" at the end of this document for the
+> current status.
+
 ---
 
 ## 2026-08-30 — Tasks 4 and 5 done: the arena-engine plan is complete
@@ -1049,8 +1087,8 @@ The three rules that matter, because a future reader will be tempted to "simplif
    payout against the stake. Half the backing is exactly one ante because `_pair` clamps both legs
    equal — an invariant the venue depends on and cannot itself check.
 
-Also: `redeemFor` **must not read a price feed** (stated in `DreamDEXVenue`'s header and at
-`Population.sol:1188-1189`) because on the reactive path nobody pushes a price between resolution and
+Also: `redeemFor` **must not read a price feed** (stated in `DreamDEXVenue`'s header, at
+`DreamDEXVenue.sol:17-18`, and at `DirectDuelVenue.sol:139`) because on the reactive path nobody pushes a price between resolution and
 the callback. The level is recorded at `openOpposing`, where a `StalePrice` revert is the *correct*
 outcome and `_pair` already unwinds both antes into a `CommitFailed`.
 
@@ -1146,7 +1184,7 @@ suspected; once the note pointed at the wrong file entirely.
     not `setInference` — so a deploy that skips them runs those defaults rather than a season sized
     to the STT in hand.
   - **The unpredicted one:** §8 claimed the ante *and metabolism* escalate. `metabolicCost` is flat
-    (`Population.sol:63`, `:340`, passed unscaled at `:1204`). Corrected in place rather than
+    (`Population.sol:63`, `:369`, passed unscaled at `:1345`). Corrected in place rather than
     silently deleted, because the section's own arithmetic — "a 1,000-tUSDC organism risking a flat
     0.25 plus 0.05 rent still survives 3,300 windows" — already assumed flat metabolism, so a reader
     who checked would find the prose and the numbers disagreeing and not know which to trust.
@@ -1171,15 +1209,626 @@ suspected; once the note pointed at the wrong file entirely.
 
 The arena-engine plan is finished. What remains is not more contract work:
 
-1. **`web/`** — does not exist, and is now unambiguously the largest schedule risk. Submission is
-   **2026-09-08**. A running population with a thin UI beats a polished UI over a dead one.
+1. **`web/` — built, and no longer the schedule risk it was (2026-08-30).** A zero-build static
+   dashboard: ES modules, viem from a pinned CDN, GSAP vendored as a committed file, no bundler, no
+   install, no backend, no wallet. `?demo=1` renders `web/js/fixture.js` through the identical
+   renderer, so it reviews before Season 0 exists and works with the network unplugged.
+   `npm test --prefix web` is green — fifty renderer call sites and one hundred and sixty-seven
+   `assert()` call sites, which execute 313 renderer calls and 189 checks, no browser —
+   and the page has been verified rendered, not just read, at 1500px and 1920px with motion both on
+   and off. See `web/README.md` for the invariants; the two that bite are **no `innerHTML` anywhere**
+   (`Population.enter` is permissionless, so every genome on screen is untrusted input) and **motion
+   is a property of the diff, never of rendering**. The gap that was open here — a static fixture
+   cannot fire the `born`/`died`/`treasury` timelines, so demo mode had only the entrance, the hovers
+   and the countdown — **is closed**: `fixture.season()` scripts the next window as four snapshots fed
+   through the same `advance()` path a live poll uses, and the death, the birth, the nine simultaneous
+   treasury counts and the reopening window have all been captured on the wall clock over CDP.
+   Submission is **2026-09-08**, and a running population with a thin UI still beats a polished UI
+   over a dead one.
 2. **The Season 0 deploy, whose storage freeze is 2026-09-02.** Dry-run first (same command minus
    `--broadcast`). **Deploying and broadcasting are the user's call, not a session's** — the deploy
    spends real STT and starts a run whose lineage graph cannot be rebuilt.
 3. After the deploy: the reactivity subscription (`npm run subscribe -- --topic0 0xb1884334… --create`
    — pass the topic explicitly, never let `--discover` choose), then `npm run prove` and
    `npm run fee`, then `disableFallback()` only if `prove` passes.
-4. `README.md`, per the stale-docs list above.
+4. ~~`README.md`, per the stale-docs list above.~~ **PARTLY DONE 2026-09-02** — the frontend/arena
+   claims were audited 2026-09-01 and the contracts/economics half on 2026-09-02, which is where the
+   missing escalating-ante/season/prize-pool/rake section and the missing permissionless-entry claim
+   were found. See the 2026-09-02 section at the end of this file for what was wrong and what is
+   still open.
+5. **Deferred by the user's own sequencing on 2026-09-01, not dropped** — the frontend work took
+   priority and none of these were started:
+   - **`_spawn` should have the parent pay the newborn's `cognitionEndowment`**, not the house. Logic
+     only, no new storage, so it does **not** need to beat the 2026-09-02 freeze. It MUST spend
+     `drawCognition`'s returned **`sent`**, never `address(this).balance` — with the balance the
+     subsidy returns invisibly and the newborn is funded by whatever happened to be lying in the
+     contract.
+   - **Fold `endSeason()` and `hatchAll()` into `cadence.ts`**, which is the state machine over the
+     on-chain `phase` described at §560 above; today they are outside it.
+   - **Confirm phase 4's slot state against `STORAGE.md` before the freeze.** Storage is append-only:
+     append into `__gap` only, never into a partially-used slot.
+   - **Confirm whether `contracts/script/Seed.s.sol` exists.** It is permission-denied to Claude
+     sessions, and a deny rule is indistinguishable from absence through `Glob` — so this one needs a
+     human to look.
+6. ~~**Frontend: `node app/test/arena.mjs` is currently FAILING on one check** and the front-door
+   simplification it guards is undeployed. See `docs/FRONTEND_CHECKPOINT.md` §8.12 — that is the live
+   frontend item, ahead of everything in this list except the deploy decision itself.~~
+   **CLOSED 2026-09-02.** `arena.mjs` PASSES, and so do `landing.mjs` (first run ever), the `web`
+   suite (135 assertions that day, 149 as of 2026-09-03, 189 as of 2026-09-05) and `shots.mjs` (9/9).
+   The whole `/arena` rebrand is closed —
+   `FRONTEND_CHECKPOINT.md` §5 and §8 are both marked so. ~~**The live frontend item is now
+   `app/src/sections/Enter.jsx`'s missing "the saved address is not a Population" gate**, described in
+   the 2026-09-02 section at the end of this file: it is the same defect class as the null crash that
+   was fixed in the arena, on the surface a judge lands on first.~~
+   **That gate CLOSED 2026-09-03** (`FRONTEND_CHECKPOINT.md` §8.15) and was re-verified in a browser
+   on 2026-09-05: `Enter.jsx:445/:453/:458` carries the `badQuery` branch, `pop.status ===
+   "undeployed"` is no longer the only gate but the second one at `:472`, and `node app/test/landing.mjs`
+   reports `EOA pointed: absent=true unreachable=false` with the hero reading *"No arena at that
+   address"* and the form withheld. **There is no open frontend item; see the 2026-09-05 section.**
 
 Do not run `forge fmt` before a commit: the repo has never been fmt-clean (all ten `.sol` files
 diff), so it would bury the change set.
+
+> **NO LONGER TRUE, 2026-09-05.** `forge fmt --check --root contracts` now reports **zero diffs**, so
+> the tree is fmt-clean and running `forge fmt` is a no-op that can bury nothing. Verified with a
+> negative control rather than by trusting the exit code, because a formatter that silently checks
+> nothing looks identical to a clean tree: a deliberately misformatted scratch file dropped into
+> `contracts/test/` *was* flagged, and removed again. Keep the habit of `--check` over a bare
+> `forge fmt` anyway — it is the version that cannot rewrite a file you did not mean to touch.
+
+---
+
+## 2026-09-02 — `/arena` CLOSED and verified; three live defects fixed; the README's economics gap found
+
+The freeze day, and no storage moved. Everything below is `web/`, `app/`, docs, or a finding
+handed to the user — **no `.sol` file was edited**, so `STORAGE.md` needs no entry for this segment.
+
+### The suite, in the mandated order, all green
+
+| Step | Result |
+|---|---|
+| `npm test --prefix web` | **135 PASS / 0 FAIL**, 34 render calls (33 `ok` + 1 `null`), scripted-season sub-count **44** |
+| `npm run build --prefix app` | clean, 39.7 s, `dist/arena/ <- web/ (copied verbatim)` |
+| `node app/test/arena.mjs` | **PASS** — 13 cards / 3 corpses, 0 stranded, 20 requests / 0 off-origin, 0 exceptions |
+| `node app/test/landing.mjs` | **PASS** — the first time it has ever been run |
+| `node app/test/shots.mjs` | 9 / 9 captures, verified real (server 200, PNGs 0.6–2.6 MB, one opened and read) |
+
+`FRONTEND_CHECKPOINT.md` §8.12's record of `arena.mjs` FAILING and `landing.mjs` never-run is
+**resolved** — see the `RESOLVED` note at the end of that section. **Item 6 of the "Resume here"
+list above is therefore stale and is corrected in place.**
+
+### Three live defects, and all three were found by measuring rather than by reading
+
+1. **The 22-key null crash.** `discover()` writes `null` per rejected read; `units()` opens with
+   `BigInt(value)` and throws on null; `paint()` builds `#body` from a **single `mount(...)`
+   argument list**, so one throw discards every panel — including the `readErrors` panel that
+   exists to report exactly this. Guarded at the call site (`dash`), never inside `units`, which
+   is a character-for-character port of `fmt` in `scripts/lib/darwin.ts` and must stay identical.
+2. **The three-valued grade emitted as a boolean.** `Prophet.sol` — see the handoff below.
+3. **A selected corpse's ring was painted `--life`.** The sharpest of the three.
+   `.tree-node.is-dead circle` and `.tree-node.is-selected circle` are **both `(0,2,1)`** — two
+   classes and a *type* — so source order decided and the selected rule is later. Measured: a dead
+   ring went `rgb(74,72,84)` → `rgb(95,227,192)`, **byte-identical to a selected living ring**, on
+   the page whose loudest claim is that death is irreversible. Fixed with `(0,3,1)`
+   (`.tree-node.is-dead.is-selected circle { stroke: var(--ash) }`), so it no longer depends on
+   source order at all. Now `[74,72,84]` → `[122,118,134]`.
+
+   **Two things hid it for a day, and both are the transferable lesson.** The label fix of
+   2026-09-01 sat **one rule below** the identical unfixed collision — the sweep read the
+   neighbour and stopped. And the harness check whose own message read *"selection has un-killed
+   it; a corpse must answer inside the ash ramp"* was comparing **`.tree-label` fills**, so it
+   could not see the one element that had actually been un-killed. **A green check is not evidence
+   until you know which element it read.** The ring probe now carries its own living control.
+
+### The agent-society review found nothing, and that is the result worth recording
+
+28 agents, 498 tool uses, ~2.49M subagent tokens, 27.7 min, 0 errored — `confirmed: []`. All five
+candidate findings were killed by verifiers. **Two of them killed a contract-behaviour claim by
+citing the demo fixture**, which had deliberately never exercised the branch; `Prophet.sol`
+confirms the claim. A verifier reading only the incomplete artefact will refute anything that
+artefact declined to demonstrate. Meanwhile the three real defects above were found beside the
+review, by hand, by measuring. Full account in `FRONTEND_CHECKPOINT.md` §8.13.
+
+Standing rule adopted from it: **every "X cannot happen" assertion is paired with a control that
+makes X happen** and requires the same detector to fire. Two checks in this suite once asserted a
+string no code path emits (`"unknown event"`) and stayed green on exactly the state they were
+written to catch. Three of that day's 135 assertions were detector self-tests; the read-verdict work
+on 2026-09-03 added three more, and the season-close work on 2026-09-05 added six — the two
+one-frame-earlier controls at `smoke.mjs:806`/`:811`, the missing-amount em dash at `:826`, the
+unbanded close row at `:835`, the misspelt `SeasonEndedd` at `:841`, and the header-actually-moved
+control at `:855`. Twelve now (`FRONTEND_CHECKPOINT.md` §8.16). The share of the total is deliberately
+no longer quoted here: it was written as "six of 149" and the denominator rotted within two days,
+while the number that matters is that every "X cannot happen" check has a named partner.
+
+### §5.4 closed as DO NOT BUILD
+
+No counterparty field exists in `snapshot()` (`abi.js:43`) or the per-organism reads
+(`abi.js:132-139`); pairing lives only in the `Paired` event, and `POLL_FEED_EVERY_MS` is 60 s over
+a sliding range. Reconstructing who-faced-whom would mean a second event pipeline for a decoration.
+The *rejected* argument is recorded too, because it was wrong and looked right: "`DirectDuelVenue`
+makes it necessary" — no, `_pair` clamps both legs on either venue. §8.14.
+
+### The root `README.md` audit — the contracts and economics half
+
+Only the frontend claims had been checked before today. Verified against the code: `breedStreak = 4`
+matches the loop diagram's "streak ≥ 4"; `genomes/genesis.json` really holds 8; `Darwin.t.sol` really
+has 98 `function test`; the "no `innerHTML` anywhere" claim holds (8 occurrences, **all of them
+comments explaining the rule**, zero uses — and `smoke.mjs` deliberately omits the setter so a use
+fails the suite). What was wrong:
+
+- **The entire phase-4 economics was missing from the README.** Zero mentions of the escalating ante,
+  levels, seasons, the prize pool or the rake — all of it implemented in `Population.sol:141-182,
+  362-382` and all of it displayed prominently in the `/arena` header (`ANTE`, `LEVEL`, `PRIZE POOL`,
+  `RAKE`, `season 1 · 41 / 42`). A judge would read the README, open the page, and meet five economic
+  figures the README never mentions. **Fixed:** new section *"The climate: what an organism risks,
+  and who can enter"*, with the defaults and their reasons.
+- **Permissionless entry was missing too** — no mention of `enter`, `retire`, or that outsiders fund
+  their own organisms, despite `Population.enter` being the public write path that the no-`innerHTML`
+  rule exists to defend against. Added, in the *Claimed* list, with that consequence stated.
+- **"Roughly 1,000 windows fit in eleven days"** described a runway that no longer exists. Re-anchored
+  to what the contract actually encodes: a season is `seasonWindows = 576`, ~6 days, eight levels.
+- **"in a window where all eight agree"** hardcoded the genesis size against `maxPopulation = 24`.
+  Now "every living organism", plus the consequence that `level()` is indexed on window count rather
+  than activity, so the ante is higher when pairing resumes than when it stopped.
+
+**And a defect in the contract's own comment, found while writing that table.**
+`Population.sol:411` says `seasonWindows = 576; // ~6 days: eight levels, and a 256x ante by the
+end`. **Off by one.** `576 / 72 = 8` levels indexed **0 through 7**, so the last level an organism
+actually trades under is 7 and the closing ante is **128×** the base (0.25 → 32 tUSDC). Level 8, and
+256×, begins on window 576 — the very window that unlocks `endSeason()`. The README now says 128×.
+The comment is still wrong and is a one-line fix whenever `.sol` is next touched; it is a comment,
+so it changes no bytecode and no storage.
+
+> **FIXED 2026-09-05, and it grew from one line to seven.** `Population.sol:404-413` now reads the
+> arithmetic out in full — *"576/72 = 8 levels, INDEXED 0 THROUGH 7, so the last level an organism
+> actually trades under is 7 and the season closes at a 128x ante (0.25 -> 32 tUSDC). Level 8, and
+> 256x, begins on window 576 — the very window that first satisfies `endSeason`'s `>= seasonWindows`,
+> so no pairing is ever made at it unless the close is late."* The clause after the dash is the part
+> that was worth more than the correction: **the 256× level is not unreachable, it is unreachable
+> *while the close is punctual*.** A late `endSeason()` does pair organisms at 256×, and since
+> `endSeason` is deliberately permissionless there is no on-chain guarantee of punctuality — so the
+> ante ceiling is an operational property, not a mechanical one. Comment only: no bytecode, no
+> storage, and the 124/124 suite is unchanged by it.
+
+Also worth knowing, and **not fixed**: `Population.sol:413` initializes `seasonId = 1`, while
+`web/js/fixture.js:204` hardcodes `seasonId: 0` and `render.js:318` renders `state.seasonId`
+verbatim. So the demo says *season 0* and the live chain will say *season 1*. The README's "Season 0"
+language follows the fixture, not the contract. One line in the fixture — left alone because some of
+the 44 scripted-season assertions may read it.
+
+> **FIXED 2026-09-03.** `web/js/fixture.js` now says `seasonId: 1` and carries the derivation in a
+> comment at the field. The worry recorded above was **unfounded and was measured rather than
+> reasoned about**: no assertion in `web/test/smoke.mjs` reads `seasonId`, in the scripted-season
+> range or anywhere else. Establishing that took a mutation rather than a grep — `seasonId: 777`
+> left the suite ALL GREEN, so the field is genuinely unasserted, and `seasonId: 42` was tried as
+> well because the only nearby candidate (`the header follows the script to window 42`) matches the
+> bare string `"42"` in the header's whole `textContent` and could have been satisfied by the season
+> number instead of the window number. It was not: that assertion passes on the window count, which
+> `season()` moves to `42n` in frame 2 independently of the season field.
+>
+> The rest of the season block already agreed with a season 1 reading and needed no change:
+> `seasonStartWindow: 0n` is the initializer's own value, `windowCount: 41n` is 41/96 into the FIRST
+> season (so `endSeason` — the only writer of `seasonId`, at `:786` — cannot have run), and
+> `level: 3` / `ante: 3_906_250n` recompute exactly from `level()` and `ante()` at that window
+> ((41-0)/12 = 3; 2.00 x 1.25³ = 3.90625). So the fix is one field, not a set.
+>
+> The scripted-season sub-count is **44 before and 44 after** (region unmoved at `smoke.mjs:462-586`,
+> re-derived by matching the two boundary assertion strings). Suite: **149 PASS / 0 FAIL** over 36
+> render calls (35 `ok` + 1 `null`).
+>
+> `README.md` needed no change either, and that is a judgement call worth recording: its two
+> remaining "Season 0" mentions (`:326`, `:382`) are the **launch event** — *"reviews before Season 0"*,
+> *"before Season 0 exists"* — not claims about what `seasonId()` returns, and the same is true of
+> every other "Season 0" in the tree (`web/js/render.js:118`, `:1779`, `app/src/sections/Enter.jsx:476`,
+> `CLAUDE.md`, `docs/BUSINESS_PLAN.md`). The launch run is Season 0 the event and season **1** the
+> `seasonId`, and nothing on a rendered page states the number except the header stat, which now reads
+> it from a fixture that agrees with the contract. The naming collision is real but it is not a false
+> claim; renaming the launch event is a marketing decision, not a correctness one.
+
+**RESCALED 2026-09-05 — four numbers in the block above are the values of 2026-09-03.** The
+season-close work (audit item C2) added `SeasonEnded` / `SeasonPrizePaid` to the fixture and
+compressed the demo season so a judge can watch one close, so the block above should be read as a
+dated record, not as a description of the tree. What changed, all re-measured today rather than
+inferred: `seasonWindows` is **42**, so `windowCount: 41n` is **41/42** into the first season and the
+header renders `season 1 · 41 / 42` (`render.js:250` prints the progress with spaces around the
+slash); the suite is **189 checks over 167 `assert()` call sites**, not 149; the renderer is driven
+**50 call sites / 313 executed calls**, not 36; and the 44 scripted-season sub-count is intact but
+its region now ends at **`smoke.mjs:462-611`**, the boundary assertions being `season plays 4 frames`
+and `the header follows the script to window 42` inclusive. The reasoning in the block is unaffected:
+41 is still short of the season length, so `endSeason` still cannot have run, and `level: 3` /
+`ante: 3_906_250n` still recompute from window 41 with `levelWindows: 12`.
+
+### Still open after this segment
+
+- ~~**`app/src/sections/Enter.jsx` has no "address saved but it isn't a Population" gate.** Its only
+  gate is `pop.status === "undeployed"` (`:380`). With an EOA saved, `pop.status === "found"`, all
+  nine reads fail silently (`allowFailure: true` → `pick()` → `undefined`), every `<Val>` renders
+  empty — and the caption still asserts *"Read from 0x… every twenty seconds"*. **Same class as
+  defect 1 above**, in the surface a judge lands on first. Not fixed: it is `app/`, and the arena
+  came first by the user's own sequencing.~~
+  **CLOSED 2026-09-03** (`FRONTEND_CHECKPOINT.md` §8.15), **re-verified in a browser 2026-09-05.**
+  `Enter.jsx:445` carries the comment, `:453` the `badQuery` branch, `:458` echoes the rejected value
+  back, and the `undeployed` gate is now the *second* one at `:472`. `node app/test/landing.mjs`
+  measures it end to end: `absent=true unreachable=false`, hero *"No arena at that address"*, form
+  withheld, `bad query: ignored=true`. Note the classifier distinction that made the fix correct
+  rather than merely present — `absent` forces the address form open, `unreachable` leaves it alone,
+  and a failure *tally* cannot tell those apart.
+- The `Prophet.sol` `correct`-parameter handoff below.
+- The corpse-ring fix is one line in `web/app.css` if the user wants it reverted. It had been parked
+  as their call; the measurement settled it — the doc's own defence ("fill-vs-stroke still separates
+  them") is true of a corpse against a *disc* and false of the comparison a reader actually makes.
+
+### The one contract handoff, which is the user's call
+
+`Prophet.sol:138-140` **names** the event parameter `correct` while assigning it `won`
+(`collateralOut > staked`, `:428`, emitted `:489`). They are not the same thing: the grade is
+three-valued at `:459-470` plus a fourth silent state (`collateralOut == staked`, a voided duel),
+and **the abstain branch at `:460-463` is straight-line with no early return**, so the emit runs
+with `won == false` — an abstention is logged as an incorrect call. Selection-over-ideas is read
+straight from this log stream, so the log is the product.
+
+Renaming it, or emitting the graded outcome, **costs no storage slots** — events are not storage, so
+today's freeze does not forbid it. But it is a contract edit: `forge test` (98 that day, **124** as of
+2026-09-05) and a storage re-derive with `--extra-output storageLayout`, and it lands in the same
+deploy the user has not yet authorized. **Not done. Surfaced.**
+
+> **STILL OPEN as of 2026-09-05, and confirmed by reading rather than assumed.** `Prophet.sol:138-140`
+> still declares `event Settled(..., bool correct, ...)` and `:522` still emits it with `won`. N14 in
+> `bugs_jueves.txt` closed a *different* defect in the same function — the grading predicate no longer
+> consults the live `belief` field, it is `if (quantity == 0)` at `:476` — so do not read N14 as having
+> closed this. This one is untouched and remains the user's call.
+
+---
+
+## 2026-09-05 — the 2026-09-04 audit closed: one fund-loss bug, the ante frozen at the open, seven owner footguns, and why every count in these docs rots
+
+**Read `bugs_jueves.txt` first.** It is at the *repo root* (`somnia_predict/`), one level **above** this
+project, and it is the live status list: the audit of 2026-09-04 with a disposition tag on every item
+plus a section `N1…N22` for everything that surfaced while fixing it. This section is the
+contracts-and-ops half of what it records, written *here* precisely because that file sits outside
+`darwin/` and **will not travel with the project**. Where the two disagree, the audit file is newer.
+
+Two items in it are decisions reserved for the user and are restated at the end of this section.
+
+### The suite, re-measured today rather than copied forward — all green
+
+| Step | Result |
+|---|---|
+| `forge test --use 0.8.28`, run **from `contracts/`** | **124 passed / 0 failed / 0 skipped** |
+| `npm test --prefix web` | **ALL GREEN — 189 PASS / 0 FAIL** over 167 `assert()` call sites |
+| `npm run typecheck` | exit 0, no output |
+| `node app/test/reads.mjs` | **PASS — 21 checks**, no browser, no network |
+| `npm run cadence:selftest` | **13 checks, 2 of them controls** |
+| `npm run abi:check` | **PASS — 256/257** guarded signatures agree with the compiler |
+| `npm run build --prefix app` | clean, and `dist/arena/js` byte-identical to `web/js` — **0 of 11 files differing, by hash** |
+| `node app/test/arena.mjs` | **PASS** — 13 cards (3 dead), 0 stranded, 20 requests / 0 off-origin / 0 exceptions, and the season close renders |
+| `node app/test/landing.mjs` | **PASS** — reveals complete, death stays fired, an EOA address withholds the form |
+
+The one unguarded ABI signature is `collateralAbi`'s `allowance(address,address)` in
+`app/src/lib/abi.js` — an external surface no local artefact can vouch for, and preexisting.
+
+**Running the two browser harnesses needs a server you start yourself.** Neither `arena.mjs` nor
+`landing.mjs` starts one. Start `npm run preview --prefix app` (= `vite preview --port 3000`) first,
+and use `localhost`, **not** `127.0.0.1` — on this machine `vite preview` binds `::1` only, which
+`arena.mjs:123` says at the site. See N22 below for why getting this wrong is worse than a plain
+failure.
+
+### How to run `forge` here — this is the single most reusable thing in the segment
+
+```bash
+# from contracts/, NOT from darwin/ or the repo root, and always pinning the version
+forge test --use 0.8.28
+```
+
+Two distinct failures if you get it wrong, and neither error message names the cause:
+
+- **From the repo root or `darwin/`:** more than 256 *"Unable to resolve imports"*. It is a
+  path-resolution failure — `contracts/` is the Foundry config root and the remappings only make sense
+  from there.
+- **Without `--use 0.8.28`:** `auto_detect_solc` picks **0.8.33**, recompiles **993 files**, and drags
+  in OpenZeppelin's `certora/harnesses` from the submodule — whose own `foundry.toml` points at
+  imports and a macOS path that do not exist here. With the version pinned and the cache warm it
+  compiles **2 files**.
+
+`CLAUDE.md` documents `--root contracts` from `darwin/`, which is the equivalent form and also works;
+the `--use` pin is the part that was missing everywhere and cost real time.
+
+### N10 — a failed settlement ate the ante forever. This was the fund-loss bug
+
+Three mechanisms, each correct alone, composing into an unrecoverable loss:
+
+1. `Prophet.settleWindow:371-372` sets `positionOpen = false` as its **first** statement, so a revert
+   further down undoes it and the position stays open. Correct.
+2. `Population.settleAll` catches the revert and emits `SettleFailed`, because *"one bad organism must
+   never halt the population."* Correct.
+3. `Population.commitAll`, **the next window**, paired that organism again — and `noteCommitted`
+   **overwrote `currentOutcomeId`**.
+
+From that point the failed window's ante is unreachable **by anyone**: `settleWindow` only ever
+redeems `currentOutcomeId`, a duel can only be claimed by its own holder
+(`DirectDuelVenue.redeemFor:210-263`), and `Prophet` exposes no arbitrary call. There is no rescue
+path, not even for the owner.
+
+The fix is one line in `commitAll`, today at **`Population.sol:1183`** (the audit cites `~1108`; the
+`windowAnte` comment block has since pushed it down):
+
+```solidity
+if (p.positionOpen()) continue;
+```
+
+It converts the failure into a **one-window delay with automatic retry** — the next `settleAll` finds
+`positionOpen` still true and redeems the *original* position.
+
+**The obvious fix is worse than the bug, and this is the part worth carrying forward.** Putting the
+guard in `Prophet.noteCommitted` — where it *looks* like it belongs — takes down the entire window:
+`_pair`'s `catch` calls `_openEmpty`, which calls `noteCommitted`, so the second revert would be
+thrown *from inside the handler for the first*, with no boundary left to catch it. That is not
+reasoning, it was measured: perturbation **P2** added that guard and the assertion pinning the bug
+fired. The comment at `Population.sol:1181-1182` records it at the site.
+
+Deploy cost: **zero**. `contracts/deployments/` is empty, nothing is deployed, so there is no beacon
+or proxy upgrade. It touches no storage. It *is* a behaviour change in a production contract, so if
+the user would rather not touch Solidity three days out it reverts by deleting that line — at the
+price of losing the ante the first time a settlement fails.
+
+### N14 — the corner N10's retry opens, and how it was actually closed
+
+The retry recovers the exact money but **does not carry the note forward**. `belief` is a live field:
+being skipped by `commitAll` does not skip your `think`, so the organism is asked again and its belief
+becomes the *new* window's. Money grading was always safe — `Prophet.sol:432` decides won/lost on
+`collateralOut > currentStake`, and both fields survive the failure intact. Fitness grading was not:
+the old predicate marked ABSTAIN when the **current** belief was `Abstain`/`None`, so a retry landing
+in a window where the organism formed no belief would score an abstention against a position that
+genuinely won or lost money. Only the fitness counter lied — but the fitness counter *is* the product.
+
+The audit's N14 recorded this as documented-and-pinned-but-not-fixed. **N19 then fixed it**, and this
+checkpoint should not be read as if it were still open: `Prophet.sol:476` is now `if (quantity == 0)`,
+and `:485-495` explains why the predicate must not consult `belief` at all. `quantity` travelled with
+the position; `belief` did not. Fixing it by *snapshotting* the belief would have cost a fresh
+`Prophet.__gap` slot, and this way costs none.
+
+### N11 / N12 — ops could see neither a void nor a swallowed failure
+
+**N11: a void moves no counter, so a poll-based monitor is structurally blind to it.** None of
+`monitor.ts`'s six alerts could see one. `settleWindow` advances `windowsLived` unconditionally and
+then takes exactly one of three branches (`correct`/`wrong`/`abstain`, `Prophet.sol:464-475`), and
+nothing else in either contract writes those four fields. So
+
+```
+windowsLived - (correctCount + wrongCount + abstainCount)
+```
+
+is an **exact** void count, and all four fields already came back in `snapshot()` — zero additional
+reads. Added as check 5b with `MONITOR_VOID_GRACE` (`monitor.ts:76`, **default 1, not 0**: a single
+void is honest and alerting on it would be noise). Why nothing else could see it: `DuelUnadjudicable`
+is in no ops ABI, a void emits no `SettleFailed`, and check 5 is conditioned on `currentQuantity > 0`.
+
+**N12: two of the three per-organism failure events were undecodable.** `scripts/lib/darwin.ts`
+declared only `ThinkFailed`. The three are a deliberate set (`CLAUDE.md`: *"one bad organism must never
+halt the population"*), and a swallowed failure leaves **no state trace at all** — no counter moves,
+nothing differs — so only the caller holding the receipt can ever see one. `monitor.ts` polls state and
+is therefore incapable by construction. `SettleFailed` and `CommitFailed` were added and are consumed
+by a new helper, `reportStragglers()` (`cadence.ts:448`), hooked behind think (`:237`), commit
+(`:278`) and settle (`:381`). Filtering by emitter works on **both** settle branches because `poke()`
+calls `settleAll` internally, so Population's own logs are in the receipt either way — the comment at
+`cadence.ts:379-380` says so at the site. `SettleFailed` now states explicitly that the position is
+**still open with the ante escrowed**, which is half of N10 made visible.
+
+### N13 — two dead grants, pinned with a test instead of deleted
+
+`Prophet.grantPopulation`'s two grants (infinite ERC-20 allowance plus 6909 operator to `Population`,
+from every organism) are used by nobody, and they contradict the rule the repo writes down at
+`Population.sol:1190`. `Population` reaches `transferFrom` at exactly `:632` and `:1459`, both times
+from `msg.sender`, and never touches `IOutcomeToken6909` — settlement is a **push** from the organism
+because the 6909 surface has no `transferFrom`.
+
+They were not deleted. `test_prophet_populationNeedsNeitherGrantItIsGiven` revokes both and runs a
+complete DreamDEX window. They can be removed whenever the user likes, and if anything ever starts
+depending on them the test says so. Deleting dead code on a deadline buys nothing; proving it is dead
+buys the option.
+
+### N15 — the ante frozen at the window's open. The segment's only storage change
+
+`ante()` is **derived** — `(windowCount - seasonStartWindow) / levelWindows` — and *every input to it
+is writable by somebody while a window is in flight*, `endSeason()` most of all, which is deliberately
+permissionless and un-phase-gated. So an organism could be asked at one price and charged at another.
+
+Fixed as the finding itself asked: **photograph the ante, do not add a phase guard.**
+
+- `Population.sol:210` — `uint256 public windowAnte;`, with 24 lines of rationale at `:184-208`.
+- `Population.sol:212` — `uint256[9] private __gap;`, shrunk from 10. **`windowAnte` is slot 37, the
+  gap now starts at 38**, envelope still ends at 46. Re-derived from the compiler, and `STORAGE.md`'s
+  tables, status block and changelog all carry it.
+- `Population.sol:1062` — `windowAnte = ante();` inside `think`, with `:1054-1057` explaining that this
+  is the last instant at which nobody else can change the answer.
+- `Population.sol:1229-1230` — `uint256 want = windowAnte; if (want == 0) want = ante();` in `_pair`.
+  The fallback is not paranoia: a proxy upgraded mid-window has storage predating the field, and one
+  window priced live beats a whole population staking zero.
+
+**No phase guard was added to `endSeason`.** That was the alternative the finding explicitly rejected:
+`endSeason` being permissionless is a *property*, not an oversight, and closing it to fix the ante
+would have paid for the fix with the demonstrable part of the design.
+
+### N16 → N19 — seven owner footguns, closed with named reverts
+
+All verified by reading the live tree today, not from memory:
+
+- `SelectionEngine.sol:172` — `if (to == address(0)) revert ZeroOwner();`. The reason is not the lost
+  admin: handing ownership to zero **freezes `fallbackEnabled` at true** and makes the central claim
+  (*"no keeper anywhere in the causal chain"*) permanently unprovable.
+- `PushedPriceSource.sol:94` — `setMaxStaleness(0)` reverts `ZeroStaleness` instead of bricking the feed.
+- `SelectionEngine.sol:119-120` — `poke()` checks ownership **before** phase, with the reason at the
+  site: each party gets the error that describes *it*.
+- Four unchecked `bool` returns → all guarded. `Population:601/666/806/857/1506/1547/1687`,
+  `Prophet:319/404/471/520`, `DreamDEXVenue:84`, all `revert TransferFailed()` (the `666` is a compound
+  `if`). Nothing fails silently any more.
+- `DirectDuelVenue.sol:287` — `positionIdsOf(0)` underflowed; now `if (duelId == 0) revert
+  UnknownDuel(0);`. Zero is exactly the argument passed by someone with no duel — an unset variable, a
+  lookup that found nothing — and `0 * 2 - 1` answered with an arithmetic panic. It now answers with
+  the same error any nonexistent id gets.
+- `PushedPriceSource.sol:146` — `if (openPrice == 0 || lastPrice == 0) revert ZeroPrice();`.
+- `PushedPriceSource.sol:147` — `priceDecimals` capped at 18 (`BadDecimals`). **This one is a judgement
+  ceiling, not a measurement** — real feeds do not exceed Chainlink's 18 — and `:123-135` says exactly
+  that, including the mechanical limit of 77 at which `Genome._decimal` would actually revert.
+  `_decimal` still has no guard of its own; no real path reaches it.
+
+**One N16 item is still open, and it is cosmetic:** `lastThesis` / `lastReasoning` go stale when
+`belief` is cleared. `Prophet:263-264` writes them in `think`, and neither settle (`:528`) nor die
+(`:536`) clears them — both only touch `belief`. Damage: `readModel`/`whisper` can return a thesis from
+an earlier window. An honest fix costs a `__gap` slot or reads them in context instead of
+photographing them. **Left as the user's decision; it does not block delivery.**
+
+### N20 — every count in these documents rots, and the cause is structural
+
+Three different Solidity counts appear in `bugs_jueves.txt` alone (111, 114, 124) and all three were
+measured on **the same day**. This checkpoint carried `149 PASS / 36 render calls`; the suite prints
+**189**. None of them was false when written. What was missing in every case is **what was being
+counted** — and without that a reader cannot re-measure to check whether the number is still alive.
+They can only copy it forward, which is precisely how it rots.
+
+The case that proved it, because a measured example is worth more than the moral: **the `36` was never
+a count of render calls.** It is the number of *probe lines the suite prints* (35 `ok` + 1 `null`). And
+the `313` that `CLAUDE.md` documented looked unreproducible — it contradicts the 36, and the harness
+carries no counter at all. It was settled by instrumenting in memory (`.tmp-verify/hooks.mjs`, a Node
+`load` hook wrapping every `export function` in `web/js/render.js`; possible because `export function
+f(){}` declares a **mutable** binding and ES-module exports are live, so **no repo file was touched**):
+
+- **167** `assert(` in statement position. Raw grep gives 169 = 167 + the `function assert(` definition
+  + one mention inside a comment. The docs' 167 was right; my quick count of 168 was the sloppy one.
+- **50** `ui.*(` call sites in the test file, across **13** of the 16 exported renderers.
+- **1037** executed calls to exported renderers, of which **`chip` alone is 724**. And
+  `1037 − 724 = 313` — exactly the documented figure.
+- **14** of the 16 exports execute at least once; `masthead` and `retime` never run under the fixture.
+
+So `313` was correct and its basis had never been written down anywhere. It is *"executed calls to the
+fifteen exported renderers that are not `chip`."* That sentence is now in `CLAUDE.md` and in the audit.
+
+**The rule that comes out of it:** a count in this repo's docs carries its basis **in the same
+sentence**, or it does not get written. *"189 checks"* — no. *"189 checks over 167 `assert()` call
+sites"* — yes, because the second can be re-measured and the first can only be believed.
+
+**A second lesson, from the sweep that fixed the first.** The audit's N6 re-stamped the stale figures
+and closed itself as *"six sites, not two"*. There were **eight**. The two it missed were
+`darwin/README.md:345` and `darwin/web/README.md:59` / `:63-64` — both now fixed. The failure was the
+**inventory**, not the arithmetic: that sweep looked where the internal docs cite each other and not
+where the project speaks *outward*, so the two surviving stale copies were the two a judge opens
+first. `web/README.md` also spells its figures **in words** (*"thirty-six calls"*, *"One hundred and
+forty-nine assertions"*), which is why a grep for digits could not find them. Sweep the whole tree,
+READMEs included, and search for the number written out as well as in digits.
+
+**And a third lesson, which is the one that generalises: the sweep was scoped to one figure across
+many files, when what was needed was every figure in the few files that govern the next session.**
+`CLAUDE.md` — the file every future session reads first — carried two rotten counts that no amount of
+grepping for `149` or `36` could ever have surfaced, because they were entirely different numbers:
+
+- `CLAUDE.md:34` said *"one contract `DarwinTest`, 100 tests"*. It is **124**, and the basis is now in
+  the sentence: **124 `function test` declarations** in `contracts/test/Darwin.t.sol` (4,597 lines, one
+  test contract, **zero `testFuzz`**), so the suite count and the declaration count are the same
+  number — which is precisely what makes the figure re-checkable instead of re-rottable.
+- The storage paragraph still claimed **47 `Population` rows** from the 2026-08-30 diff, taken before
+  phase 4 appended `windowAnte` on 2026-09-05 (`Population.sol:210`, with `:212` shrinking `__gap`
+  from `uint256[10]` to `uint256[9]`, so slot 37 and a gap at 38–46). It is **48**.
+
+**The two were not treated the same way, deliberately.** *"100 tests"* asserts a **state**, so it gets
+re-stamped with its date and basis. The 2026-08-30 diff is a **dated measurement**, so it is left
+exactly as written and given a forward pointer saying the layout changed afterwards.
+
+`CLAUDE.md:362` is the case that shows why that distinction is not bureaucracy. It reads *"Tests:
+56/56 under both"*, from the `paris` → `shanghai` migration of 2026-08-29. **Changing that 56 to 124
+would have fabricated a measurement** — nobody has run today's suite under `paris`, and the entire
+claim is that *one identical suite* passed under both EVM versions. A 124 there turns a piece of
+evidence into a false statement. It got a date anchor and kept its figure.
+
+So the rule has two halves now. Before re-stamping any number, ask whether the sentence asserts a
+**state** (re-stamp it) or a **measurement made on a day** (anchor it, never overwrite it). And sweep
+**by file, not by figure**: `CLAUDE.md`, `README.md`, `web/README.md`, `STORAGE.md` and both
+checkpoints, reading every number in each.
+
+**What did hold, verified today rather than trusted** — the two counts in `web/README.md` written *in
+words*, which are exactly the ones a digit grep cannot see. *"Forty-four"* is exactly the **44**
+`assert(` call sites between `smoke.mjs:462` and `:611` inclusive, and the banner at `:614` (*"ADD NEW
+ASSERTIONS BELOW THIS BANNER"*) is what kept the season-close work from landing inside the range and
+silently breaking the sub-count — the six new detector self-tests sit at `:806`–`:855`, below it.
+*"Eleven-assertion block"* is the **11** at `:517`–`:543`. Both sentences now carry those bounds
+inline, so the next reader can re-derive them without instrumenting anything.
+
+**Tooling corollary, which cost an entire confusion:** PowerShell's `Measure-Object -Line` **does not
+count blank lines.** It reported 1175 / 1427 / 582 for `SESSION_CHECKPOINT.md` /
+`FRONTEND_CHECKPOINT.md` / `bugs_jueves.txt`, whose real sizes are **1434 / 1721 / 708**. Three files
+appeared truncated. They were not. Do not use it to count lines.
+
+**A second tooling trap, hit while writing the note above:** `Get-Content` on `bugs_jueves.txt`
+returned mojibake (`pÃ¡gina` for `página`) because it decoded the UTF-8 file as ANSI, while the Read
+tool decoded it correctly. Never copy an `old_string` for an edit out of PowerShell output — the bytes
+will not match. Read the file with the Read tool and copy from there. (The failed edit was also off by
+one space of indentation, which the same Read settled.)
+
+### N21 — `app/dist` had gone stale again, which is N7 re-arming
+
+**5 of the 11 files** in `dist/arena/js` differed from `web/js` (`abi.js`, `dom.js`, `fixture.js`,
+`labels.js`, `render.js`): dist was built at 12:10 and `web/js` was edited between 15:24 and 15:51.
+`dist/arena` is a **build-time verbatim copy** of `web/`, so editing `web/` and running the harnesses
+without rebuilding measures the *old* bundle. `npm run build --prefix app` (exit 0), re-hashed: 0 of 11.
+
+The fix is not the point. The point is that this trap was **already documented as N7 and bit again**,
+because nothing detects it — the harnesses pass just as happily against the stale bundle. The order,
+and the third step is the one that cannot be skipped: edit `web/` → `npm run build --prefix app` →
+**hash both directories** → then the harnesses. Comparing mtimes is not enough.
+
+### N22 — `arena.mjs` measures Chrome's own error page and never says so
+
+With nothing listening on `:3000`, the harness attaches, navigates, and prints **sixteen lines of
+confident diagnostics about Chrome's connection-error page** — `title "localhost"`, `sheets=0`,
+`cards 0 · feed 0 · metrics 0`, all three fonts `MISSING`, `ground rgb(32,33,36)` — then dies 400 ms
+later on an unrelated `getBoundingClientRect` of null (`cdp.mjs:187` via `arena.mjs:441`). It never
+says *"no server"*. Worse, that output is **indistinguishable from "the app rendered nothing"**, which
+is a real app defect the harness exists to catch.
+
+Until someone adds a reachability probe, read `ground` and `cards` **before** anything else: a real run
+is `cards 13` on the app's own ground. `rgb(32,33,36)` with 0 cards is Chrome, not DARWIN.
+
+### What the audit closed on the frontend side
+
+`C2` (the season close) is now reviewed in a browser, not merely written: `arena.mjs` renders
+*"SeasonEnded · season 1 ended · pot 4.54 tUSDC · paid 4.54 tUSDC"* with 3 payouts, 3 `sev-good`
+banners and 50 feed rows. Six of the twelve detector self-tests came with that work
+(`web/test/smoke.mjs:806`, `:811`, `:826`, `:835`, `:841`, `:855`), each sitting next to the assertion
+it protects and saying so in the comment above it. An undocumented legibility pass also landed in
+`web/js/labels.js` (+52 lines) — see `FRONTEND_CHECKPOINT.md` §8.17, which records why `None` had to
+stop rendering as `None`.
+
+### Still open, and who owns each one
+
+**The user's decision, before anything is broadcast — both are in `bugs_jueves.txt` as N1 and N2:**
+
+- **N1 — whose are the eight founders?** `spawnGenesis` passes `msg.sender` as the entrant
+  (`Population.sol:499`), so the founders belong to the owner, and a founder's 60% leaves `prizePool`
+  for the EOA **without passing through `rakeAccrued`** — i.e. outside `withdrawRake`'s cap. Measured:
+  pot 42,500 → owner +25,500 with `rakeAccrued` 63,750 unmoved. (The `if (to == address(0)) continue;`
+  branch at `:816-821` is dead code as a result.) The alternative leaves the whole lineage ownerless
+  and its capital unrecoverable. The audit's own A2 assumed the opposite; both readings are defensible
+  and the choice changes what gets deployed.
+- **N2 — the first season does not close before the deadline.** With `seasonWindows = 576` and
+  `Deploy.s.sol` calling no setter, season 1 closes ~**12-Sep**, four days *after* the 8-Sep
+  submission. A judge would see a pot that grows and never pays, and `SeasonEnded` / `SeasonPrizePaid`
+  would never emit. The lever is **one owner transaction, no redeploy**: `setSeason` does not move
+  `seasonStartWindow`, so lowering `seasonWindows` shortens the season already in progress.
+
+**Small items the user owns ([TUYO] in the audit):** `Deploy.s.sol:249` documents
+`forge script script/Seed.s.sol --broadcast` **without the `:Seed` suffix** (N3), and `.env.example`
+does not document `MONITOR_SEASON_GRACE` (`monitor.ts:98`, default 1) (N4). Both files that need the
+first fix — `Seed.s.sol` and `Deploy.s.sol` — are **permission-denied to Claude sessions** in this
+environment (Read/Grep/Bash reject them; git and forge see them fine), so a human has to make that
+edit and check it.
+
+**Deferred by prior decision, not forgotten:** `C1` (the standings panel) and `C3` (landing prize-pool
+reads) are still `[PENDIENTE]`; `C5` (eslint) is deliberately parked until after delivery; the
+`lastThesis`/`lastReasoning` staleness is the one open N16 item; the `Settled(bool correct)` /`won`
+handoff above is untouched; folding `endSeason()` and `hatchAll()` into `cadence.ts` has not been done;
+and `_spawn` must be made to spend `drawCognition`'s returned `sent` rather than
+`address(this).balance` before it can be called correct.
+
+**Not started, and not to be started unprompted:** the Season 0 deploy and the
+subscribe → `npm run prove` → `npm run fee` → `disableFallback()` chain. STT and faucet provisioning
+is the user's, deliberately last, by their own instruction. **Deploying and broadcasting are the
+user's call, not a session's.**

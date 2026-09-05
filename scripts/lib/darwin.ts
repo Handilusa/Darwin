@@ -195,7 +195,18 @@ export const populationAbi = parseAbi([
   "function sweep(address token, address to, uint256 amount)",
   // events
   "event WindowOpened(uint64 indexed window, bytes32 indexed marketId, address pool, uint256 openPrice)",
+  // THE THREE PER-ORGANISM FAILURES, and they are a set on purpose. "One bad organism
+  // must never halt the population" is implemented as a try/catch per organism in each
+  // of the three driver calls, and the only trace a swallowed failure leaves is one of
+  // these logs — no counter moves, no state differs, so a poll-based monitor cannot see
+  // one after the fact. Only the caller holding the receipt can (`cadence.ts`'s
+  // `reportStragglers`). Two of the three were missing here until 2026-09-05, which made
+  // a silently failing commit or settle undecodable by the one process that could have
+  // reported it; `SettleFailed` is the one that matters most, because a settlement that
+  // failed leaves the organism's position OPEN with its ante already escrowed.
   "event ThinkFailed(uint256 indexed prophetId)",
+  "event CommitFailed(uint256 indexed prophetId)",
+  "event SettleFailed(uint256 indexed prophetId)",
   "event Spawned(uint256 indexed prophetId, address prophet, uint256 indexed parentId, uint32 generation)",
   "event Reaped(uint256 indexed prophetId, uint64 window, uint256 aliveRemaining)",
   "event Retired(uint256 indexed prophetId, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned)",
@@ -209,7 +220,7 @@ export const populationAbi = parseAbi([
   // the rake split, and a `Reaped` with no `ResidueForfeited` beside it means the
   // organism died with an empty treasury rather than that collateral went missing.
   //
-  // `Raked` is deliberately NOT in this list. Prophet emits it (`Prophet.sol:456`, inside
+  // `Raked` is deliberately NOT in this list. Prophet emits it (`Prophet.sol:472`, inside
   // `settle`), so it lives in `prophetAbi` — declaring it here would compile, parse, and
   // then silently match nothing when filtering Population's logs.
   "event ResidueForfeited(uint256 indexed prophetId, uint256 amount)",
@@ -267,7 +278,7 @@ export const prophetAbi = parseAbi([
   "function entrant() view returns (address)",
   "function claimOwed() returns (uint256)",
   // events. The rake is taken inside `settle` on the organism itself
-  // (`Prophet.sol:456`), so this is a Prophet log, not a Population one — it is the one
+  // (`Prophet.sol:472`), so this is a Prophet log, not a Population one — it is the one
   // money event whose emitter is easy to guess wrong. `web/js/abi.js:143` files it the
   // same way; if these two hand-written ABIs ever disagree about an emitter, one of them
   // is filtering for logs that will never arrive.
@@ -283,6 +294,14 @@ export const priceSourceAbi = parseAbi([
   "error NotAuthorized()",
   "error NoWindow(string symbol)",
   "error StalePrice(uint64 age, uint64 limit)",
+  // The push-side refusals. `cadence.ts` pushes every window from data it assembled
+  // off-chain, so these are the three errors an operator is most likely to meet, and a
+  // bare selector is the worst possible answer to "why did the window not open".
+  // Scoped to what the calls in THIS fragment can raise: `ZeroStaleness` belongs to
+  // `setMaxStaleness`, which no script calls, so it is deliberately not listed.
+  "error ZeroPrice()",
+  "error ZeroMarket()",
+  "error BadDecimals(uint8 got, uint8 limit)",
 ]);
 
 export const selectionEngineAbi = parseAbi([
@@ -293,6 +312,9 @@ export const selectionEngineAbi = parseAbi([
   "event Reacted(address indexed emitter, uint64 indexed window, uint256 blockNumber, bytes32 parentHash, bool viaReactivity)",
   "event ReactionFailed(address indexed emitter, uint256 blockNumber, bytes reason)",
   "error FallbackClosed()",
+  // `poke` checks the caller BEFORE `fallbackEnabled`, so a wrong signer now reads as
+  // `NotAuthorized` rather than as the honesty flag being closed. Both must decode.
+  "error NotAuthorized()",
 ]);
 
 /**

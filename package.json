@@ -9,14 +9,17 @@
   "scripts": {
     "cadence": "tsx scripts/cadence.ts",
     "cadence:once": "tsx scripts/cadence.ts --once",
+    "cadence:selftest": "tsx scripts/cadence.ts --self-test",
     "fund": "tsx scripts/fund.ts",
     "monitor": "tsx scripts/monitor.ts",
     "subscribe": "tsx scripts/subscribe.ts",
     "fee": "tsx scripts/measure-fee.ts",
     "prove": "tsx scripts/prove-same-block.ts",
     "typecheck": "tsc --noEmit",
+    "abi:check": "tsx scripts/abi-drift.ts",
     "build": "forge build --root contracts",
     "test": "forge test --root contracts -vv",
+    "gate": "npm run typecheck && npm run test && npm run abi:check && npm run cadence:selftest && npm --prefix web test && npm --prefix app test",
     "hardhat": "hardhat"
   },
   "dependencies": {

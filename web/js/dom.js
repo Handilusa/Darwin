@@ -3,7 +3,7 @@
  *
  *  WHY THIS EXISTS AT ALL, given that template strings plus `innerHTML` would be shorter:
  *
- *  `Population.enter(string calldata genome, uint256 endowmentAmount)` (Population.sol:575) is
+ *  `Population.enter(string calldata genome, uint256 endowmentAmount)` (Population.sol:654) is
  *  PERMISSIONLESS. Anybody holding testnet tUSDC and a little STT can spawn an organism whose
  *  `systemPrompt` is a string of their choosing, and this dashboard's whole point is to display
  *  genomes and the model output they produce. So every genome, every `lastReasoning`, and every

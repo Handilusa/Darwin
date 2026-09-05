@@ -47,12 +47,23 @@ contract PushedPriceSource is IPriceSource {
     ///      the fitness signal would be measuring the pusher, not the forecaster.
     uint64 public maxStaleness = 180;
 
+    /// @dev Largest `priceDecimals` a push may carry. See `pushWindow` for why this
+    ///      is 18 and not the arithmetic limit of 77.
+    uint8 public constant MAX_PRICE_DECIMALS = 18;
+
     event WindowPushed(string symbol, bytes32 indexed marketId, uint256 openPrice, uint256 lastPrice);
     event UpdaterChanged(address updater);
+    /// @dev `setUpdater` has always emitted; this one did not until 2026-09-05, so a
+    ///      loosened staleness guard was the one operator change that left no trace.
+    event MaxStalenessChanged(uint64 previous, uint64 current);
 
     error NotAuthorized();
     error NoWindow(string symbol);
     error StalePrice(uint64 age, uint64 limit);
+    error ZeroStaleness();
+    error ZeroPrice();
+    error ZeroMarket();
+    error BadDecimals(uint8 got, uint8 limit);
 
     constructor(IBinaryMarketsModule module_, address owner_, address updater_) {
         module = module_;
@@ -66,11 +77,63 @@ contract PushedPriceSource is IPriceSource {
         emit UpdaterChanged(updater_);
     }
 
+    /**
+     *  ZERO IS REJECTED; LARGE IS MERELY RECORDED, and the asymmetry is the point.
+     *
+     *  `currentWindow` refuses a price when `age > maxStaleness`, so zero refuses
+     *  every price not pushed in the same second — which in practice is every price,
+     *  because `pushWindow` and `think` are two transactions. That bricks the feed,
+     *  and with it every `think`, from one `onlyOwner` call whose most likely cause
+     *  is an uninitialised variable rather than an intention. A LARGE value is the
+     *  opposite: it is a deliberate loosening of the guard, sometimes a correct one
+     *  on a chain having a slow minute, so it is allowed and the event above makes
+     *  it visible instead of a cap picking an arbitrary number on the owner's behalf.
+     */
     function setMaxStaleness(uint64 seconds_) external {
         if (msg.sender != owner) revert NotAuthorized();
+        if (seconds_ == 0) revert ZeroStaleness();
+        emit MaxStalenessChanged(maxStaleness, seconds_);
         maxStaleness = seconds_;
     }
 
+    /**
+     *  A ZERO PRICE IS THE ONE BAD PUSH THAT DOES NOT ANNOUNCE ITSELF, so it is
+     *  refused here rather than downstream.
+     *
+     *  Staleness is already guarded because a stalled pusher must stop the population
+     *  instead of feeding it a price from twenty minutes ago. A zero is worse than
+     *  stale: nothing reverts, and every organism is graded against nothing. On the
+     *  duel venue the outcome is the sign of `lastPrice - openPrice`, so an
+     *  `openPrice` of zero makes UP win deterministically no matter what BTC did —
+     *  a whole window of fitness signal that measures the pusher, not the forecaster,
+     *  and the counters it moves are permanent.
+     *
+     *  This is not hypothetical: `scripts/lib/market.ts:151` names the exact failure
+     *  ("silently reads `undefined` as 0 pushes a zero opening price and every
+     *  organism is graded against nothing") and guards `undefined` — but a REST
+     *  payload carrying a literal `0`, or an `OPEN_PRICE=0` in the environment
+     *  override at `market.ts:129`, still arrives here as a well-formed zero. The
+     *  updater is a hot key on a script; this contract is the trust boundary, so the
+     *  check belongs on this side of it.
+     *
+     *  `marketId` is refused for a narrower reason: `currentWindow` reads a zero
+     *  `marketId` as "no window at all" (`NoWindow`), so pushing one writes a window
+     *  the reader denies exists. Failing at the push says what actually went wrong.
+     *
+     *  `priceDecimals` is capped, and the cap is a judgment rather than a
+     *  measurement — say so rather than dress it up. The MECHANICAL limit is 77:
+     *  `Genome._decimal` computes `10 ** decimals`, which overflows uint256 above
+     *  that and takes `Population.think` down with a bare arithmetic panic — not a
+     *  per-organism `ThinkFailed` but the whole window, since `beliefPrompt` is
+     *  called outside the per-organism try/catch, and with a revert reason that
+     *  names neither this field nor this contract. The cap here is **18** instead,
+     *  because `priceDecimals` describes the scale of a price and no ERC-20 or price
+     *  feed reports more (tUSDC is 6, `market.ts` defaults to 6, Chainlink tops out
+     *  at 18), so nothing real is rejected and a garbage value is named at the push
+     *  instead of surfacing as a population that cannot think. If a feed ever
+     *  genuinely reports more, this is one line on a plain redeployable contract —
+     *  raise it, and mind that anything above 77 needs `_decimal` fixed first.
+     */
     function pushWindow(
         string calldata symbol,
         bytes32 marketId,
@@ -79,6 +142,9 @@ contract PushedPriceSource is IPriceSource {
         uint8 priceDecimals
     ) external {
         if (msg.sender != updater && msg.sender != owner) revert NotAuthorized();
+        if (marketId == bytes32(0)) revert ZeroMarket();
+        if (openPrice == 0 || lastPrice == 0) revert ZeroPrice();
+        if (priceDecimals > MAX_PRICE_DECIMALS) revert BadDecimals(priceDecimals, MAX_PRICE_DECIMALS);
         windows[symbol] = Window({
             marketId: marketId,
             openPrice: openPrice,

@@ -186,9 +186,7 @@ contract Deploy is Script {
         //    windows is the only version the test suite covers
         //    (test_venue_canBeRepointedBetweenWindows).
         d.venue = address(
-            new DreamDEXVenue(
-                IPriceSource(d.priceSource), d.settlement, d.collateral, d.outcomeToken, d.symbol
-            )
+            new DreamDEXVenue(IPriceSource(d.priceSource), d.settlement, d.collateral, d.outcomeToken, d.symbol)
         );
 
         // 4. Population, behind UUPS. Owner is the deployer for now — see the header.

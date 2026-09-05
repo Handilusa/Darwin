@@ -127,6 +127,12 @@ cadence-state.json
 *.temp
 .tmp/
 temp/
+
+# Scratch a session writes while verifying, and the screenshots the web smoke run
+# drops. Both are regenerated on demand and neither is cited by anything, unlike
+# SESSION_CHECKPOINT.md above.
+.tmp-verify/
+web/.shots/
 tmp/
 
 

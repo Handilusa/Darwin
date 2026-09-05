@@ -103,8 +103,19 @@ export async function connect(rpc = DEFAULT_RPC) {
 //////////////////////////////////////////////////////////////*/
 
 /**
- *  The deploy manifest, if this page happens to be served from the repo root. A 404 is the
- *  expected answer when it is hosted on its own, so it resolves to null rather than throwing.
+ *  The deploy manifest, if this page happens to be served from the repo root. Absent is the
+ *  expected case, and it arrives in TWO shapes — which is why both guards below are
+ *  load-bearing rather than one being belt-and-braces:
+ *
+ *    hosted standalone     a real 404, caught by `!res.ok`.
+ *    under app's dev server  200 plus `index.html`. The deployments middleware hands a missing
+ *                          file to `next()` and Vite's SPA html-fallback answers it
+ *                          (`app/vite.config.js:121-141`), so `res.ok` is TRUE and the first
+ *                          guard is bypassed. What catches this one is `res.json()` throwing
+ *                          on `<!doctype html>`.
+ *
+ *  Either way it resolves to null rather than throwing. Delete either guard and one of the two
+ *  environments starts reporting a deployed arena that isn't there.
  */
 export async function manifestPopulation() {
   try {
@@ -146,6 +157,74 @@ function why(settled) {
 }
 
 /**
+ *  Walk an error's cause chain, bounded.
+ *
+ *  viem's `BaseError` has `.walk()` and this deliberately does not use it: a rejected
+ *  `readContract` can also carry a plain `Error` from a transport that threw before viem wrapped
+ *  anything, and a helper that works on both is worth more than one that assumes the happy shape.
+ *  Bounded because a cause chain that loops would otherwise hang a paint.
+ *
+ *  Kept byte-for-byte in step with `app/src/lib/reads.js` on purpose — the two surfaces must not
+ *  disagree about whether the same address holds a contract, and they only did because this file
+ *  had no equivalent at all.
+ */
+function causes(err) {
+  const out = [];
+  for (let e = err, i = 0; e && i < 12; i++, e = e.cause) out.push(e);
+  return out;
+}
+
+/**
+ *  Did viem diagnose "there is no code at this address"?
+ *
+ *  A call to an address with no code returns `0x`, which surfaces as `AbiDecodingZeroDataError`
+ *  and is re-thrown as `ContractFunctionZeroDataError` carrying *"returned no data (\"0x\")"*
+ *  (`viem/utils/errors/getContractError.js:15-16`). A transport failure has no such cause anywhere
+ *  in its chain. So the distinction is READ OFF THE ERROR, never inferred from a tally.
+ */
+function saysNoCode(err) {
+  return causes(err).some(
+    (e) => e?.name === "ContractFunctionZeroDataError" || /returned no data/i.test(e?.message ?? ""),
+  );
+}
+
+/**
+ *  What a batch of independently-settled reads actually proved.
+ *
+ *  Returns `"live"` if ANY read answered, else `"absent"` or `"unreachable"` — and those last two
+ *  are not one verdict, because their remedies are opposites: one means the address is wrong and
+ *  the visitor must change it, the other means the node did not answer and they must not touch the
+ *  address at all. Guessing would send someone on a testnet hiccup off to edit a perfectly good
+ *  address.
+ *
+ *  ANY read, not two named ones — see `discover`.
+ *
+ *  Exported for `test/smoke.mjs` only. It takes `Promise.allSettled` rows rather than a client, so
+ *  the classifier can be tested with no network at all — which is the only way this file's verdict
+ *  logic is reachable from Node, `discover` needing viem and therefore the CDN.
+ */
+export function readVerdict(settled) {
+  const rows = Array.isArray(settled) ? settled : [];
+  if (rows.length === 0) return "unreachable";
+  const failures = rows.filter((s) => s?.status === "rejected");
+  if (failures.length < rows.length) return "live";
+  return failures.some((f) => saysNoCode(f.reason)) ? "absent" : "unreachable";
+}
+
+/**
+ *  A thrown read verdict, tagged so the banner can say the right sentence.
+ *
+ *  `.kind` is what `errorBanner` branches on. Without it the page prints *"Cannot read the chain"*
+ *  over an address that simply has no contract behind it — blaming the network for the one failure
+ *  the network had nothing to do with.
+ */
+function readVerdictError(kind, message) {
+  const e = new Error(message);
+  e.kind = kind;
+  return e;
+}
+
+/**
  *  Wiring and the constants that only change on an owner transaction. Read once per
  *  connection, not per poll.
  *
@@ -159,11 +238,16 @@ export async function discover(client, population) {
 
   const read = (functionName, args) => client.readContract({ ...base, functionName, args });
 
+  // `breedStreak`, `breedSurplusBps` and `maxPopulation` belong HERE and not in `readState`: all
+  // three move only under `setEconomics`, and polling them every ten seconds would spend three
+  // calls a poll to re-learn a constant. They are what turn a per-organism `streak` from a number
+  // into a fraction — without them the page can show 3 and never say 3 of what.
   const keys = [
     "symbol", "collateral", "priceSource", "venue", "selectionEngine",
     "marketsModule", "owner", "endowment", "metabolicCost", "minStake",
     "minEndowment", "cognitionEndowment", "requestDeposit", "baseAnte",
     "anteMultBps", "levelWindows", "seasonWindows", "rakeBps", "prizeShareBps",
+    "breedStreak", "breedSurplusBps", "maxPopulation",
   ];
 
   const settled = await Promise.allSettled(keys.map((k) => read(k)));
@@ -175,12 +259,42 @@ export async function discover(client, population) {
     if (reason) failures[k] = reason;
   });
 
-  // A population that cannot even name its own collateral is not a population — almost
-  // certainly a wrong or undeployed address, and saying so beats rendering nineteen dashes.
-  if (!out.collateral && !out.symbol) {
-    throw new Error(
-      `No Population at ${population} on chain ${CHAIN_ID}. ` +
-        `Both symbol() and collateral() failed: ${failures.symbol || failures.collateral}`,
+  /*
+   *  A population that cannot answer a single one of these calls is not a population here — and
+   *  saying so beats rendering a screen of dashes.
+   *
+   *  TWO THINGS ABOUT THIS TEST WERE WRONG UNTIL 2026-09-03, and both mattered.
+   *
+   *  It read `if (!out.collateral && !out.symbol)`, which is a TWO-READ threshold over
+   *  twenty-two settled calls. Every other key was allowed to come back null on the reasoning
+   *  that `readErrors` names it while the rest of the page stays live — but `symbol` and
+   *  `collateral` were singled out to mean "no population", so a node that dropped exactly
+   *  those two while answering the other twenty declared a live arena dead. The landing uses
+   *  any-of-nine (`app/src/lib/reads.js`) and the two surfaces could therefore disagree about
+   *  whether the same arena exists under partial RPC failure. Any-of-twenty-two here is the same
+   *  rule: one answer is proof of a contract, and the rows that failed are named individually.
+   *
+   *  And it conflated ABSENT with UNREACHABLE. Every path out of it printed *"No Population at
+   *  0x…"*, so an RPC outage accused the address and sent the visitor off to edit a correct one —
+   *  the precise failure `reads.js` was written to avoid on the other surface. The verdict is now
+   *  read off viem's error rather than off the failure count, and the two cases say opposite
+   *  things because they need opposite actions.
+   */
+  const verdict = readVerdict(settled);
+  if (verdict === "absent") {
+    throw readVerdictError(
+      "absent",
+      `There is no Population at ${population} on chain ${CHAIN_ID}. All ${keys.length} reads came ` +
+        `back empty, which is what an address with no contract behind it returns — check the address ` +
+        `rather than the network. (${failures[keys[0]] || "returned no data"})`,
+    );
+  }
+  if (verdict === "unreachable") {
+    throw readVerdictError(
+      "unreachable",
+      `Chain ${CHAIN_ID} did not answer for ${population}. All ${keys.length} reads failed for ` +
+        `transport reasons, so nothing has been learned about this address — leave it alone and ` +
+        `retry. (${failures[keys[0]] || "no response"})`,
     );
   }
 

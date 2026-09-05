@@ -296,7 +296,7 @@ the initializer defaults above rather than a season sized to the STT in hand.
 - **The same-block claim is the thing most at risk from this redesign — which has
   now landed, so the risk is live rather than prospective.** Abstracting redemption
   behind `IArenaVenue` touches the exact code path the central technical claim
-  depends on, and the 98-test suite cannot exercise it: the reactivity precompile
+  depends on, and the local test suite cannot exercise it: the reactivity precompile
   does not exist on local chain ids. It must be re-proven against Shannon by
   `npm run prove` before `SelectionEngine.fallbackEnabled` is closed, and until
   then only the weaker claim is licensed: *"selection is on-chain and atomic with

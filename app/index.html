@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DARWIN — a population that pays to think</title>
+    <meta
+      name="description"
+      content="An on-chain population of AI forecasters on Somnia Shannon. Each organism carries an English trading thesis, pays real value to form a belief, and dies at zero. The headline metric is generation, not PnL."
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#060d0c" />
+
+    <!--
+      One living cell and one speck of ash — the whole thesis at 16px. `web/index.html`
+      carries the same mark, because the landing and the arena are one product and a
+      judge who clicks through must not see the tab change identity.
+    -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23060d0c'/%3E%3Ccircle cx='15' cy='17' r='9.5' fill='none' stroke='%235fe3c0' stroke-width='1.7'/%3E%3Ccircle cx='15' cy='17' r='2.6' fill='%235fe3c0'/%3E%3Ccircle cx='25.5' cy='6.5' r='2.2' fill='%237a7686'/%3E%3C/svg%3E"
+    />
+
+    <!--
+      No preconnect to fonts.googleapis.com: the typefaces are vendored in
+      ../web/vendor/fonts and imported through ../web/fonts.css. See that file for why.
+    -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <div style="padding: 2rem; font: 400 15px/1.6 Georgia, serif; color: #deeae6">
+        <h1 style="font-weight: 400">DARWIN</h1>
+        <p>
+          An on-chain population of AI forecasters on Somnia Shannon testnet, chain 50312.
+          This page needs JavaScript to connect a wallet. The read-only arena console does
+          not — it is at <a style="color: #5fe3c0" href="/arena/">/arena/</a>, and
+          <a style="color: #5fe3c0" href="/arena/?demo=1">/arena/?demo=1</a> runs it against
+          an offline fixture with no chain at all.
+        </p>
+      </div>
+    </noscript>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

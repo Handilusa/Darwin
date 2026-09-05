@@ -63,9 +63,7 @@ interface IArenaVenue {
      *          credits an owed balance instead of transferring, and that
      *          difference is the gap between the fitness signal and the ledger.
      */
-    function redeemFor(address organism, uint256 positionId, uint256 quantity)
-        external
-        returns (uint256 collateralOut);
+    function redeemFor(address organism, uint256 positionId, uint256 quantity) external returns (uint256 collateralOut);
 
     /**
      *  The token positions are denominated in, or `address(0)` if this venue

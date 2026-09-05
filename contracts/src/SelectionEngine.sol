@@ -64,10 +64,12 @@ contract SelectionEngine {
     );
     event ReactionFailed(address indexed emitter, uint256 blockNumber, bytes reason);
     event FallbackDisabled();
+    event OwnershipTransferred(address indexed previous, address indexed current);
 
     error NotAuthorized();
     error UnexpectedEmitter(address got, address want);
     error FallbackClosed();
+    error ZeroOwner();
 
     constructor(Population population_, address settlementEmitter_, address owner_) {
         population = population_;
@@ -82,7 +84,14 @@ contract SelectionEngine {
      *  `SomniaEventHandlerABI` in `@somnia-chain/reactivity@0.2.1`. It is no longer
      *  a placeholder, so the selector no longer needs an env-var escape hatch.
      */
-    function onEvent(address emitter, bytes32[] calldata, /* topics */ bytes calldata /* data */ ) external {
+    function onEvent(
+        address emitter,
+        bytes32[] calldata,
+        /* topics */
+        bytes calldata /* data */
+    )
+        external
+    {
         if (msg.sender != REACTIVITY) revert NotAuthorized();
         // The subscription filters on emitter, but a filter is a request and this is
         // a check. Cheap enough to do both.
@@ -100,8 +109,15 @@ contract SelectionEngine {
      *  claim while this returns true.
      */
     function poke() external {
-        if (!fallbackEnabled) revert FallbackClosed();
+        // AUTHORITY FIRST, STATE SECOND. Reversed until 2026-09-05, which made the
+        // revert reason wrong for the only caller who can act on it: a stranger
+        // calling after `disableFallback` was told `FallbackClosed` — a fact about
+        // the contract's posture — when the true and only relevant answer is that
+        // they are not the owner. Checking the caller first means each party gets
+        // the error that describes their own problem, and the honesty flag stops
+        // being readable through a revert by anyone who feels like probing it.
         if (msg.sender != owner) revert NotAuthorized();
+        if (!fallbackEnabled) revert FallbackClosed();
         _handle(false);
     }
 
@@ -129,8 +145,32 @@ contract SelectionEngine {
         }
     }
 
+    /**
+     *  ONE-STEP, BUT NOT UNGUARDED — and the missing guard mattered here more than
+     *  the missing second step.
+     *
+     *  `owner` is the only address that can call `disableFallback`, and
+     *  `disableFallback` is what turns the licensed claim from *"selection is
+     *  on-chain and atomic with redemption"* into *"no keeper anywhere in the causal
+     *  chain"*. Handing ownership to `address(0)` therefore did not merely lose an
+     *  admin key: it froze `fallbackEnabled` at `true` permanently and made the
+     *  project's central claim unprovable for the life of the contract. That is a
+     *  typo away, so zero is refused.
+     *
+     *  A two-step handover (`pendingOwner` / `acceptOwnership`) is deliberately NOT
+     *  added. It defends against a transfer to a live-but-uncontrolled address, and
+     *  here that case is fully recoverable: this contract is plain, non-upgradeable
+     *  and freely redeployable, and `Population.setWiring` repoints to a fresh one
+     *  in a single transaction — none of which is true of `Population` itself, which
+     *  uses OZ `Ownable` and gets its zero-check from there. Keeping the reactive
+     *  surface small enough to redeploy IS the recovery mechanism; a state machine
+     *  guarding a contract designed to be thrown away would be the more expensive
+     *  half of that trade.
+     */
     function transferOwnership(address to) external {
         if (msg.sender != owner) revert NotAuthorized();
+        if (to == address(0)) revert ZeroOwner();
+        emit OwnershipTransferred(owner, to);
         owner = to;
     }
 }

@@ -32,10 +32,31 @@ export function units(value, decimals, places = 4) {
 export function money(value, decimals, places = 2) {
   const s = units(value, decimals, places);
   const [w, f] = s.split(".");
+  return `${group(w)}${f ? `.${f}` : ""}`;
+}
+
+/**
+ *  `money`, but the fraction is padded to exactly `places` instead of trimmed.
+ *
+ *  For a COLUMN of money rather than a number in a sentence. `units` drops trailing zeros on
+ *  purpose, which is right in prose — "paid 3.9 tUSDC rake" — and wrong stacked: a column reading
+ *  58.42 / 51.07 / 22.5 / 4 has its decimal point in three different places, and the one number a
+ *  viewer scans down the grid is the one they cannot scan. Same digits, same truncation, same
+ *  `units` underneath, so this never disagrees with `monitor.ts` about what an organism holds; the
+ *  zeros are presentation and nothing else reads them.
+ */
+export function moneyFixed(value, decimals, places = 2) {
+  const s = units(value, decimals, places);
+  const [w, f = ""] = s.split(".");
+  const frac = places > 0 ? f.padEnd(places, "0") : "";
+  return `${group(w)}${frac ? `.${frac}` : ""}`;
+}
+
+/** Group the integer part, sign preserved. */
+function group(w) {
   const sign = w.startsWith("-") ? "-" : "";
   const digits = sign ? w.slice(1) : w;
-  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${sign}${grouped}${f ? `.${f}` : ""}`;
+  return sign + digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
 /** Native STT, which is 18dp and only ever interesting to about four places. */

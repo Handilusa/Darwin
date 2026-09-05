@@ -231,7 +231,9 @@ contract Prophet {
         Response[] memory responses,
         ResponseStatus status,
         Request memory /* details */
-    ) external {
+    )
+        external
+    {
         if (msg.sender != _agentRequester()) revert NotAgentRequester();
         if (requestId == 0 || requestId != pendingBeliefRequestId) revert NoSuchRequest();
         pendingBeliefRequestId = 0;
@@ -270,7 +272,9 @@ contract Prophet {
         Response[] memory responses,
         ResponseStatus status,
         Request memory /* details */
-    ) external {
+    )
+        external
+    {
         if (msg.sender != _agentRequester()) revert NotAgentRequester();
         if (requestId == 0 || requestId != pendingMutationRequestId) revert NoSuchRequest();
         pendingMutationRequestId = 0;
@@ -384,10 +388,22 @@ contract Prophet {
             //
             // A venue with no transferable position token reports address(0), and
             // its ids are pure bookkeeping.
+            //
+            // The return value is CHECKED. ERC-6909's `transfer` returns a bool like
+            // ERC-20's, and a token that answers `false` instead of reverting would
+            // leave the position in this organism's hands while `redeemFor` runs
+            // against a venue that holds nothing. On DreamDEX that happens to fail
+            // loudly one line later — `finalizeAndRedeem` burns from `msg.sender` —
+            // but `IArenaVenue` is a seam, and a future venue crediting a redemption
+            // it never received would pay this organism out of somebody else's
+            // backing. Every other value movement in this file is checked; this was
+            // the one that was not, until 2026-09-05.
             {
                 address ptoken = IArenaVenue(venue).positionToken();
                 if (ptoken != address(0)) {
-                    IOutcomeToken6909(ptoken).transfer(venue, currentOutcomeId, quantity);
+                    if (!IOutcomeToken6909(ptoken).transfer(venue, currentOutcomeId, quantity)) {
+                        revert TransferFailed();
+                    }
                 }
             }
 
@@ -457,9 +473,26 @@ contract Prophet {
             }
         }
 
-        if (quantity == 0 || belief == Belief.Abstain || belief == Belief.None) {
-            // No position was taken, so no forecast was graded — whether the
-            // organism failed to think, or merely failed to find a counterparty.
+        if (quantity == 0) {
+            // No position was taken, so no forecast was graded — whether the organism
+            // failed to think, abstained, or merely failed to find a counterparty. All
+            // three arrive here identically: `_openEmpty` records a zero quantity
+            // (`Population.sol:1311`) and `_pair` clamps to `minStake` before it can
+            // issue anything at all (`Population.sol:1242`), and `noteCommitted` is the
+            // only writer. So a nonzero quantity means this organism was paired into a
+            // real directional position, and nothing else produces one.
+            //
+            // THE BELIEF IS DELIBERATELY NOT CONSULTED HERE, and re-adding it is a
+            // regression rather than a safety net. `belief` is a LIVE field, cleared at
+            // the bottom of this function and rewritten by every `think`. An organism
+            // whose settlement reverted keeps its position open and is skipped by the
+            // next `commitAll` (`Population.sol:1183`) — but it is NOT skipped by
+            // `think`, so by the time the retry redeems the ORIGINAL position the live
+            // belief belongs to a different window. Grading on it would book an abstain
+            // over a position that won or lost real money, and the same is true of a
+            // voided position redeemed a window late. `quantity` and `staked` are the
+            // two fields that actually travelled with the position, which is exactly
+            // why the money above is graded from them and not from the forecast.
             abstainCount += 1;
             streak = 0;
         } else if (won) {
@@ -525,14 +558,29 @@ contract Prophet {
         treasury += claimed;
     }
 
-    /// @dev Population must be an ERC-6909 operator to move this organism's
-    ///      outcome tokens, and must hold a collateral allowance for pooled
-    ///      routing. Set once at birth.
-    function grantPopulation(address outcomeToken, address collateral) external onlyPopulation {
-        IOutcomeToken6909(outcomeToken).setOperator(population, true);
-        IERC20Like(collateral).approve(population, type(uint256).max);
-    }
-
+    /**
+     *  THERE IS DELIBERATELY NO `grantPopulation` HERE, and the gap is the point.
+     *
+     *  Until 2026-09-05 every organism handed `Population` an infinite collateral
+     *  allowance plus ERC-6909 operator rights over its positions, at birth,
+     *  forever. Nothing ever used either one. `Population` reaches `transferFrom`
+     *  at exactly two sites and both pull from `msg.sender`; it never touches the
+     *  ERC-6909 surface at all, because that surface has no `transferFrom` to pull
+     *  with — settlement is a PUSH from this contract (`:394`), and the ante is a
+     *  push too (`stakeOut`, called by `Population.executePair`).
+     *
+     *  Removing it is not tidying. A standing allowance is not a promise about
+     *  today's bytecode when the grantee is UUPS-upgradeable: it made every
+     *  organism's whole treasury reachable by whatever `Population` becomes, which
+     *  is precisely the liability `Population.executePair` refuses to create for
+     *  the venue when it approves per call. It also failed quietly rather than
+     *  loudly — a `transferFrom` against an organism moves collateral without
+     *  decrementing `treasury`, breaking the `treasury == balanceOf` invariant
+     *  instead of reverting.
+     *
+     *  `test_prophet_populationHoldsNoStandingAuthorityOverAnOrganism` asserts the
+     *  absence, so re-adding a grant fails a test rather than passing review.
+     */
     function fund(uint256 amount) external onlyPopulation {
         treasury += amount;
     }
@@ -591,8 +639,9 @@ contract Prophet {
     function _sweepOwed(address settlement, address collateral) internal returns (uint256 received) {
         uint256 before = IERC20Like(collateral).balanceOf(address(this));
         try IBinarySettlement(settlement).claimOwed(collateral) {
-            // Return value deliberately ignored — the balance is the truth.
-        } catch {
+        // Return value deliberately ignored — the balance is the truth.
+        }
+        catch {
             return 0;
         }
         received = IERC20Like(collateral).balanceOf(address(this)) - before;

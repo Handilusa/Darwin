@@ -91,8 +91,7 @@ library Genome {
         string memory head = string.concat(
             "MARKET: ",
             symbol,
-            " binary event contract.\n"
-            "QUESTION: at this window's close, will ",
+            " binary event contract.\n" "QUESTION: at this window's close, will ",
             symbol,
             " be ABOVE (UP) or BELOW (DOWN) the window's OPENING price?\n"
         );
@@ -100,11 +99,9 @@ library Genome {
         string memory body = string.concat(
             "OPENING PRICE (the level you are graded against): ",
             open_,
-            "\n"
-            "CURRENT PRICE: ",
+            "\n" "CURRENT PRICE: ",
             last_,
-            "\n"
-            "SECONDS UNTIL CLOSE: ",
+            "\n" "SECONDS UNTIL CLOSE: ",
             secs,
             "\n\n"
         );
@@ -137,11 +134,9 @@ library Genome {
         return string.concat(
             "You are mutating the heritable strategy text of a forecasting organism\n"
             "that survives only while it predicts short-horizon crypto price windows\n"
-            "better than it pays to think.\n\n"
-            "PARENT GENOME:\n---\n",
+            "better than it pays to think.\n\n" "PARENT GENOME:\n---\n",
             parentGenome,
-            "\n---\n\n"
-            "PARENT RECORD: ",
+            "\n---\n\n" "PARENT RECORD: ",
             _toString(correct),
             " correct, ",
             _toString(wrong),
@@ -149,8 +144,7 @@ library Genome {
             _toString(abstained),
             " abstained, generation ",
             _toString(generation),
-            ".\n\n"
-            "Write the CHILD genome. Keep what the record suggests was working and\n"
+            ".\n\n" "Write the CHILD genome. Keep what the record suggests was working and\n"
             "change exactly one thing that plausibly explains the losses. This is a\n"
             "mutation, not a rewrite: the child must be recognisably descended from\n"
             "the parent. Under 700 characters. Output only the genome text - no\n"
@@ -162,7 +156,7 @@ library Genome {
     ///      not the organism; it is the mechanism of heredity.
     function mutationSystem() internal pure returns (string memory) {
         return "You perform small, purposeful mutations on strategy text. You never"
-        " editorialise and you never output anything except the mutated text.";
+            " editorialise and you never output anything except the mutated text.";
     }
 
     /**
@@ -193,7 +187,9 @@ library Genome {
     function _toString(uint256 n) internal pure returns (string memory) {
         if (n == 0) return "0";
         uint256 digits;
-        for (uint256 t = n; t != 0; t /= 10) digits++;
+        for (uint256 t = n; t != 0; t /= 10) {
+            digits++;
+        }
         bytes memory buf = new bytes(digits);
         while (n != 0) {
             buf[--digits] = bytes1(uint8(48 + (n % 10)));

@@ -31,7 +31,8 @@ forge fmt --root contracts     # 120 cols, 4-space, no bracket spacing
 ```
 
 Single test / subset (all Solidity tests live in `contracts/test/Darwin.t.sol`, one contract
-`DarwinTest`, 98 tests):
+`DarwinTest`, **124 tests as of 2026-09-05** — 124 `function test` declarations in the one file,
+none of them fuzzed, so the suite count and the declaration count are the same number):
 
 ```bash
 forge test --root contracts --match-test test_death_isIrreversible -vvv
@@ -56,6 +57,18 @@ discrepancies** — 29 `Prophet` rows, 47 `Population` rows, and `agentRequester
 slot 0 with nothing inherited ahead of it, so OZ v5 namespaced storage still holds. Same result
 on 2026-08-29. See the changelog at the bottom of `STORAGE.md`.
 
+**That paragraph is a dated record and the layout has since changed twice — do not read its row
+counts as current.** Phase 4's escalating ante appended `windowAnte` on **2026-09-05**, taking slot
+37 and shrinking `__gap` from `uint256[10]` to `uint256[9]`. Later the same day the Genesis Treasury
+appended `genesisTreasury` (`address`, 20 bytes) at **slot 38 offset 0**, shrinking `__gap` again to
+`uint256[8]` at **39–46**. The envelope still ends at 46 both times. `Population` is therefore **49
+rows, not 47**; `Prophet` is untouched at 29, because `entrant` is still written in exactly one place
+and N1 changed only what is passed to it. **Slot 38's other twelve bytes are do-not-fill** like every
+other partial slot. `STORAGE.md`'s tables and changelog carry the current layout and were reconciled
+against `forge inspect` the same day — walking the compiler's rows and requiring a table row for
+each, rather than the reverse. Run the three commands above before relying on any of it for an
+upgrade.
+
 Deploy and seed generation 0:
 
 ```bash
@@ -65,14 +78,21 @@ Deploy and seed generation 0:
 # will NOT write deployments/<chainid>.json — nothing downstream can be fooled by it.
 forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia -vv
 
-forge script script/Deploy.s.sol --root contracts --rpc-url somnia --broadcast
+forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia --broadcast
+
+# THE TREASURY COMES BEFORE THE FOUNDERS, and `spawnGenesis` enforces it rather than
+# defaulting: it reverts `NoGenesisTreasury` while `genesisTreasury` is zero, because a
+# founder minted against `address(0)` would be permanently ownerless AND permanently
+# unretirable (`retire` needs `msg.sender == entrant`) with no repair path. `onlyOwner`,
+# once ever — a second call reverts `TreasuryAlreadySet`, and there is no setter.
+cast send $POPULATION 'deployGenesisTreasury()' --rpc-url somnia --private-key $PK
 
 # ORDER IS LOAD-BEARING. `spawnGenesis` is payable and `_spawn` endows each newborn out of
 # `address(this).balance`, so the house float must already be there when Seed runs — 8
 # founders x 0.33 STT = 2.64. Fund it FIRST and a Seed script that attaches no value of its
 # own still produces a generation 0 that can think.
 npm run fund -- --faucet --collateral 200 --house 3
-forge script script/Seed.s.sol --root contracts --rpc-url somnia --broadcast
+forge script script/Seed.s.sol:Seed --root contracts --rpc-url somnia --broadcast
 
 # And --windows only AFTER seeding: it tops up living organisms one by one, so before
 # generation 0 exists there is nobody to top up and it warns instead of acting.
@@ -235,6 +255,19 @@ union is why cadence can migrate from a script to on-chain ticks without a code 
   `BinaryMarketsModule.markets()` on **every** call. Also plain and replaceable.
 - **`Genome.sol`** — dependency-free library: prompt assembly, the nine `allowedValues`, answer
   parsing. `parseAnswer` maps anything unrecognised to `(Abstain, Unknown)` — never a coin flip.
+- **`GenesisTreasury.sol`** — the eight founders' `entrant`, and the house's own position held where
+  anyone can see it. Non-upgradeable, 88 lines, **no owner, no withdraw, no arbitrary call, no
+  `upgradeTo`, no `receive()`**. One state-changing function, `recycle()`, which is
+  **permissionless** and pushes its whole collateral balance back into `prizePool` via
+  `Population.donatePrizePool`. Deployed by `Population.deployGenesisTreasury()` (`onlyOwner`, once
+  ever — `TreasuryAlreadySet`, and no setter exists), and `spawnGenesis` **reverts
+  `NoGenesisTreasury`** until it has run. It reads `collateral` off the arena at call time rather
+  than storing an immutable, so a `setWiring` repoint cannot strand it holding a token it has no
+  path for. The no-owner argument depends on a fourth read that is **not optional**:
+  `sweep`'s collateral leg is capped at `balance - (rakeAccrued + prizePool)` (`BooksReserved`), or a
+  reader grepping `onlyOwner` would find a path from the players' pot to the operator anyway. The
+  native leg is deliberately uncapped — it is the `CognitionUnspent` remedy, and both books are in
+  collateral.
 
 ### Settlement is a replaceable part
 
@@ -282,7 +315,7 @@ Cutting that thread is an `IPriceSource` v2, not a venue change.
 `scripts/cadence.ts` is a state machine over `Population.phase()` that **remembers nothing between
 iterations** — active market, window number and phase all live on-chain. It can be killed,
 restarted, or moved to another machine and resumes where the population actually is. It pushes two
-prices and calls four functions; belief formation, pairing, fitness, death, mutation and lineage are
+prices and calls five functions; belief formation, pairing, fitness, death, mutation and lineage are
 all on-chain.
 
 `pushWindow` then `think()` must go back-to-back: `PushedPriceSource.maxStaleness` is 180s, so any
@@ -311,13 +344,13 @@ or insert between existing variables. Every change gets a dated changelog entry 
 - `Prophet` slots 0 (31/32) and **15 (1/32 — thirty-one bytes spare)** have free bytes. **Do not
   fill them.** Slot 15 holds only `positionOpen` and is the most inviting place in the contract to
   "just add a bool"; it is the same trap as the `Population` slots below.
-- `Population` slots 13, 18, 21, 23, 26 have free bytes. **Do not fill them.** Packing into a
-  partially-used slot changes nothing for a fresh deploy and corrupts nothing visibly until an
+- `Population` slots 13, 18, 21, 23, 26, 33 and **38** have free bytes. **Do not fill them.** Packing
+  into a partially-used slot changes nothing for a fresh deploy and corrupts nothing visibly until an
   organism's counter starts reading someone else's bytes. Take a fresh slot from `__gap`.
-- Layout freezes at the deploy, moved to **2026-09-02** so the storage-affecting half of the
-  arena-engine rework lands before the freeze rather than after it. Phases 1, 2, 2A and 3 are in;
-  phase 4 (escalating ante, seasons, prize pool, rake) is the last change that can still take
-  slots, and it takes four. Until the deploy, changes are allowed but still logged.
+- Layout freezes **at the deploy, not on a calendar date**. The freeze was written against
+  2026-09-02 and that date passed with nothing deployed, so the envelope is still open: `windowAnte`
+  (slot 37) and `genesisTreasury` (slot 38) both landed after it. Until the deploy, changes are
+  allowed but still logged — every one needs a `STORAGE.md` changelog row *and* a re-derivation.
 
 ### Do not "tidy" the stack-limit workarounds
 
@@ -328,6 +361,10 @@ the site — a refactor that looks like cleanup will fail to compile:
 
 - `Population._spawn` — the prophet id is **not** a local (the Yul optimizer inlines this into
   `spawnGenesis`'s loop; a local pushes it one slot over).
+- `Population.spawnGenesis` — the `genesisTreasury` **`SLOAD` stays inside the loop, uncached**, for
+  the same reason: the inlined `_spawn` body sits exactly one slot under the limit and a cached
+  `address` local is precisely that slot. Verified by compiling, not by argument. ~100 warm gas per
+  founder, eight founders, once ever. Do not hoist it.
 - `Population.think` — the nine-value `currentWindow` destructure is inside a scoped block, and the
   `WindowOpened` emit lives inside that block because it is the last use of `openPrice`/`pool`.
 - `Population.snapshot` — fields assigned one at a time, not a `Snapshot({...})` literal.
@@ -350,7 +387,10 @@ EvmError: NotActivated  →  Error: script failed: <empty revert data>
 
 which names neither PUSH0 nor `evm_version`. **`--broadcast` simulates before sending, so this was
 never dry-run-only — the deploy itself would have failed at the first command.** The same script
-unchanged under `shanghai` simulates the full deploy clean. Tests: 56/56 under both. Storage layout:
+unchanged under `shanghai` simulates the full deploy clean. Tests: 56/56 under both — that is the
+suite **as it stood on 2026-08-29**, not a current count (it is 124 now), and the figure is left
+alone deliberately: the claim is that one identical suite passed under both EVM versions, and
+substituting today's number would assert a `paris` run that never happened. Storage layout:
 byte-identical (`evm_version` does not affect it).
 
 Shannon's supported fork is therefore no longer unconfirmed — its own production contracts contain
@@ -459,13 +499,60 @@ When code is uncertain about an external surface, it is marked `UNVERIFIED` at t
   that there is **no `innerHTML`** anywhere in it — `Population.enter` is permissionless, so every
   genome the page displays is untrusted input from a public write path.
 - `npm test --prefix web` runs the real renderer against the fixture under a 60-line fake DOM
-  (`web/test/smoke.mjs`) — twenty render calls, forty assertions, no network and no browser.
-  Run it after touching anything under `web/js/`. It is the only executable check this repo has on
-  the frontend, and it exists because everything else about `web/` had only ever been verified by
-  reading. It also loads `chain.js` with no network, which is what proves viem and `abi.js` are
+  (`web/test/smoke.mjs`) — fifty renderer call sites and one hundred and sixty-seven `assert()` call
+  sites, which execute 313 render calls and 189 checks, no network
+  and no browser. Run it after touching anything under `web/js/`. It is the only executable check this repo
+  has on the frontend, and it exists because everything else about `web/` had only ever been verified
+  by reading. It also loads `chain.js` with no network, which is what proves viem and `abi.js` are
   reached only through lazy `import()` — make one of them a static import and that assertion fails.
   `web/package.json` is there solely to tell Node these `.js` files are ES modules; it declares no
-  dependencies, so "no install, no build" still holds.
+  dependencies, so "no install, no build" still holds. Forty-four of the assertions recompute the
+  scripted demo season's arithmetic from `config` and `Population.sol` — they fail if someone tunes a
+  number to make the demo look better, and all of them were confirmed capable of failing by
+  perturbing the fixture rather than by inspection. (That count is the `assert()` call sites between
+  `season plays 4 frames` and `the header follows the script to window 42`; the earlier note said
+  thirty-four on a boundary that can no longer be reproduced, so the boundary is now written down.
+  New assertions go OUTSIDE that range or the documented sub-count breaks.)
+- **Twelve of those assertions are detector self-tests, and they are not padding.** Two checks in this
+  suite once asserted a string no code path can emit (`"unknown event"`, which `generic()` never
+  prints) and stayed green on exactly the state they were written to catch. So a check whose subject
+  is "X cannot happen" is now paired with one that makes X happen on purpose and requires the same
+  detector to fire. Delete a control and you are back to a test that cannot fail. (Three came with
+  the settlement/null-key work on 2026-09-02; three more with the read-verdict work on 2026-09-03 —
+  a mixed read batch must flip verdict when its successes are removed, the three error banners must
+  not share a headline, and an `unreachable` chain must leave the address form closed. Six more came
+  with the season close on 2026-09-05, at `web/test/smoke.mjs:806`, `:811`, `:826`, `:835`, `:841`
+  and `:855` — each one sits next to the assertion it protects and says so in the comment above it.)
+- **`absent` is not `unreachable`, on either surface.** `web/js/chain.js`'s `readVerdict` and
+  `app/src/lib/reads.js`'s `readReport` are deliberately the same classifier: any answered read means
+  `live`, and a batch where everything failed is `absent` only if viem raised
+  `ContractFunctionZeroDataError` (*"returned no data (\"0x\")"*) — otherwise `unreachable`. The two
+  cases get opposite copy and opposite affordances, because their remedies are opposite: `absent`
+  means edit the address (and the arena's setup form is forced open), `unreachable` means leave it
+  alone and retry. Never re-derive this from a failure count; a tally cannot tell the two apart, and
+  guessing sends someone on a testnet hiccup off to edit a perfectly good address.
+- **Animation on that page is driven by a diff, not by rendering**, and `web/vendor/gsap.min.js` is
+  a committed file rather than a CDN import — `?demo=1` is documented three times as working with
+  the network unplugged. `main.js` compares snapshots, `render.js` stamps `data-fx`, `js/motion.js`
+  plays one timeline per stamp; nothing stamped animates nothing. Two rules there are load-bearing:
+  without GSAP or under `prefers-reduced-motion` every timeline is a no-op and the page renders
+  static, and any tween starting from `opacity: 0` must sit in a timeline carrying `guarantee()`'s
+  deadline — otherwise a stalled frame clock leaves the whole population laid out and invisible.
+  `onClockAlive()` is the defence in front of that one: timelines are built inside the first
+  `requestAnimationFrame` callback, so a page that is never composited never hides anything.
+- **`?demo=1` is not a still image.** `fixture.season()` scripts the next window as four snapshots
+  fed through the same `advance()` path a live poll uses, so the `died` / `born` / `treasury` /
+  `phase` timelines actually fire in the only mode that exists before Season 0. It runs forward and
+  stops — looping would resurrect the starved organism and contradict `test_death_isIrreversible` on
+  screen. Every figure in it is derived from `config` and the breeding rules, never chosen.
+- **Do not time-verify the frontend's motion with `--virtual-time-budget`.** Chrome races the virtual
+  clock while GSAP's ticker reads `performance.now()`, so a capture labelled 2200ms shows a timeline
+  fifty real milliseconds in — an entire population at `opacity: 0`, indistinguishable from the bug
+  the two defences above exist to prevent. Drive the page over CDP and sample on the wall clock
+  (Node's global `WebSocket` needs no dependencies); a `--dump-dom` at the same budget is the quick
+  way to tell a stalled clock from a stalled *measurement*. Measured properly: population fully
+  visible 1.0s after navigation, last lineage edge at 1.6s.
+
 
 - The handler selector `onEvent(address,bytes32[],bytes)` was verified on 2026-08-29 against
   `SomniaEventHandlerABI` in `@somnia-chain/reactivity@0.2.1`, and `SelectionEngine` no longer

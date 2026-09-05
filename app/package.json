@@ -1,0 +1,27 @@
+{
+  "name": "darwin-app",
+  "private": true,
+  "type": "module",
+  "description": "Landing + entry flow for DARWIN. The read-only arena dashboard lives in ../web and is served verbatim at /arena.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 3000",
+    "test": "node test/reads.mjs",
+    "test:browser": "node test/landing.mjs && node test/arena.mjs",
+    "shots": "node test/shots.mjs"
+  },
+  "dependencies": {
+    "@rainbow-me/rainbowkit": "^2.2.8",
+    "@tanstack/react-query": "^5.62.0",
+    "gsap": "^3.15.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.56.0",
+    "wagmi": "^2.14.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.7"
+  }
+}

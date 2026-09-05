@@ -8,17 +8,45 @@
       name="description"
       content="A live view of an on-chain population of AI forecasters on Somnia Shannon. Reads one contract; no indexer, no backend, no wallet."
     />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#060d0c" />
+
+    <!--
+      One stylesheet link, and it pulls `fonts.css` and `tokens.css` in through `@import` in that
+      order. Deliberately not three <link>s: the cascade order fonts → tokens → app is load-bearing
+      (tokens must be defined before anything reads them, and `app.css` must be able to override),
+      and expressing it inside the stylesheet makes it impossible to break by reordering markup.
+      `app/src/styles.css` imports the same two files the same way, which is what keeps the landing
+      and this console one design system rather than two that resemble each other.
+    -->
     <link rel="stylesheet" href="app.css" />
+
+    <!--
+      The `@import` chain costs two hops before a font request can even start, so the two faces the
+      entire interface is set in are asked for from here instead. `crossorigin` is not optional even
+      though these are same-origin: fonts fetch in CORS mode, and without it the browser discards
+      the preload and downloads the file a second time. The two serif faces are deliberately NOT
+      preloaded — they carry genomes and organism names, `font-display: swap` covers them, and
+      146KB of italic Newsreader must not compete with the RPC call this page exists to make.
+    -->
+    <link rel="preload" href="vendor/fonts/ibm-plex-sans-var.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="vendor/fonts/ibm-plex-mono-400.woff2" as="font" type="font/woff2" crossorigin />
+
+    <!--
+      One living cell and one speck of ash — the whole thesis at 16px. `app/index.html` carries the
+      identical mark, because the landing and the arena are one product and a judge who clicks
+      through must not see the tab change identity.
+    -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230b0f14'/%3E%3Cpath d='M9 23c4-3 4-11 8-14M23 9c-4 3-4 11-8 14' stroke='%2358d68d' stroke-width='2' fill='none'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23060d0c'/%3E%3Ccircle cx='15' cy='17' r='9.5' fill='none' stroke='%235fe3c0' stroke-width='1.7'/%3E%3Ccircle cx='15' cy='17' r='2.6' fill='%235fe3c0'/%3E%3Ccircle cx='25.5' cy='6.5' r='2.2' fill='%237a7686'/%3E%3C/svg%3E"
     />
   </head>
   <body>
     <!--
       Deliberately almost empty. Every node below #banner and #body is created by render.js
       through `document.createTextNode`, because `Population.enter` lets anybody write the
-      genome string this page displays (Population.sol:575) and a template-string renderer
+      genome string this page displays (Population.sol:654) and a template-string renderer
       would be one missed escape away from running an entrant's script in an operator's
       browser. There is no `innerHTML` anywhere in web/ — grep for it as a review check.
     -->
@@ -48,6 +76,16 @@
       </p>
     </footer>
 
+    <!--
+      GSAP, from `web/vendor/` — a file in this repo, not a CDN. `?demo=1` is documented as working
+      with the network unplugged, and an import from cdnjs would have broken exactly that, in a
+      venue, at the worst possible moment. A plain script tag rather than a module import keeps the
+      no-build promise too: `window.gsap` is defined before the module below runs.
+
+      If this file is missing the page still renders complete and static — `js/motion.js` checks for
+      the library on every call and becomes a no-op without it.
+    -->
+    <script src="vendor/gsap.min.js"></script>
     <script type="module" src="js/main.js"></script>
   </body>
 </html>
