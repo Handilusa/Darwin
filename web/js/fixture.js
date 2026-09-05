@@ -45,6 +45,12 @@ export const config = {
   selectionEngine: "0x91Ad7f24C08bE536a1D9c4F72B0e8A35D6c1027B",
   marketsModule: "0x5D2fA83c19B7e04E6a5C81b3F9d072Ae4B18c635",
   owner: "0xE07b4A29c6D138f5B0a7E24C91d3F86b5A0c72E1",
+  // NOT the owner, and the distinction is the whole point of the contract. The eight founders'
+  // `entrant` is `GenesisTreasury` (`Population.sol:585`), so the season close pays first place
+  // into a no-owner contract whose only function pushes it back into `prizePool`. `discover` does
+  // not read this — `Population` exposes `genesisTreasury()` but the dashboard has no use for it
+  // yet — so it lives here only to keep `entrantOf`'s fallback honest.
+  genesisTreasury: "0x2B8fC5a1E934d70A6b8C2f5D91e04A73B6c58E2F",
   decimals: 6,
   tokenSymbol: "tUSDC",
   // A duel-style venue: no ERC-6909 position token, so organisms redeem directly.
@@ -60,7 +66,7 @@ export const config = {
   levelWindows: 12,
   // FORTY-TWO IS THE ONLY VALUE THAT LETS THIS DEMO SHOW A SEASON CLOSE, and it is derived rather
   // than chosen. `endSeason` opens when `windowCount - seasonStartWindow >= seasonWindows`
-  // (`Population.sol:834`). The snapshot below sits at window 41 with `seasonStartWindow: 0` and has
+  // (`Population.sol:940`). The snapshot below sits at window 41 with `seasonStartWindow: 0` and has
   // to still be mid-season — a demo whose opening frame is already a closeable season would be
   // showing a state the contract would not have left standing — so `seasonWindows > 41`; and the
   // scripted window turns to 42, the only turnover a judge watches, so `seasonWindows <= 42`. One
@@ -82,7 +88,7 @@ export const config = {
   seasonWindows: 42,
   rakeBps: 200n,
   prizeShareBps: 5_000n,
-  // The three gates on reproduction, at `Population.initialize`'s defaults (Population.sol:343-345).
+  // The three gates on reproduction, at `Population.initialize`'s defaults (Population.sol:412-414).
   // `season()` below derives who breeds from exactly these, so tuning one to make the demo look
   // better moves the answer and the smoke suite notices.
   breedStreak: 4,
@@ -223,7 +229,7 @@ export const state = {
   ante: 3_906_250n, // baseAnte 2.00 compounded at 1.25x through level 3
   level: 3,
   // ONE, NOT ZERO, AND IT IS THE CONTRACT'S NUMBER, NOT A PREFERENCE. `initialize` sets
-  // `seasonId = 1` (`Population.sol:413`) and only `endSeason` ever moves it, by `seasonId += 1`
+  // `seasonId = 1` (`Population.sol:456`) and only `endSeason` ever moves it, by `seasonId += 1`
   // (`:870`) — which cannot have run here, because `endSeason` requires
   // `windowCount - seasonStartWindow >= seasonWindows` and this snapshot is 41 into 42. So a
   // freshly deployed arena on its first season reports exactly 1, and the rest of the season block
@@ -275,7 +281,7 @@ export const details = new Map([
     lastReasoning:
       "Price is 0.58% above the open with 7 minutes left and has not retraced more than a " +
       "third of the move at any point in the window. That is continuation, not exhaustion. UP_MOMENTUM",
-    entrant: config.owner,
+    entrant: config.genesisTreasury,
     positionOpen: true,
     currentStake: 3_906_250n,
     currentQuantity: 7_812_500n,
@@ -294,7 +300,7 @@ export const details = new Map([
     lastReasoning:
       "A 0.58% move inside eight minutes is roughly two standard deviations for this pair at " +
       "this hour, and the last three candles are shrinking. Overshoot. DOWN_REVERSION",
-    entrant: config.owner,
+    entrant: config.genesisTreasury,
     positionOpen: true,
     currentStake: 3_906_250n,
     currentQuantity: 7_812_500n,
@@ -315,7 +321,7 @@ export const details = new Map([
     lastReasoning:
       "Same read as the parent line, with the timing qualifier that earned this genome: " +
       "0.58% with 7 minutes left leaves too little time for a full retrace. UP_MOMENTUM",
-    entrant: config.owner,
+    entrant: config.genesisTreasury,
     positionOpen: true,
     currentStake: 3_906_250n,
     currentQuantity: 7_812_500n,
@@ -480,7 +486,7 @@ const LOST = -(ANTE + META); // -4.156250
 const IDLE = -META; // abstained, unpaired, or never formed a belief
 
 const TX2 = "0x5a9c3d2b1e0f4867a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70819";
-// `endSeason` IS ITS OWN TRANSACTION, AND ANYBODY'S. It is permissionless (`Population.sol:833` takes
+// `endSeason` IS ITS OWN TRANSACTION, AND ANYBODY'S. It is permissionless (`Population.sol:981` takes
 // no modifier and `Darwin.t.sol` closes a season from `address(0xDEAD)`), so it cannot share TX2 with
 // the driver's `commitAll` — and it lands in the block after it, because the commits are what filled
 // the window it closes. A close folded into the commit transaction would be claiming the driver did
@@ -503,7 +509,7 @@ const money = (id, delta) => at(id).treasury + delta;
 const RESIDUE_8 = at(8n).treasury - ANTE;
 
 /**
- *  `_book` (`Population.sol:793`), mirrored, because a prize pool is not a number this file gets to
+ *  `_book` (`Population.sol:874`), mirrored, because a prize pool is not a number this file gets to
  *  pick — it is what the settlement paid into it.
  *
  *  `settleAll` calls `_book(charged + raked)` ONCE PER ORGANISM (`:1264`), and each call splits that
@@ -528,7 +534,7 @@ const bookRake = (income) => income - bookPool(income);
  *  since this file was written. `Prophet.settleWindow` would instead take `min(treasury,
  *  metabolicCost)` first (`Prophet.sol:516`), leaving nothing to forfeit and booking 0.09375 as rent,
  *  so the two models move the same money by different doors and split it differently: the forfeit
- *  sends all of it to the pool (`Population.sol:1280`), the charge would send half to the house.
+ *  sends all of it to the pool (`Population.sol:1480`), the charge would send half to the house.
  *  Following the fixture's own rows is what keeps the header and the feed from contradicting each
  *  other on screen; the divergence is real and belongs to whoever owns the demo's death scenario.
  */
@@ -577,7 +583,7 @@ details.set(13n, {
   lastReasoning:
     "First window. The inherited read plus the clause that was mutated into it: continuation is " +
     "the base case, but only while the move is still being paid for. It is. UP_MOMENTUM",
-  entrant: config.owner,
+  entrant: config.genesisTreasury,
   positionOpen: true,
   currentStake: ANTE,
   currentQuantity: 7_812_500n,
@@ -609,7 +615,7 @@ const SCRIPT = [
       // forfeits a corpse's residue INTO the prize pool, so the header's pool sat still while the feed
       // said it had just been paid. See `bookPool`/`bookRake` above: nine organisms paid rent, three of
       // them also paid a skim, `prizeShareBps: 5_000` halves each of those payments as it arrives, and
-      // the forfeit goes to the players whole (`Population.sol:1280`).
+      // the forfeit goes to the players whole (`Population.sol:1480`).
       rakeAccrued: state.rakeAccrued + RAKE_41,
       prizePool: state.prizePool + POOL_41,
       blockNumber: 8_412_950n,
@@ -768,22 +774,29 @@ const SCRIPT = [
 /**
  *  `entrant` for any id, by the rule the contract uses rather than by lookup.
  *
- *  `spawnGenesis` passes `msg.sender` — the OWNER — as the entrant of every founder
- *  (`Population.sol:499`), and `_hatch` passes `parent.entrant()` (`:1443`), so an entrant is
+ *  `spawnGenesis` passes `genesisTreasury` as the entrant of every founder
+ *  (`Population.sol:585`), and `_hatch` passes `parent.entrant()` (`:1643`), so an entrant is
  *  inherited the whole way down a line and only a ROOT can differ. #12 is the one row here that
  *  differs: it paid its own way in. That makes `entrant() == address(0)` unreachable on any
  *  organism this contract can create, which is worth knowing before reading `endSeason`'s
  *  roll-over branch — see `closeSeason`.
+ *
+ *  The founders' entrant is therefore the TREASURY, not the operator, and this fixture models it
+ *  that way: `config.genesisTreasury` is what the fallback returns. It matters for the season
+ *  close specifically — first place here is a founder, so 60% of the pot is paid to a contract
+ *  whose only function is `recycle()`, which pushes it straight back into `prizePool`. Written as
+ *  `config.owner` the same row would show the house taking the players' pot, which is the exact
+ *  reading `GenesisTreasury` exists to make impossible.
  */
 function entrantOf(id, rows) {
   const known = details.get(id)?.entrant;
   if (known) return known;
   const o = rows.find((x) => x.id === id);
-  return o && o.parentId !== 0n ? entrantOf(o.parentId, rows) : config.owner;
+  return o && o.parentId !== 0n ? entrantOf(o.parentId, rows) : config.genesisTreasury;
 }
 
 /**
- *  `_topThree` (`Population.sol:886`), mirrored: the three living organisms with the best net record.
+ *  `_topThree` (`Population.sol:998`), mirrored: the three living organisms with the best net record.
  *
  *  Written as the contract's cascade and NOT as a comparison anyone reinvented, because the strictness
  *  is the whole content of it. The contract walks the lineage in id order and replaces a slot only on a
@@ -810,7 +823,7 @@ function topThree(rows) {
 }
 
 /**
- *  `endSeason()` (`Population.sol:833`), mirrored over a frame — the one beat this demo could not show.
+ *  `endSeason()` (`Population.sol:939`), mirrored over a frame — the one beat this demo could not show.
  *
  *  WHY IT IS A FUNCTION AND NOT FOUR HAND-WRITTEN LOG ROWS. The payout is not a figure anyone here is
  *  entitled to choose: it is 60/30/10 of whatever the settlement above left in the pool, paid to
@@ -822,20 +835,23 @@ function topThree(rows) {
  *  of it a second time from `Population.sol`'s constants.
  *
  *  WHAT THE CONTRACT DOES THAT THE FEED THEREFORE SHOWS:
- *    - the pot is read ONCE (`:806`), so all three shares divide the same number and the two rounded
+ *    - the pot is read ONCE (`:947`), so all three shares divide the same number and the two rounded
  *      wei that integer division loses roll over instead of being paid;
- *    - `paid` is the SUM OF WHAT WAS ACTUALLY TRANSFERRED, so `prizePool = pot - paid` (`:828`) is the
+ *    - `paid` is the SUM OF WHAT WAS ACTUALLY TRANSFERRED, so `prizePool = pot - paid` (`:974`) is the
  *      roll-over — `Darwin.t.sol` calls this out: unawarded places must roll over, not vanish;
- *    - the events carry the season that ENDED (`:825`, `:835`), and `seasonId += 1` happens after
- *      (`:836`), so the feed says "season 1 ended" while the header has already moved to season 2;
- *    - `seasonStartWindow = windowCount` (`:831`), which resets `level()` to 0 and `ante()` to
+ *    - the events carry the season that ENDED (`:971`, `:981`), and `seasonId += 1` happens after
+ *      (`:982`), so the feed says "season 1 ended" while the header has already moved to season 2;
+ *    - `seasonStartWindow = windowCount` (`:980`), which resets `level()` to 0 and `ante()` to
  *      `baseAnte` — the escalating ante starts over, which is the point of having seasons at all.
  *
- *  ONE BRANCH IS DELIBERATELY NOT EXERCISED, and it is not an oversight. `:820-821` skips a winner
- *  whose `entrant()` is `address(0)`, on the reasoning that "a founder has no entrant" — but
- *  `spawnGenesis` gives every founder the owner as its entrant (`:499`) and `_hatch` inherits it
- *  (`:1443`), so no organism this contract can create ever has a zero entrant, and `Darwin.t.sol`
- *  asserts as much. All three winners here are paid, because on the deployed path all three would be.
+ *  ONE BRANCH IS DELIBERATELY NOT EXERCISED, and it is not an oversight. `:966-967` skips a winner
+ *  whose `entrant()` is `address(0)`. That guard's comment used to reason "a founder has no
+ *  entrant", which was false from the day `spawnGenesis` was written and is now false twice over:
+ *  founders pay `genesisTreasury` (`:585`), entrants pay themselves, and `_hatch` inherits
+ *  (`:1643`), so no organism this contract can create ever has a zero entrant. The guard stays in
+ *  the contract because `endSeason` must not be able to REVERT on one unpayable winner — a share it
+ *  cannot deliver rolls into the next pot. All three winners here are paid, because on the deployed
+ *  path all three would be.
  */
 function closeSeason({ state: s, logs: l }) {
   const pot = s.prizePool;
