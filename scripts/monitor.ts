@@ -89,7 +89,7 @@ const VOID_GRACE = num("MONITOR_VOID_GRACE", 1);
  *  `think()`, so the final window of a season becomes "over" the moment it opens and the
  *  closer reaches it on its next tick seconds later: an overshoot of 0 is the ordinary
  *  in-flight state at every boundary. An overshoot of 1 is also reachable with nothing
- *  wrong — `maybeEndSeason` swallows a transient RPC error (`cadence.ts:573`) and `step()`
+ *  wrong — `maybeEndSeason` swallows a transient RPC error (`cadence.ts:605`) and `step()`
  *  then goes on to open the next window, so one blip at the boundary costs exactly one
  *  window and the tick after it closes the season. Two windows past the boundary means two
  *  consecutive ticks failed to close, which no transient explains. Set it to 0 to alert on
@@ -162,7 +162,7 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
 
   /*
    *  THE SEASON GROUP IS SEVEN MORE READS, NOT A FIELD OF `snapshot()`. `snapshot()` is
-   *  sixteen per-ORGANISM fields (`Population.sol:1602`) and carries nothing about the
+   *  sixteen per-ORGANISM fields (`Population.sol:1714`) and carries nothing about the
    *  season, so there is no free ride here.
    *
    *  A SECOND BATCH RATHER THAN SEVEN MORE ENTRIES IN THE FIRST, and this is not style.
@@ -209,7 +209,7 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
   const level = levelRaw as number;
 
   // Windows into the season, and windows past its end. `overshoot` is `undefined` where the
-  // season has no boundary to be past, mirroring both guards in `cadence.ts:495`: a
+  // season has no boundary to be past, mirroring both guards in `cadence.ts:551-557`: a
   // `seasonWindows` of 0 is an unconfigured season rather than one that ends every window,
   // and a `seasonStartWindow` ahead of `windowCount` is the read that underflows on chain.
   const seasonLen = BigInt(seasonWindows);
@@ -371,7 +371,7 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
    *  the balance MINUS both books, and nothing else.
    *
    *  Wrong diagnosis: a birth cannot revert for lack of house collateral. `_hatch` pulls the
-   *  child's endowment out of the PARENT (`Population.sol:1495`) and `_spawn` pays the same
+   *  child's endowment out of the PARENT (`Population.sol:1607`) and `_spawn` pays the same
    *  amount straight back out, so a hatch is net-neutral here by construction; `enter` has
    *  already pulled the entrant's own in. `spawnGenesis` is the one birth that spends the
    *  house's collateral, and it runs once, under the operator's hand, at seed.
@@ -411,18 +411,24 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
    *  stopped being scheduled. What is common to all of those is an absence, so an absence is
    *  what is measured: windows opened since the boundary the closer should have acted on.
    *
-   *  THE BOUNDARY IS `Population.sol:834` — `windowCount - seasonStartWindow < seasonWindows`
-   *  reverts `SeasonNotOver` — and `cadence.ts:495`'s exported `seasonIsOver` is the closer's
-   *  copy of it. This check SHOULD import that predicate and deliberately does not, for one
-   *  reason worth knowing before anyone "fixes" it: `cadence.ts` calls `main()` at module
-   *  scope (`cadence.ts:879`) with no entry-point guard, so `import { seasonIsOver } from
-   *  "./cadence.js"` starts a SECOND CADENCE inside the monitor process. Verified rather than
-   *  assumed — the import today dies inside the cadence's own `manifest()` and takes the
-   *  monitor's process down with it (`process.exit(1)`), and once a deployment exists it
-   *  would instead reach `wallet()` and drive the population from in here, racing the real
-   *  cadence for nonces. One entry-point guard around that call — the usual `import.meta.url`
-   *  against `process.argv[1]` — or moving the predicate down into `scripts/lib/` makes the
-   *  import safe, and at that point the gate below becomes
+   *  THE BOUNDARY IS `Population.sol:940` — `windowCount - seasonStartWindow < seasonWindows`
+   *  reverts `SeasonNotOver` — and `cadence.ts:550`'s exported `seasonIsOver` is the closer's
+   *  copy of it. This check SHOULD import that predicate and still does not, though the
+   *  reason has changed and is worth knowing before anyone "fixes" it either way.
+   *
+   *  It used to be unsafe: `cadence.ts` called `main()` at module scope with no entry-point
+   *  guard, so `import { seasonIsOver } from "./cadence.js"` started a SECOND CADENCE inside
+   *  the monitor process — verified rather than assumed, the import died inside the cadence's
+   *  own `manifest()` and took the monitor down with it (`process.exit(1)`), and after a
+   *  deployment it would instead have reached `wallet()` and driven the population from in
+   *  here, racing the real cadence for nonces. That hazard is CLOSED: `cadence.ts:997`'s
+   *  `invokedDirectly` compares realpaths and gates the `main()` call, so the import is now
+   *  merely inert.
+   *
+   *  What remains is a smaller argument, and a weaker one: importing `cadence.ts` pulls its
+   *  whole module graph — viem, the manifest reader — into a process whose job is to keep
+   *  running when the cadence cannot. Moving the predicate down into `scripts/lib/` is the
+   *  clean fix and is still worth doing; at that point the gate below becomes
    *  `seasonIsOver(window, startWindow, seasonLen)` and the overshoot stays only as the
    *  number in the message. Until then the two guards above are written to mirror it exactly.
    */
