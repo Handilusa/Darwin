@@ -51,6 +51,10 @@ contract Seed is Script {
         _preflight(population, collateral, n);
 
         vm.startBroadcast(pk);
+        // `spawnGenesis` reverts `NoGenesisTreasury` until the founders have an owner.
+        // `onlyOwner`, one-shot, and there is no setter: a second call reverts
+        // `TreasuryAlreadySet`.
+        population.deployGenesisTreasury();
         population.spawnGenesis(genomes);
         vm.stopBroadcast();
 
