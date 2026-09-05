@@ -17,9 +17,11 @@
     "prove": "tsx scripts/prove-same-block.ts",
     "typecheck": "tsc --noEmit",
     "abi:check": "tsx scripts/abi-drift.ts",
+    "cite:check": "tsx scripts/cite-drift.ts",
+    "cite:selftest": "tsx scripts/cite-drift.ts --self-test",
     "build": "forge build --root contracts",
     "test": "forge test --root contracts -vv",
-    "gate": "npm run typecheck && npm run test && npm run abi:check && npm run cadence:selftest && npm --prefix web test && npm --prefix app test",
+    "gate": "npm run typecheck && npm run test && npm run abi:check && npm run cite:selftest && npm run cite:check && npm run cadence:selftest && npm --prefix web test && npm --prefix app test",
     "hardhat": "hardhat"
   },
   "dependencies": {
