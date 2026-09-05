@@ -17,7 +17,7 @@ function placeBinaryOrder(
 ) payable returns (bool success, uint128 id);
 ```
 
-`tradeAbi.ts:91-92` notes that *"an EOA cannot read a transaction's return data — the wrappers
+`node_modules/@somnia-chain/markets-sdk/src/tradeAbi.ts:91-92` notes that *"an EOA cannot read a transaction's return data — the wrappers
 reconstruct outcomes from receipt events."* A **contract** reads `(success, id)` directly.
 Path A is therefore not merely viable, it is strictly more capable than the off-chain path.
 Worth stating in the pitch: the organisms know whether their own order landed, atomically.

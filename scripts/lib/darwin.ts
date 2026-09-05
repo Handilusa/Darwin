@@ -279,7 +279,7 @@ export const prophetAbi = parseAbi([
   "function claimOwed() returns (uint256)",
   // events. The rake is taken inside `settle` on the organism itself
   // (`Prophet.sol:472`), so this is a Prophet log, not a Population one — it is the one
-  // money event whose emitter is easy to guess wrong. `web/js/abi.js:143` files it the
+  // money event whose emitter is easy to guess wrong. `web/js/abi.js:153` files it the
   // same way; if these two hand-written ABIs ever disagree about an emitter, one of them
   // is filtering for logs that will never arrive.
   "event Raked(uint256 indexed prophetId, uint256 profit, uint256 amount)",

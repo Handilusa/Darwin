@@ -477,8 +477,8 @@ contract Prophet {
             // No position was taken, so no forecast was graded — whether the organism
             // failed to think, abstained, or merely failed to find a counterparty. All
             // three arrive here identically: `_openEmpty` records a zero quantity
-            // (`Population.sol:1311`) and `_pair` clamps to `minStake` before it can
-            // issue anything at all (`Population.sol:1242`), and `noteCommitted` is the
+            // (`Population.sol:1423`) and `_pair` clamps to `minStake` before it can
+            // issue anything at all (`Population.sol:1354`), and `noteCommitted` is the
             // only writer. So a nonzero quantity means this organism was paired into a
             // real directional position, and nothing else produces one.
             //
@@ -486,7 +486,7 @@ contract Prophet {
             // regression rather than a safety net. `belief` is a LIVE field, cleared at
             // the bottom of this function and rewritten by every `think`. An organism
             // whose settlement reverted keeps its position open and is skipped by the
-            // next `commitAll` (`Population.sol:1183`) — but it is NOT skipped by
+            // next `commitAll` (`Population.sol:1295`) — but it is NOT skipped by
             // `think`, so by the time the retry redeems the ORIGINAL position the live
             // belief belongs to a different window. Grading on it would book an abstain
             // over a position that won or lost real money, and the same is true of a

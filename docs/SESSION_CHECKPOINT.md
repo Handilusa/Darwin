@@ -277,7 +277,7 @@ With client-side filtering and every print asserting `l.topics[0]`:
   collateral of all 398 settled markets.
 - Mainnet `AgentRequester` `0x5E5205CF39E766118C01636bED000A54D93163E6` (docs; unused).
 - The testnet agent explorer is **`agents.testnet.somnia.network`**. `CLAUDE.md` and the
-  comment at `Deploy.s.sol:135` both cite the *mainnet* host `agents.somnia.network`.
+  comment at `Deploy.s.sol:143` both cite the *mainnet* host `agents.somnia.network`.
 
 ---
 
@@ -538,7 +538,7 @@ the floor is a per-validator price, not a fixed fee, and it **corroborates §2.1
 the 0.0309 STT that real payers spend is `3 x (0.01 + 0.0003)`.
 
 **2. The cost is a request count, and the floor dominates it.** One request per alive organism
-per window (`Population.sol:1065`, `dep = requestDeposit()` inside the loop), so:
+per window (`Population.sol:1177`, `dep = requestDeposit()` inside the loop), so:
 
 > cost = `subcommitteeSize x (0.01 + perAgentReward) x aliveCount x windows`
 
@@ -780,7 +780,7 @@ Stale elsewhere in the repo, not yet edited:
 
 - `SPIKE.md` rows 1, 2, 3, 4 and 5 of the "Still unverified" table are all now closed or
   contradicted (row 5 unfavourably: Solidity subscriptions have no `ethCalls`).
-- `CLAUDE.md` and `Deploy.s.sol:135` tell the reader to fetch the agent id from
+- `CLAUDE.md` and `Deploy.s.sol:143` tell the reader to fetch the agent id from
   `agents.somnia.network`, the **mainnet** host. Testnet is `agents.testnet.somnia.network`.
 - `SPIKE.md` and `CLAUDE.md` state the inference timeout default as 15 minutes; the chain
   says 600 s.
@@ -1549,7 +1549,7 @@ redeems `currentOutcomeId`, a duel can only be claimed by its own holder
 (`DirectDuelVenue.redeemFor:210-263`), and `Prophet` exposes no arbitrary call. There is no rescue
 path, not even for the owner.
 
-The fix is one line in `commitAll`, today at **`Population.sol:1183`** (the audit cites `~1108`; the
+The fix is one line in `commitAll`, today at **`Population.sol:1295`** (the audit cites `~1108`; the
 `windowAnte` comment block has since pushed it down):
 
 ```solidity
@@ -1575,8 +1575,8 @@ price of losing the ante the first time a settlement fails.
 
 The retry recovers the exact money but **does not carry the note forward**. `belief` is a live field:
 being skipped by `commitAll` does not skip your `think`, so the organism is asked again and its belief
-becomes the *new* window's. Money grading was always safe — `Prophet.sol:432` decides won/lost on
-`collateralOut > currentStake`, and both fields survive the failure intact. Fitness grading was not:
+becomes the *new* window's. Money grading was always safe — `Prophet.sol:444` decides won/lost on
+`collateralOut > staked`, and both fields survive the failure intact. Fitness grading was not:
 the old predicate marked ABSTAIN when the **current** belief was `Abstain`/`None`, so a retry landing
 in a window where the organism formed no belief would score an abstention against a position that
 genuinely won or lost money. Only the fitness counter lied — but the fitness counter *is* the product.
@@ -1635,9 +1635,9 @@ permissionless and un-phase-gated. So an organism could be asked at one price an
 
 Fixed as the finding itself asked: **photograph the ante, do not add a phase guard.**
 
-- `Population.sol:210` — `uint256 public windowAnte;`, with 24 lines of rationale at `:184-208`.
-- `Population.sol:212` — `uint256[9] private __gap;`, shrunk from 10. **`windowAnte` is slot 37, the
-  gap now starts at 38**, envelope still ends at 46. Re-derived from the compiler, and `STORAGE.md`'s
+- `Population.sol:211` — `uint256 public windowAnte;`, with its rationale in the block above it.
+- `Population.sol:235` — `uint256[8] private __gap;`. It was `[9]` at the time of this entry;
+  `genesisTreasury` (slot 38, `:233`) took another one later the same day. **`windowAnte` is slot 37**, envelope still ends at 46. Re-derived from the compiler, and `STORAGE.md`'s
   tables, status block and changelog all carry it.
 - `Population.sol:1062` — `windowAnte = ante();` inside `think`, with `:1054-1057` explaining that this
   is the last instant at which nobody else can change the answer.
@@ -1726,8 +1726,9 @@ grepping for `149` or `36` could ever have surfaced, because they were entirely 
   test contract, **zero `testFuzz`**), so the suite count and the declaration count are the same
   number — which is precisely what makes the figure re-checkable instead of re-rottable.
 - The storage paragraph still claimed **47 `Population` rows** from the 2026-08-30 diff, taken before
-  phase 4 appended `windowAnte` on 2026-09-05 (`Population.sol:210`, with `:212` shrinking `__gap`
-  from `uint256[10]` to `uint256[9]`, so slot 37 and a gap at 38–46). It is **48**.
+  phase 4 appended `windowAnte` on 2026-09-05 (`Population.sol:211`, with the `__gap` declaration below it shrinking
+  from `uint256[10]` to `uint256[9]`, so slot 37 and a gap at 38–46 — `genesisTreasury` then took
+  38 and the gap is `uint256[8]` at `:235` today). It is **48**.
 
 **The two were not treated the same way, deliberately.** *"100 tests"* asserts a **state**, so it gets
 re-stamped with its date and basis. The 2026-08-30 diff is a **dated measurement**, so it is left
@@ -1801,8 +1802,9 @@ stop rendering as `None`.
 
 **The user's decision, before anything is broadcast — both are in `bugs_jueves.txt` as N1 and N2:**
 
-- **N1 — whose are the eight founders?** `spawnGenesis` passes `msg.sender` as the entrant
-  (`Population.sol:499`), so the founders belong to the owner, and a founder's 60% leaves `prizePool`
+- **N1 — whose are the eight founders?** `spawnGenesis` passed `msg.sender` as the entrant
+  (at the time of this finding; it now passes `genesisTreasury`, `Population.sol:585`), so the
+  founders belonged to the owner, and a founder's 60% leaves `prizePool`
   for the EOA **without passing through `rakeAccrued`** — i.e. outside `withdrawRake`'s cap. Measured:
   pot 42,500 → owner +25,500 with `rakeAccrued` 63,750 unmoved. (The `if (to == address(0)) continue;`
   branch at `:816-821` is dead code as a result.) The alternative leaves the whole lineage ownerless

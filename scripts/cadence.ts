@@ -128,7 +128,7 @@ async function main(): Promise<void> {
  *
  *  THE SEASON CHECK RUNS BEFORE THE PHASE SWITCH, NOT AFTER SETTLEMENT.
  *
- *  `windowCount` is incremented in `think()` (`Population.sol:1039`), not in
+ *  `windowCount` is incremented in `think()` (`Population.sol:1151`), not in
  *  `settleAll()` — so the window that satisfies `endSeason`'s
  *  `windowCount - seasonStartWindow >= seasonWindows` becomes the FINAL window the
  *  moment it opens, and it is then traded and graded under the next level's ante. A
@@ -393,7 +393,7 @@ async function doSettle(m: Manifest, client: WalletLike): Promise<boolean> {
  *
  *  A SEPARATE TRANSACTION FROM SETTLEMENT, ON PURPOSE, AND THAT IS THE CONTRACT'S
  *  DECISION RATHER THAN THIS SCRIPT'S. `hatchAll` is the one driver call with no
- *  `inPhase` modifier (`Population.sol:308`) precisely so a mutation inference that is
+ *  `inPhase` modifier (`Population.sol:1593`) precisely so a mutation inference that is
  *  still in flight cannot delay a settlement, and so the gas of a birth is never charged
  *  to the reactivity callback that settles. Do not fold it into `settleAll`, and do not
  *  move it ahead of the settlement it follows: it is called after both settlement paths
@@ -416,7 +416,7 @@ async function hatch(m: Manifest, client: WalletLike): Promise<void> {
     // NothingToHatch is the normal case, not an error.
     //
     // Kept even though the deployed `hatchAll` cannot currently emit it: the error is
-    // declared (`Population.sol:278`) but no path in `src/` reverts with it — the loop
+    // declared (`Population.sol:306`) but no path in `src/` reverts with it — the loop
     // `continue`s past organisms with nothing pending — so today this branch is a
     // tolerance rather than a filter. It stays because the tolerance is free and the
     // alternative is a warning every quiet window if a future revision adds the guard.
@@ -534,7 +534,7 @@ async function reportDeaths(m: Manifest): Promise<void> {
  *  exist; the check lives at the bottom of this file behind `--self-test`, which needs
  *  no RPC, no key and no deployment.
  *
- *  MIRRORS `Population.sol:834` EXACTLY (verified against that line, not remembered),
+ *  MIRRORS `Population.sol:940` EXACTLY (verified against that line, not remembered),
  *  including the subtraction order:
  *
  *      if (windowCount - seasonStartWindow < seasonWindows) revert SeasonNotOver();
@@ -641,7 +641,7 @@ async function maybeEndSeason(m: Manifest, client: WalletLike): Promise<void> {
  *  log is decoded from the receipt of the transaction that made it.
  *
  *  `SeasonEnded` and `SeasonPrizePaid` both carry the PRE-INCREMENT `seasonId`
- *  (`Population.sol:833`/`870`, with `seasonId += 1` after the emit), so the season
+ *  (`Population.sol:981`/`971`, with `seasonId += 1` after the emit), so the season
  *  named in these logs is the one that just finished. No adjustment needed here — but do
  *  not "fix" it to `seasonId - 1` if the contract's emit ever moves.
  *

@@ -95,12 +95,16 @@ anticipates swapping provenance without touching `Population`.
 
 The *position* side is not abstracted. Two call sites are hard-wired to DreamDEX:
 
-- `Population.sol:516` — `IBinaryPool(activePool).mintSet(address(up), address(down), amount)`
-- `Prophet.sol:330` — `IBinarySettlement(settlement).finalizeAndRedeem(pool, currentOutcomeId, quantity, address(this))`
+- in `Population._pair` — `IBinaryPool(activePool).mintSet(address(up), address(down), amount)`
+- in `Prophet.settleWindow` — `IBinarySettlement(settlement).finalizeAndRedeem(pool, currentOutcomeId, quantity, address(this))`
+
+(Both were removed by this spec. `mintSet` now lives only in `venues/DreamDEXVenue.sol:85`, and
+`Prophet.settleWindow` takes a `venue` — deliberately NOT re-cited by line, since the lines that
+matched this description no longer exist.)
 
 Everything else already flows through parameters. Critically,
 `Prophet.settleWindow(settlement, pool, collateral, metabolicCost)`
-(`Prophet.sol:310`) takes the settlement address and pool **as arguments**, not
+(as it stood before this spec) takes the settlement address and pool **as arguments**, not
 from storage — `Population` decides who gets called
 (`Population.sol:559`). So the abstraction is a change of *callee*, not a
 restructuring.
@@ -312,9 +316,9 @@ function enter(string calldata genome, uint256 endowmentAmount)
 - Forwards `msg.value` to the new Prophet as its cognition budget.
 - Sets `entrant = msg.sender`.
 - Reverts `PopulationFull()` past `maxPopulation`. `maxPopulation = 24`
-  (`Population.sol:67`, checked at `:295` and `:634`) is documented as a gas
+  (`Population.sol:74`, checked at `:648` and `:1602`) is documented as a gas
   bound rather than a design limit and is settable via `setEconomics`
-  (`Population.sol:240`); it rises for an open arena, bounded by what `think()`
+  (`Population.sol:533`); it rises for an open arena, bounded by what `think()`
   can loop over in one transaction.
 
 `spawnGenesis` remains, owner-only, for house-seeded organisms. Season 0 will

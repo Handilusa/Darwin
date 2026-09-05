@@ -17,11 +17,11 @@
  *
  *  Every signature was checked against `contracts/src/` directly:
  *
- *    - `enter(string,uint256) payable returns (uint256)`   Population.sol:654
- *    - `retire(uint256)`                                    Population.sol:940
- *    - `topUpCognition(uint256) payable`                    Population.sol:1563
- *    - the four entry preconditions and their errors        Population.sol:655-667
- *    - `faucet(uint256)` on tUSDC                           scripts/lib/darwin.ts:319
+ *    - `enter(string,uint256) payable returns (uint256)`   Population.sol:735
+ *    - `retire(uint256)`                                    Population.sol:1052
+ *    - `topUpCognition(uint256) payable`                    Population.sol:1675
+ *    - the four entry preconditions and their errors        Population.sol:736-748
+ *    - `faucet(uint256)` on tUSDC                           scripts/lib/darwin.ts:341
  *
  *  If you change a signature in the contracts, change it in ALL THREE places. There is no
  *  compiler standing behind this file.
@@ -72,7 +72,7 @@ export const populationReadAbi = parseAbi([
   "function seasonStartWindow() view returns (uint64)",
   "function seasonWindows() view returns (uint32)",
 
-  // the whole population in one eth_call — sixteen fields, order per Population.sol:1602
+  // the whole population in one eth_call — sixteen fields, order per Population.sol:1714
   "function snapshot() view returns ((uint256 id,address addr,uint256 parentId,uint32 generation,uint256 treasury,uint32 streak,uint32 windowsLived,uint32 correctCount,uint32 wrongCount,uint32 abstainCount,uint64 birthWindow,uint64 deathWindow,bool dead,uint8 belief,uint8 thesis,bytes32 genomeHash)[])",
 ]);
 
@@ -131,7 +131,7 @@ export const prophetAbi = parseAbi([
 //////////////////////////////////////////////////////////////*/
 
 /**
- *  `enter` moves collateral with `transferFrom` (Population.sol:666), so an approval is a
+ *  `enter` moves collateral with `transferFrom` (Population.sol:747), so an approval is a
  *  hard prerequisite and not a nicety — which is why entry is three transactions and the
  *  form shows all three up front instead of surprising the user with a second signature.
  *

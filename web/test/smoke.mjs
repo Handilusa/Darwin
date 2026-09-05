@@ -246,7 +246,7 @@ painted.detailBred = run("detail(#1 clears both breeding bars)", () =>
   ui.detail(bred, fx.details.get(1n), cfg, { ...ctx, living: frames[0].state.livingCount }),
 );
 // THE CONTROL FOR THE THIRD GATE. Same organism, same frame, one number changed: a population
-// already at `maxPopulation`. `hatchAll` BREAKS at the cap (Population.sol:1347), so a page that
+// already at `maxPopulation`. `hatchAll` BREAKS at the cap (Population.sol:1602), so a page that
 // promised a mutation here would be promising a child the contract will not bear. If this renders
 // the same sentence as the line above, `maxPopulation` is not being read and the assertion pair
 // below is measuring nothing — the same failure the honesty-gate check had before it was rewritten.
@@ -480,8 +480,8 @@ assert("the window number never goes backwards", !backwards, backwards);
 assert("nothing is ever resurrected", !resurrected, resurrected);
 assert("no organism ever leaves the population", !vanished, vanished);
 
-// WHO BREEDS IS NOT A CHOICE. `Population.sol:1235` gates reproduction on `streak() >= breedStreak`
-// AND `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`:1267`) is `endowment` plus
+// WHO BREEDS IS NOT A CHOICE. `Population.sol:1488` gates reproduction on `streak() >= breedStreak`
+// AND `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`Population.sol:1520`) is `endowment` plus
 // `breedSurplusBps`, which at the shipped default of 5000 is 40 + 50% = 60 tUSDC. Frame 0 is exactly
 // the post-settlement state the contract would test, so the eligible set is computable — and the
 // assertion is that the script breeds precisely that set and nobody else.

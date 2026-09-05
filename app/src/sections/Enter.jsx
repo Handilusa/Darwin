@@ -2,7 +2,7 @@
  *  Beat 6 — enter an organism.
  *
  *  ── WHY THIS FORM READS EVERYTHING LIVE ─────────────────────────────────────
- *  `enter` enforces four preconditions (Population.sol:655-667) and two of them move on
+ *  `enter` enforces four preconditions (Population.sol:736-748) and two of them move on
  *  their own. `ante()` is `baseAnte * anteMultBps^level`, and the shipped season doubles it
  *  every 72 windows across 576 — eight doublings, so the collateral floor is 256x its base
  *  by the end. A form that hardcoded a minimum measured today would revert

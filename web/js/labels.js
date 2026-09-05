@@ -54,7 +54,7 @@ export const THESIS_GLOSS = [
 ];
 
 /**
- *  Population.sol:92 comments `phase` as `0 idle, 1 thinking, 2 committed` — that is the
+ *  Population.sol:93 comments `phase` as `0 idle, 1 thinking, 2 committed` — that is the
  *  population's STATE. The operational scripts' own `PHASE` array is labelled by the NEXT
  *  ACTION instead (`THINK`, `COMMIT`, `SETTLE`), so the same number 0 reads as "idle" in the
  *  contract and "THINK" in the terminal. Both are correct and they are off by one step.

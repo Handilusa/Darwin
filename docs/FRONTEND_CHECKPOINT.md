@@ -514,7 +514,7 @@ The blocking seven, in order of damage:
    `beliefTag` (`render.js:58`) carries no `title` although every sibling span in `card-stats` does.
 5. **The cannot-pay rule is absent three times over.** No copy anywhere in `web/`; no depiction (the
    fixture's #7 emits `ThinkFailed` **and** `CognitionUnspent`, which is the *platform-reverted*
-   cause, not the out-of-STT one); and mistranslated — *"left 0.002 STT unspent"* (`render.js:1122`)
+   cause, not the out-of-STT one); and mistranslated — *"left 0.002 STT unspent"* (`render.js:1466`)
    reads as a refund when it records a deposit drawn for a request that never happened.
 6. **The prompt/answer round trip is on screen with the prompt missing** and neither half labelled
    as a model transaction (`render.js:886`, `:897`). `Genome.beliefPrompt` is never rendered even
@@ -566,7 +566,8 @@ Each of these was re-checked against the code before being recorded. They are sa
   payload: question 6 must be supplied by hand.
 - **The Design phase died twice, in the same place.** Three agents, both runs, each ending
   `[Request interrupted by user]` immediately after a `Read` of `web/app.css`, having been handed a
-  **166 KB prompt** (the whole audit digest inlined at `arena-judge-legibility.js:356`). Both runs
+  **166 KB prompt** (the whole audit digest inlined at line 356 of the workflow script, which lived
+  under the gitignored `.tmp-verify/` and is not in the tree — do not cite it as a path). Both runs
   coincided with a `claude-opus-5 temporarily unavailable` window, so availability is at least a
   contributing cause and possibly the whole of it. Judges and synthesis then scored an empty string
   and the synthesis said so honestly rather than inventing a plan. **Do not resume that script as
@@ -773,7 +774,7 @@ Seven files: `web/js/abi.js` (three new getters), `web/js/chain.js` (19 → 22 `
 Four decisions worth not re-litigating:
 
 - **There is a THIRD gate, and the checkpoint's two-bar description was incomplete.** `hatchAll` does
-  `if (living.length >= maxPopulation) break;` (`Population.sol:1347`), so an organism can clear both
+  `if (living.length >= maxPopulation) break;` (`Population.sol:1602`), so an organism can clear both
   bars and still have nowhere to put a child. The page says so: "clears both bars, but the arena is
   full". A UI that promised a child there would be lying on the one screen a judge reads.
 - **The wording is "a mutation is requested at the next settlement", never "breeds".**
@@ -803,8 +804,8 @@ The design previously drafted here was *refuted* and was not used: it premised t
 dead, and `fixture.js:149-152` has `dead: false` — `#8` only dies in the season frame at
 `fixture.js:531`.
 
-**5. CLOSED 2026-09-02 — the review ran, and it is written up in §8.13.** ~~Rewrite `arena.mjs:510`/`516`
-to their intent~~ — **done, §8.5 is CLOSED.** ~~Relaunch the agent society to review §8.7 rather than
+**5. CLOSED 2026-09-02 — the review ran, and it is written up in §8.13.** ~~Rewrite the two checks then
+at `arena.mjs` lines 510/516 to their intent~~ — **done, §8.5 is CLOSED.** ~~Relaunch the agent society to review §8.7 rather than
 redo it~~ — **done: 28 agents over four dimensions, zero confirmed findings, and two real defects
 found alongside it by hand. §8.13.** ~~§5.4~~ — **closed as DO NOT BUILD, §8.14.** ~~What is left:
 root `README.md` staleness (`web/README.md` is current).~~ — **also done 2026-09-02: the root

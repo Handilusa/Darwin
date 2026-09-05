@@ -76,7 +76,7 @@ function _hatch(Prophet parent) internal {
     if (bytes(childGenome).length == 0) return;
 
     // NATIVE BEFORE COLLATERAL, and the order is load-bearing. `drawCognition` is
-    // the only all-or-nothing draw of the two (`Prophet.sol:563` returns 0 rather
+    // the only all-or-nothing draw of the two (`Prophet.sol:610` returns 0 rather
     // than sending a partial amount), so taking it first means the one shortfall
     // worth worrying about strands nothing: the collateral has not moved yet.
     //
@@ -213,7 +213,7 @@ recorded where the mechanism is.
 
 Not cosmetic: each one is a claim a judge can check.
 
-- `Population.sol:1498-1500` — `receive()`'s comment (*"Keep it above `cognitionEndowment` or
+- `Population.sol:1779` — `receive()`'s comment (*"Keep it above `cognitionEndowment` or
   children are born brain-dead"*) is true only of founders after this.
 - `Population.sol:535-541` — `_spawn`'s comment says "the house stakes it enough native".
 - `CLAUDE.md:147-149`, `README.md:274`, `docs/SESSION_CHECKPOINT.md:924` and `:1168`,

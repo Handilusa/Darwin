@@ -22,10 +22,10 @@
  *  printed rather than derived. The fix is the same shape: derive it, and let it go quiet.
  *
  *  ── WHY seasonId AND seasonWindows ARE THE TWO READS ────────────────────────
- *  They are what the pill claims, so they are what it reads. `Population.sol:411-413`
+ *  They are what the pill claims, so they are what it reads. `Population.sol:445-456`
  *  initialises them to 576 and 1, which is exactly why the hardcoded copy looked right and
  *  would have stayed looking right through a `setSeason` call that changed both
- *  (`Population.sol:723-733`). Reading the pair also means the pill and the verdict come
+ *  (`Population.sol:804-814`). Reading the pair also means the pill and the verdict come
  *  from one batch: the numbers cannot be current while the dot is dead, or vice versa.
  */
 

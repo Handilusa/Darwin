@@ -829,8 +829,8 @@ In `hatchAll` (`:684`), the same substitution:
 
 **Read this before editing:** in every one of these loops, `i` is a position in `living`, not an
 id. The old code could use `i + 1` as an id because it walked `prophets` directly. There is
-exactly one such site (`Population.sol:435`, inside `think`'s `ThinkFailed` emit) and it must
-become `living[i]`. Emitting `i + 1` after this change reports a *different organism's* failure,
+exactly one such site, inside `think`'s `ThinkFailed` emit, and it must become `living[i]`.
+(Shipped: both emit sites in `think` now pass `living[i]`.) Emitting `i + 1` after this change reports a *different organism's* failure,
 and `monitor.ts` would blame the wrong one. `prophets[living[i] - 1]` is used rather than
 `prophetAt(living[i])` in all three: the bounds check `prophetAt` adds cannot fail here, and its
 failure mode would be a reverting window.

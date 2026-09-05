@@ -195,10 +195,10 @@ export function Hero({ onField }) {
           </span>
           <span className="pill">15-minute windows</span>
           {/*
-            A season is a contract reading, not a constant. `Population.sol:411-413`
+            A season is a contract reading, not a constant. `Population.sol:445-456`
             initialises exactly these two values to 1 and 576, which is why the hardcoded
             copy looked right — and why it would have gone on looking right through a
-            `setSeason` that changed both (`Population.sol:723-733`). Rendered only when
+            `setSeason` that changed both (`Population.sol:804-814`). Rendered only when
             both numbers actually arrived; there is no partial version of this sentence.
           */}
           {live.verdict === "live" && live.seasonId !== undefined && live.seasonWindows !== undefined ? (

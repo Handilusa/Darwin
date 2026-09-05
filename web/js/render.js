@@ -8,7 +8,7 @@
  *     parallel demo renderer that could drift from the real one and flatter it.
  *
  *  2. NO `innerHTML`, EVER. Genomes and model reasoning arrive from `Population.enter`, which
- *     is permissionless (Population.sol:654). See the header of `dom.js`.
+ *     is permissionless (Population.sol:735). See the header of `dom.js`.
  *
  *  3. A MISSING VALUE RENDERS AS `—`, NOT AS ZERO. `0` and "the read failed" are different
  *     claims about a treasury, and a dashboard that prints them the same way is lying in the
@@ -997,7 +997,7 @@ function runwayTone(treasury, cfg) {
 }
 
 /**
- *  `_breedThreshold()` (`Population.sol:1408`): `endowment + endowment * breedSurplusBps / 10_000`.
+ *  `_breedThreshold()` (`Population.sol:1520`): `endowment + endowment * breedSurplusBps / 10_000`.
  *
  *  One function so the detail pane and the wiring panel cannot print two different thresholds — the
  *  same reason `runwayTone` is derived from `runway`'s bands instead of repeating them. Returns null
@@ -1012,8 +1012,8 @@ function breedThreshold(cfg) {
 /**
  *  How close an organism is to reproducing — the other end of the same story `runway()` tells.
  *
- *  `Population.sol:1376` gates reproduction on TWO bars at once, `streak() >= breedStreak` AND
- *  `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`:1408`) is
+ *  `Population.sol:1488` gates reproduction on TWO bars at once, `streak() >= breedStreak` AND
+ *  `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`:1520`) is
  *  `endowment + endowment * breedSurplusBps / 10_000`. Both constants are `setEconomics` values that
  *  `discover()` reads once, and until this existed the page rendered `streak` as a bare number: a 3
  *  with no scale, on a page whose headline metric is generation. An organism one correct call from
@@ -1082,8 +1082,8 @@ function breedingSummary(b, cfg) {
 /**
  *  Where an organism came from.
  *
- *  `parentId 0` is NOT one thing. Both `spawnGenesis` (Population.sol:528) and the permissionless
- *  `enter` (:678) spawn with `parentId 0, generation 0`, so a stranger who paid the ante is
+ *  `parentId 0` is NOT one thing. Both `spawnGenesis` (Population.sol:585) and the permissionless
+ *  `enter` (Population.sol:759) spawn with `parentId 0, generation 0`, so a stranger who paid the ante is
  *  structurally a root, indistinguishable from a founder except by `birthWindow`. Printing
  *  "none (root)" for both would erase the single most interesting fact this page can show about a
  *  permissionless arena: that somebody outside the operator bought in and is being selected over.
@@ -1181,7 +1181,7 @@ export function detail(row, info, cfg, ctx = {}) {
       breed
         ? field("breeding", breedingSummary(breed, cfg), {
             tone: breed.ready && !breed.full ? "ok" : undefined,
-            title: `streak >= ${breed.needStreak} and treasury >= ${money2(breed.need, cfg)} (Population.sol:1376)`,
+            title: `streak >= ${breed.needStreak} and treasury >= ${money2(breed.need, cfg)} (Population.sol:1488)`,
           })
         : null,
       field("windows lived", String(row.windowsLived)),
@@ -1962,11 +1962,11 @@ export function wiringPanel(cfg) {
       field("request deposit", dash(cfg.requestDeposit, (x) => `${stt(x)} STT`)),
       // The reproduction gates, printed as the rule rather than as three loose numbers, because
       // separately they say nothing: the threshold is derived from `endowment` and the surplus, and
-      // the cap is a gas bound rather than a design limit (Population.sol:73).
+      // the cap is a gas bound rather than a design limit (Population.sol:74).
       cfg.breedStreak == null
         ? null
         : field("breeds at", `${Number(cfg.breedStreak)} in a row · ${money2(breedThreshold(cfg), cfg)}`, {
-            title: "streak bar and treasury bar, both from setEconomics — Population.sol:1376",
+            title: "streak bar and treasury bar, both from setEconomics — Population.sol:1488",
           }),
       cfg.maxPopulation == null ? null : field("max population", `${Number(cfg.maxPopulation)} alive at once`),
     ),
