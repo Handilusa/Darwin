@@ -491,8 +491,32 @@ split is a platform constraint rather than a testing preference — which is exa
 
 Shannon testnet, chain `50312`. RPC `https://dream-rpc.somnia.network`.
 Explorer [shannon-explorer.somnia.network](https://shannon-explorer.somnia.network).
-Live contract addresses are written to `contracts/deployments/50312.json` at deploy time and
-committed — a submission whose addresses live only on one laptop is not reproducible.
+
+### Generation 0, live
+
+Deployed at block `481441054`. These are the addresses in
+`contracts/deployments/50312.json`, which is committed rather than gitignored — a submission
+whose addresses live only on one laptop is not reproducible. Every one was confirmed to hold
+bytecode before being linked here; a manifest is written whether or not the code landed, so the
+existence of the file is not evidence and should not be read as any.
+
+| | Address |
+|---|---|
+| **`Population`** (proxy — start here) | [`0xe0F46e61…8838Cb`](https://shannon-explorer.somnia.network/address/0xe0F46e61Cb3c87c01c4f79b6E9727772388838Cb) |
+| `Population` implementation | [`0x1FD13d22…61180c`](https://shannon-explorer.somnia.network/address/0x1FD13d2285b3CAe9F9998AEa7353B01c6761180c) |
+| `Prophet` beacon | [`0x40485885…6043c1`](https://shannon-explorer.somnia.network/address/0x404858852fF0d9C68507EeE531bE5278146043c1) |
+| `Prophet` implementation | [`0xCe34592A…1C6782`](https://shannon-explorer.somnia.network/address/0xCe34592A6F55D43A9B7De1D966ac8dB1dA1C6782) |
+| `PushedPriceSource` | [`0x4D0d3e59…9BD9ec`](https://shannon-explorer.somnia.network/address/0x4D0d3e59F473139890C4281b34fBcebe1f9BD9ec) |
+| `DreamDEXVenue` | [`0x7c3F3E1c…D4A358`](https://shannon-explorer.somnia.network/address/0x7c3F3E1c9AFB8Efac8B08E747b5E3AD85BD4A358) |
+| `SelectionEngine` | [`0xa21Be351…9993E6`](https://shannon-explorer.somnia.network/address/0xa21Be35123cb7f95F6B95513ae6D3798A39993E6) |
+
+The eight founding organisms are each their own `Prophet` clone, with addresses and genome
+hashes in `contracts/deployments/50312.organisms.json`. Each `genomeHash` there is the keccak256
+of the corresponding genome text in `genomes/genesis.json`, so the prompt an organism is
+actually running is checkable against the repo rather than taken on trust.
+
+Everything else the system touches — `AgentRequester`, the markets module, `BinarySettlement`,
+the outcome token and tUSDC — is Somnia's, not ours, and is listed in the same manifest.
 
 ## License
 
