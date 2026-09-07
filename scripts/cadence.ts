@@ -50,6 +50,11 @@ import {
   type Manifest,
 } from "./lib/darwin.js";
 import { discover, resolution } from "./lib/market.js";
+// Imported for use below AND re-exported further down, which are two different things: the
+// `export { seasonIsOver }` there keeps the name on this module's surface for the self-test,
+// while this binding is what `maybeEndSeason` and the test table actually call.
+import { seasonIsOver } from "./lib/season.js";
+import { commitReadiness, committedBlind, type CommitInputs, type CommitReadiness } from "./lib/commit.js";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -77,8 +82,49 @@ const COMMIT_LEAD = num("CADENCE_COMMIT_LEAD", 60);
  */
 const MIN_WINDOW_SECONDS = num("CADENCE_MIN_WINDOW", 360);
 
-/** How long to wait for validator responses before committing on whatever arrived. */
+/**
+ *  How long to wait for validator responses before committing on whatever arrived.
+ *
+ *  NOT the binding bound, and reading it as one is the trap this comment exists to close.
+ *  `commitDeadline` also derives a bound from the pushed price's staleness, and
+ *  `commitReadiness` takes the earlier of the two — so on a live window this 330 is
+ *  usually slack, not policy. Raising it does not buy more patience; it buys nothing past
+ *  `updatedAt + maxStaleness - CADENCE_STALENESS_MARGIN`. See `commitDeadline` for why
+ *  that second clock was invisible until 2026-09-07 and what it cost.
+ */
 const INFERENCE_PATIENCE = num("CADENCE_INFERENCE_PATIENCE", 330);
+
+/**
+ *  Seconds of the staleness budget reserved for the commit transaction itself.
+ *
+ *  `commitAll` has to be MINED while the pushed price is still fresh, not merely sent:
+ *  `PushedPriceSource.currentWindow` compares `maxStaleness` against the `block.timestamp`
+ *  of the block that includes it. So what this reserves against is build + sign + submit +
+ *  inclusion, and zero would be wrong even though the send looks instant from here.
+ *
+ *  20s leaves 160 of the live 180s budget for inference, which is over 5x the 30s the
+ *  subcommittee takes at its slowest — so the margin is bought out of slack nothing else
+ *  was using, and it also covers one retry.
+ */
+const STALENESS_MARGIN = num("CADENCE_STALENESS_MARGIN", 20);
+
+/**
+ *  The FLOOR: never believe an empty pending set before this many seconds after `think()`.
+ *
+ *  This is the tunable that did not exist on 2026-09-06, and its absence cost 28 windows
+ *  of cognition in 25 minutes — see `lib/commit.ts` for the measurement and
+ *  `commitReadiness` for the rule. The subcommittee takes 5-30 s to answer, and the reads
+ *  that check on it can land against pre-`think()` state, so an empty pending set inside
+ *  the first few seconds means "not started" rather than "finished".
+ *
+ *  30 s, not 20: the observed validator latency runs to 30 s, and the cost of overshooting
+ *  is nothing — the floor is a lower bound on the wait, not an added delay. Any organism
+ *  answering earlier moves `belief` off `None` and `commitReadiness` releases immediately
+ *  on the `answered > 0` escape hatch, so on a healthy window this is invisible. It is
+ *  also 1/12th of the 3600 s window the population trades and well inside the
+ *  `expiry - CADENCE_COMMIT_LEAD` deadline, so it cannot push a commitment past expiry.
+ */
+const COMMIT_FLOOR = num("CADENCE_COMMIT_FLOOR", 30);
 
 /** How long to wait for the reactivity precompile to settle before poking manually. */
 const REACTIVITY_PATIENCE = num("CADENCE_REACTIVITY_PATIENCE", 90);
@@ -128,7 +174,7 @@ async function main(): Promise<void> {
  *
  *  THE SEASON CHECK RUNS BEFORE THE PHASE SWITCH, NOT AFTER SETTLEMENT.
  *
- *  `windowCount` is incremented in `think()` (`Population.sol:1151`), not in
+ *  `windowCount` is incremented in `think()` (`Population.sol:1283`), not in
  *  `settleAll()` — so the window that satisfies `endSeason`'s
  *  `windowCount - seasonStartWindow >= seasonWindows` becomes the FINAL window the
  *  moment it opens, and it is then traded and graded under the next level's ante. A
@@ -244,26 +290,97 @@ async function doThink(m: Manifest, client: WalletLike): Promise<boolean> {
 
 async function doCommit(m: Manifest, client: WalletLike): Promise<boolean> {
   const deadline = await commitDeadline(m);
-  const patienceEndsAt = Math.floor(Date.now() / 1000) + INFERENCE_PATIENCE;
+  const startedAt = Math.floor(Date.now() / 1000);
 
+  // THE ONE CASE `commitDeadline` CANNOT REPAIR, named out loud rather than committed
+  // into silently. Past the staleness bound `commitAll` reverts `StalePrice` inside
+  // `_pair`, and the resulting `CommitFailed` + one `Unpaired` per organism is
+  // byte-identical in the log to a window nobody formed a belief in — so without this
+  // line the operator would be told the population went quiet when in fact it thought,
+  // answered, and was refused a market by its own price feed.
+  //
+  // Compares a chain-derived deadline against the local wall clock, which is the same
+  // assumption the `untilDeadline` arithmetic below already makes; a machine whose clock
+  // is skewed by more than the 20s margin will get this wrong in whichever direction it
+  // is skewed.
+  if (deadline !== undefined && deadline <= startedAt) {
+    warn(
+      `the pushed price is already too stale to survive this commit — the staleness ` +
+        `deadline passed ${startedAt - deadline}s ago. commitAll will revert StalePrice ` +
+        `inside _pair and every organism will be Unpaired with its belief formed but ` +
+        `unplayed. The repair is to re-push this window, PRESERVING openPrice, before ` +
+        `committing: openPrice is the level the organisms are graded against.`,
+    );
+  }
+
+  /*
+   *  THE WAIT IS THE WHOLE FUNCTION, and until 2026-09-07 it did not exist.
+   *
+   *  This loop used to read `pendingThinkers()` as its first action and break out on an
+   *  empty result, which sent `commitAll` before the validators could possibly have
+   *  answered — they take 5-30 s. See `lib/commit.ts` for the measurement: 29 consecutive
+   *  windows committed with all eight organisms on `Belief.None`, which `commitAll` scores
+   *  as an abstention, so every one of those windows opened zero positions and still
+   *  charged metabolism at settlement. The decision now lives in `commitReadiness`, which
+   *  is pure and driven by a table under `--self-test`, because the failure was silent in
+   *  the operator's own log: "all beliefs in (8 Abstain)" is what a healthy unanimous
+   *  abstention prints too.
+   *
+   *  BOTH COUNTS ARE READ, not just the pending one. An empty pending set means either
+   *  "everyone answered" or "the requests have not registered yet", and only `answered`
+   *  separates them — `belief != None` can be written by nothing except a delivered
+   *  callback (`Prophet.sol:290`).
+   */
   for (;;) {
     const now = Math.floor(Date.now() / 1000);
-    const pending = await pendingThinkers(m);
+    const [pending, answered, alive] = await beliefProgress(m);
 
-    if (pending.length === 0) {
-      log(`all beliefs in (${await beliefSummary(m)})`);
+    const verdict = commitReadiness({
+      pending: pending.length,
+      answered,
+      alive,
+      elapsed: now - startedAt,
+      floor: COMMIT_FLOOR,
+      patience: INFERENCE_PATIENCE,
+      untilDeadline: deadline === undefined ? undefined : deadline - now,
+    });
+
+    if (verdict.act === "commit") {
+      log(`${verdict.why} (${await beliefSummary(m)})`);
       break;
     }
-    if (deadline !== undefined && now >= deadline) {
-      warn(`committing at the deadline with ${pending.length} organism(s) still thinking: ${pending.join(", ")}`);
-      break;
-    }
-    if (now >= patienceEndsAt) {
-      warn(`inference patience exhausted with ${pending.length} still pending: ${pending.join(", ")}`);
+    if (verdict.act === "commit-anyway") {
+      warn(`${verdict.why}${pending.length > 0 ? `: ${pending.join(", ")}` : ""}`);
       break;
     }
 
+    log(verdict.why);
     await sleep(POLL);
+  }
+
+  /*
+   *  THE LAST LINE OF DEFENCE, and it is a warning rather than a refusal.
+   *
+   *  `commitReadiness` can still reach a commit with nobody having answered — the
+   *  deadline branch and the patience branch both do, deliberately, because a commitment
+   *  after expiry is worse. But a window where NO living organism formed a belief is not a
+   *  population of sceptics; it is the defect above, or a total validator outage. Say so
+   *  in the operator's log at the moment it happens, in the same words `monitor.ts` uses,
+   *  so the two processes cannot disagree about what a blind window looks like.
+   *
+   *  Not a refusal, because refusing would wedge the machine in phase 1: nothing else
+   *  advances it, `settleAll` is gated on phase 2, and the organisms have already paid for
+   *  their inference either way. Committing blind loses a window; refusing loses the run.
+   */
+  const [, finalAnswered, finalAlive] = await beliefProgress(m);
+  if (committedBlind(finalAlive, finalAnswered)) {
+    warn(
+      `committing a BLIND window: not one of ${finalAlive} living organisms formed a belief, so ` +
+        `commitAll will score all of them as abstentions (Population.sol:1608), open no positions, ` +
+        `and still charge metabolism at settlement. Either the subcommittee is down or this window ` +
+        `committed too early — check CADENCE_COMMIT_FLOOR (${COMMIT_FLOOR}s) against the 5-30s the ` +
+        `validators take.`,
+    );
   }
 
   // An organism with no consensus answer opens a zero-size position and is scored as an
@@ -280,33 +397,102 @@ async function doCommit(m: Manifest, client: WalletLike): Promise<boolean> {
 }
 
 /** Seconds-since-epoch by which the commitment must land, from the market's own expiry. */
+/**
+ *  When `commitAll` must be sent by — the EARLIER of two unrelated clocks.
+ *
+ *  Until 2026-09-07 this returned only `expiry - COMMIT_LEAD`, and the second clock was
+ *  invisible. `PushedPriceSource.currentWindow` refuses a price older than `maxStaleness`
+ *  (live: 180s), and `DreamDEXVenue.openOpposing` reads it UNGUARDED
+ *  (`contracts/src/venues/DreamDEXVenue.sol:73`). So a `commitAll` sent after the pushed
+ *  price went stale reverts `StalePrice` inside `_pair`, whose catch turns it into
+ *  `CommitFailed` plus one `Unpaired` per organism — a window where all eight paid to
+ *  think, formed real beliefs, and opened nothing. `CADENCE_INFERENCE_PATIENCE` defaults
+ *  to 330s against a 180s limit, so on any window where a single organism was slow to
+ *  answer, THE DEFAULT CONFIGURATION PRODUCED THAT OUTCOME — and it is indistinguishable
+ *  in the operator's log from a unanimous abstention, which is exactly the failure shape
+ *  `lib/commit.ts` was already written to stop being silent.
+ *
+ *  BOTH BOUNDS ARE READ FROM CHAIN, not assumed, and each for its own reason.
+ *  `maxStaleness` has an `onlyOwner` setter (`PushedPriceSource.setMaxStaleness`), so a
+ *  hard-coded 180 would silently stop matching the contract the moment it was tuned.
+ *  `updatedAt` is the push's own block timestamp — the only clock the staleness check
+ *  actually uses. `doCommit`'s `startedAt` is wall-clock time in whichever process
+ *  happened to enter phase 1, which under `--once` can be minutes after the push;
+ *  measuring this budget from it would be measuring the wrong clock entirely.
+ *
+ *  KNOWN LIMIT, deliberately not repaired here. If the pushed price is ALREADY stale when
+ *  phase 1 begins, this returns a deadline in the past, `commitReadiness` rule 1 commits
+ *  under protest, and that commit reverts `StalePrice` anyway. The real repair is to
+ *  re-push before committing — preserving `openPrice` byte for byte and refreshing only
+ *  `lastPrice`, because `openPrice` is the level every organism is graded against and
+ *  moving it would corrupt the fitness signal rather than merely delay it. That is a
+ *  second transaction on the commit path and is not worth introducing untested against a
+ *  live population; the warning in `doCommit` names the condition so it is not silent.
+ */
 async function commitDeadline(m: Manifest): Promise<number | undefined> {
   const marketId = await read(m, "activeMarketId");
   if (marketId === "0x0000000000000000000000000000000000000000000000000000000000000000") return undefined;
-  const rec = await publicClient.readContract({
-    address: m.marketsModule,
-    abi: marketsModuleAbi,
-    functionName: "markets",
-    args: [marketId as Hex],
-  });
-  const expiry = Number(rec[13]);
-  return expiry - COMMIT_LEAD;
+
+  const [rec, limit, raw] = await Promise.all([
+    publicClient.readContract({
+      address: m.marketsModule,
+      abi: marketsModuleAbi,
+      functionName: "markets",
+      args: [marketId as Hex],
+    }),
+    publicClient.readContract({ address: m.priceSource, abi: priceSourceAbi, functionName: "maxStaleness" }),
+    publicClient.readContract({ address: m.priceSource, abi: priceSourceAbi, functionName: "rawWindow", args: [m.symbol] }),
+  ]);
+
+  const byExpiry = Number(rec[13]) - COMMIT_LEAD;
+
+  // `updatedAt == 0` means nothing was ever pushed for this symbol. `currentWindow` then
+  // reverts `NoWindow`, not `StalePrice`, and no staleness deadline exists to compute —
+  // subtracting from zero would hand back a deadline ~57 years in the past and commit
+  // every window under protest.
+  if (raw.updatedAt === 0n) return byExpiry;
+
+  const byStaleness = Number(raw.updatedAt) + Number(limit) - STALENESS_MARGIN;
+  return Math.min(byExpiry, byStaleness);
 }
 
-/** Ids of living organisms whose inference request has not come back yet. */
-async function pendingThinkers(m: Manifest): Promise<number[]> {
+/**
+ *  Where the window's thinking has got to: who is still out, how many have answered, how
+ *  many are alive.
+ *
+ *  ONE SNAPSHOT FOR BOTH COUNTS, and that is not just an RPC saving. `belief` and
+ *  `pendingBeliefRequestId` are written in the same transaction by the same callback
+ *  (`Prophet.handleBelief` clears the id at `:267` and writes the belief at `:290`), so
+ *  reading them from two different snapshots can observe a callback half-landed: id
+ *  already zero, belief not yet seen. That combination is exactly the one
+ *  `commitReadiness` treats as "the requests have not registered yet", so a split read
+ *  could make a finishing window look like a starting one and burn the whole patience
+ *  budget. `snapshot()` returns `belief` per organism in a single call, so the pair is
+ *  consistent by construction — the extra per-organism read is only for the pending id,
+ *  which `snapshot()` does not carry.
+ *
+ *  `belief != None` is the positive signal. It cannot be forged by a stale read: nothing
+ *  writes it except a delivered callback, and `noteThinking` resets it to `None` at the
+ *  start of every window (`Prophet.sol:218`), so it can never carry the previous window's
+ *  answer into this one's count.
+ */
+async function beliefProgress(m: Manifest): Promise<[pending: number[], answered: number, alive: number]> {
   const snap = await read(m, "snapshot");
-  const out: number[] = [];
+  const pending: number[] = [];
+  let answered = 0;
+  let alive = 0;
   for (const o of snap) {
     if (o.dead) continue;
-    const pending = await publicClient.readContract({
+    alive++;
+    if (o.belief !== 0) answered++;
+    const outstanding = await publicClient.readContract({
       address: o.addr,
       abi: prophetAbi,
       functionName: "pendingBeliefRequestId",
     });
-    if (pending !== 0n) out.push(Number(o.id));
+    if (outstanding !== 0n) pending.push(Number(o.id));
   }
-  return out;
+  return [pending, answered, alive];
 }
 
 async function beliefSummary(m: Manifest): Promise<string> {
@@ -375,13 +561,147 @@ async function doSettle(m: Manifest, client: WalletLike): Promise<boolean> {
     ? await send(client, { address: m.selectionEngine, abi: selectionEngineAbi, functionName: "poke" })
     : await send(client, { address: m.population, abi: populationAbi, functionName: "settleAll" });
 
-  log(`settle${voided ? " (voided)" : ""} via ${fallbackOpen ? "SelectionEngine.poke" : "settleAll"} · ${explorerTx(hash)}`);
-  // Works on both branches: `poke()` calls `settleAll` internally, so Population's own
-  // logs are in this receipt either way — the filter is on the emitter, not the callee.
+  const via = fallbackOpen ? "SelectionEngine.poke" : "settleAll";
+  log(`settle${voided ? " (voided)" : ""} via ${via} · ${explorerTx(hash)}`);
+  // Works on both branches for `SettleFailed`: `poke()` calls `settleAll` internally, so
+  // Population's own logs are in this receipt either way — the filter is on the emitter, not
+  // the callee. That same filter is why `ReactionFailed` needs its own reader below: it is
+  // SelectionEngine's log, and a Population-only filter drops it silently.
   await reportStragglers(m, hash, "settle");
+  const reacted = await reportReactionFailure(m, hash);
   await reportDeaths(m);
   await hatch(m, client);
+
+  /*
+   *  DID IT ACTUALLY ADVANCE? Re-read the phase rather than trusting the receipt.
+   *
+   *  `send` asserts `receipt.status === "success"`, and on the `settleAll` branch that IS the
+   *  whole story: `settleAll` writes `phase = 0` unconditionally at its end
+   *  (`Population.sol:1628`), so a successful direct call cannot leave the machine in phase 2.
+   *  The `poke` branch is a different transaction. `SelectionEngine._handle` wraps the call in
+   *  `try population.settleAll()` and swallows any revert into `ReactionFailed`
+   *  (`SelectionEngine.sol:220`), deliberately — a reverting reactive callback is paid for by
+   *  the subscription owner and buys nothing. So `poke()` succeeds, the receipt says
+   *  `success`, `reportStragglers` finds no `SettleFailed` because nothing in `settleAll` ran
+   *  at all, and the population sits in phase 2 with every position still open.
+   *
+   *  Returning `true` there was the bug: the loop treats `true` as "the population moved", so
+   *  it skipped its idle sleep and came straight back to a phase-2 population, poked again,
+   *  and reported progress on every iteration. A wedge that should have read as a stall read
+   *  as a healthy cadence in the operator's own log, at whatever rate the RPC would answer.
+   *
+   *  REPORTED, NOT RETRIED, and that is the loop's decision to make rather than this
+   *  function's. `false` means "nothing moved, go and sleep", which is exactly right here: the
+   *  same `poke` meets the same revert, so a retry policy would burn the hot key's gas and
+   *  bury the reason. `monitor.ts`'s phase stall is what escalates it, because that is the
+   *  alert an operator is actually watching.
+   */
+  const verdict = settleVerdict(Number(await read(m, "phase")), fallbackOpen, reacted);
+
+  if (verdict === "wedged") {
+    const why = fallbackOpen
+      ? "poke() catches a reverting settleAll and emits ReactionFailed instead of bubbling it, so " +
+        "a successful receipt does not mean a settled window"
+      : "settleAll returned success without ever reaching `phase = 0`, which the deployed source " +
+        "cannot do — check the deployed bytecode against this ABI";
+    warn(
+      `settle transaction succeeded but the population is STILL in phase 2 — the window did not ` +
+        `close. ${why}. Every position is still open and every ante is still in the venue. Not ` +
+        `retrying: the same call will meet the same revert. ${explorerTx(hash)}`,
+    );
+    return false;
+  }
+
+  // A lost race, not a fault: our poke reverted and something else — the precompile, or
+  // another operator — settled the window in between. Worth a line so the log does not carry
+  // an unexplained failure event, and deliberately not a warning.
+  if (verdict === "lost-race") {
+    log(`the poke above reverted but the window is settled anyway — another driver got there first`);
+  }
+
   return true;
+}
+
+/**
+ *  What a landed settle transaction actually accomplished, from the phase read back.
+ *
+ *  Pure, exported and separate from `doSettle` for one reason: it is the arithmetic of the
+ *  honesty fix, and everything around it needs a chain. `--self-test` drives this table with
+ *  no RPC, no key and no deployment, exactly as it does `seasonIsOver` — and it carries the
+ *  control that matters, that a phase which did NOT move can never come back as progress.
+ *
+ *  THE PHASE IS THE ONLY AUTHORITY HERE. Not the receipt status (`send` already asserted it),
+ *  not the absence of `SettleFailed` (a `poke` whose inner `settleAll` reverted emits none,
+ *  because nothing inside `settleAll` ran), and not `ReactionFailed` on its own — that event
+ *  says our call failed, which is not the same as the window being unsettled. Only phase 2
+ *  after the call means nothing closed.
+ *
+ *    "settled"    the machine left phase 2. Progress, whoever caused it.
+ *    "lost-race"  it left phase 2 AND our call was swallowed — someone else settled it.
+ *    "wedged"     still phase 2. NOT progress, and the caller must return `false` so the loop
+ *                 sleeps instead of poking again at RPC speed.
+ */
+export type SettleVerdict = "settled" | "lost-race" | "wedged";
+
+export function settleVerdict(phaseAfter: number, fallbackOpen: boolean, reactionFailed: boolean): SettleVerdict {
+  // `fallbackOpen` decides only the WORDING at the call site, never the verdict. It is taken
+  // here so the self-test can prove that: a wedge is a wedge on both branches, and a version
+  // that excused the direct `settleAll` branch would hide the "deployed bytecode disagrees
+  // with this ABI" case, which is the more alarming of the two.
+  void fallbackOpen;
+  if (phaseAfter === 2) return "wedged";
+  return reactionFailed ? "lost-race" : "settled";
+}
+
+/**
+ *  Print the revert `SelectionEngine` swallowed, from the settle transaction's own logs.
+ *
+ *  THIS EVENT WAS INVISIBLE UNTIL 2026-09-06, and it was invisible for a structural reason
+ *  rather than an oversight: every other report in this file filters
+ *  `receipt.logs` down to `l.address === m.population`, which is right for `SettleFailed`,
+ *  `Spawned` and `SeasonEnded` and wrong for exactly one event. `ReactionFailed(address
+ *  emitter, uint256 blockNumber, bytes reason)` is declared on `SelectionEngine`
+ *  (`SelectionEngine.sol:66`), so a Population-address filter drops it and a
+ *  `populationAbi` decode would not match it either way. The one event emitted precisely when
+ *  a settlement callback failed was the one event the operator could not see.
+ *
+ *  Read from the ENGINE THE MANIFEST NAMES, because that is the address this process poked;
+ *  `preflightSelection` is where a manifest/chain divergence is reported, and doing it again
+ *  per settlement would be noise on the hot path.
+ *
+ *  @returns true if any `ReactionFailed` was decoded, so the caller can tell a wedge from a
+ *  lost race without re-fetching the receipt.
+ *
+ *  Never throws, same rule as `reportStragglers`: the transaction has landed and the phase
+ *  re-read is the finding. A decode failure must not replace a real result with an exception.
+ */
+async function reportReactionFailure(m: Manifest, hash: Hex): Promise<boolean> {
+  try {
+    const receipt = await publicClient.getTransactionReceipt({ hash });
+    const failed = parseEventLogs({
+      abi: selectionEngineAbi,
+      logs: receipt.logs.filter((l) => l.address.toLowerCase() === m.selectionEngine.toLowerCase()),
+      eventName: "ReactionFailed",
+    });
+    for (const e of failed) {
+      // The raw bytes, not a decoded name. `_handle` catches with `catch (bytes memory
+      // reason)`, so this is whatever `settleAll` reverted with — a four-byte custom-error
+      // selector most of the time. The two worth recognising on sight, both computed with
+      // viem rather than remembered: `NotDriver()` is `0x0c0e646e` (this engine is no longer
+      // the wired driver) and `WrongPhase(uint8,uint8)` is `0x05fb5e1b` followed by its two
+      // arguments (something already settled the window). Printing the bytes verbatim is the
+      // honest form — guessing a name from a hand-written ABI would occasionally name the
+      // wrong error, and four bytes are decodable by hand.
+      warn(
+        `ReactionFailed at block ${e.args.blockNumber} — SelectionEngine caught a reverting ` +
+          `settleAll and swallowed it. Revert data: ${e.args.reason}. ${explorerTx(hash)}`,
+      );
+    }
+    return failed.length > 0;
+  } catch (err) {
+    warn(`could not decode ReactionFailed from the settle receipt: ${describe(err)}`);
+    return false;
+  }
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -393,7 +713,7 @@ async function doSettle(m: Manifest, client: WalletLike): Promise<boolean> {
  *
  *  A SEPARATE TRANSACTION FROM SETTLEMENT, ON PURPOSE, AND THAT IS THE CONTRACT'S
  *  DECISION RATHER THAN THIS SCRIPT'S. `hatchAll` is the one driver call with no
- *  `inPhase` modifier (`Population.sol:1593`) precisely so a mutation inference that is
+ *  `inPhase` modifier (`Population.sol:397` declares it) precisely so a mutation inference that is
  *  still in flight cannot delay a settlement, and so the gas of a birth is never charged
  *  to the reactivity callback that settles. Do not fold it into `settleAll`, and do not
  *  move it ahead of the settlement it follows: it is called after both settlement paths
@@ -526,36 +846,23 @@ async function reportDeaths(m: Manifest): Promise<void> {
 //////////////////////////////////////////////////////////////*/
 
 /**
- *  `endSeason`'s own guard, in TypeScript.
+ *  `endSeason`'s own guard lives in `lib/season.ts` and is RE-EXPORTED here, not defined here.
  *
- *  Exported and pure so the comparison can be exercised without a chain — it is the one
- *  piece of this file that is arithmetic rather than plumbing, and the arithmetic is
- *  where an off-by-one would cost a whole season. `scripts/lib/season.test.ts` does not
- *  exist; the check lives at the bottom of this file behind `--self-test`, which needs
- *  no RPC, no key and no deployment.
+ *  It moved out on 2026-09-06 because `monitor.ts` needs the same comparison for the opposite
+ *  question — "should someone have closed this by now?", asked while this process is the one
+ *  suspected of being dead — and it was mirroring both guards by hand rather than sharing them.
+ *  A duplicated consensus boundary is the drift class the rest of this repo spends `cite-drift`,
+ *  `abi-drift` and `count-drift` catching, and the failure mode is not hypothetical: an
+ *  off-by-one here costs a season, and the same off-by-one over there silences the alert that
+ *  would have caught it. The monitor must not import THIS file to get it — that would pull
+ *  viem, `manifest()` and a `wallet()` that wants a key into a process whose job is to keep
+ *  running when this one cannot — so the predicate went down into a module that imports nothing.
  *
- *  MIRRORS `Population.sol:940` EXACTLY (verified against that line, not remembered),
- *  including the subtraction order:
- *
- *      if (windowCount - seasonStartWindow < seasonWindows) revert SeasonNotOver();
- *
- *  so `>=` here is `!<` there. Written as `count - start >= windows` rather than the
- *  more readable `count >= start + windows` on purpose: the on-chain expression
- *  underflows and reverts if `start` ever exceeds `count`, and a local predicate that
- *  quietly returned `false` where the contract reverts would be a different function.
- *  `bigint` throughout — `windowCount` is a `uint64` and viem hands it over as a
- *  `bigint`, while `seasonWindows` is a `uint32` and arrives as a `number`, so the
- *  widening is explicit at the call site rather than accidental here.
+ *  Re-exported rather than merely imported so the name stays part of this file's surface: the
+ *  `--self-test` table below exercises `seasonIsOver` under this module's own export, which is
+ *  what makes `npm run cadence:selftest` a check on the closer and not just on a library.
  */
-export function seasonIsOver(windowCount: bigint, seasonStartWindow: bigint, seasonWindows: bigint): boolean {
-  // A `seasonWindows` of zero would make every window a season boundary. `setSeason`
-  // rejects it (`BadSeason`) and `initialize` sets 24, so this is only reachable on a
-  // proxy upgraded from a build that predates the field — the same case `level()` guards.
-  // Treat it as "no season configured" and never close.
-  if (seasonWindows === 0n) return false;
-  if (windowCount < seasonStartWindow) return false;
-  return windowCount - seasonStartWindow >= seasonWindows;
-}
+export { seasonIsOver } from "./lib/season.js";
 
 /**
  *  Close the season if the chain says it is over.
@@ -641,7 +948,7 @@ async function maybeEndSeason(m: Manifest, client: WalletLike): Promise<void> {
  *  log is decoded from the receipt of the transaction that made it.
  *
  *  `SeasonEnded` and `SeasonPrizePaid` both carry the PRE-INCREMENT `seasonId`
- *  (`Population.sol:981`/`971`, with `seasonId += 1` after the emit), so the season
+ *  (`Population.sol:293`/`294`, emitted at `Population.sol:1113` with `seasonId += 1` after), so the season
  *  named in these logs is the one that just finished. No adjustment needed here — but do
  *  not "fix" it to `seasonId - 1` if the contract's emit ever moves.
  *
@@ -755,6 +1062,36 @@ async function reportSeasonClose(m: Manifest, hash: Hex, expected: number): Prom
                             PREFLIGHT
 //////////////////////////////////////////////////////////////*/
 
+/**
+ *  Can this process actually drive, and does it still need to?
+ *
+ *  THE SECOND QUESTION IS NOT COSMETIC. `onlyDriver` accepts three senders — owner,
+ *  `selectionEngine`, and the reactivity precompile — and only the first is this signer. So
+ *  the two reads about the engine below decide what the operator's own log is allowed to say
+ *  about the project's central claim:
+ *
+ *    - `Population.selectionEngine == address(0)` means `setWiring` never ran or was
+ *      repointed to nothing. Reactivity then cannot settle a window at all, no matter what
+ *      the subscription says, because the precompile's callback target is `SelectionEngine`
+ *      and Population would reject the engine as a driver anyway. This keeper is the ONLY
+ *      driver, `CADENCE_USE_REACTIVITY` is a lie waiting to waste `REACTIVITY_PATIENCE`
+ *      seconds per window, and `doSettle`'s `poke` branch would revert against `address(0)`.
+ *      Not fatal — the population still runs off `settleAll` — so it is a loud WARN and not
+ *      a throw: refusing to start would take the population down over a claim, and the
+ *      claim is not what keeps the organisms alive.
+ *    - `fallbackEnabled` is the honesty flag itself. While it is `true` the licensed claim is
+ *      *"selection is on-chain and atomic with redemption"*; only after `disableFallback()`
+ *      is *"no keeper anywhere in the causal chain"* literally true. `README.md` and
+ *      `npm run prove` both turn on that boolean, and this is the one place the operator sees
+ *      it before a run rather than after. Printing it here is what stops an eleven-day soak
+ *      being narrated with the stronger claim by accident.
+ *
+ *  The engine reads are wrapped and the failure is not fatal, deliberately. A repointed or
+ *  not-yet-wired engine is a call to `address(0)` or to a contract without the fragment, and
+ *  the cadence must still come up: `settleAll` needs none of this. What must not happen is
+ *  silence, which is what the file did before — the preflight named `selectionEngine` in a
+ *  comment and never read it.
+ */
 async function preflight(m: Manifest, signer: Address): Promise<void> {
   const id = await publicClient.getChainId();
   if (id !== m.chainId) throw new Error(`RPC is chain ${id} but the manifest is for ${m.chainId}`);
@@ -776,7 +1113,79 @@ async function preflight(m: Manifest, signer: Address): Promise<void> {
   }
   if (gas === 0n) throw new Error(`signer ${signer} has no native balance for gas`);
 
+  await preflightSelection(m);
+
   log(`phase ${PHASE[Number(await read(m, "phase"))] ?? "?"} · window #${await read(m, "windowCount")}`);
+}
+
+/**
+ *  The reactive half of the driver union, read from the chain rather than from the manifest.
+ *
+ *  FROM `Population.selectionEngine()`, NOT `m.selectionEngine`, and the two can disagree.
+ *  The manifest records the engine deployed on day one; `setWiring` can repoint it in a
+ *  single transaction, and the engine is deliberately plain and freely redeployable
+ *  (`SelectionEngine.sol`'s ownership note says so as the recovery mechanism). So the
+ *  manifest is what this process will call `poke` on and the chain is what `onlyDriver` will
+ *  accept — a mismatch means `doSettle`'s fallback pokes an engine Population no longer
+ *  trusts, which reverts `NotDriver` INSIDE the try/catch and surfaces as `ReactionFailed`
+ *  with a settled-looking receipt. That is precisely the wedge (a) above now detects, and
+ *  this is where it is cheap to predict instead.
+ */
+async function preflightSelection(m: Manifest): Promise<void> {
+  let wired: Address;
+  try {
+    wired = await publicClient.readContract({
+      address: m.population,
+      abi: populationAbi,
+      functionName: "selectionEngine",
+    });
+  } catch (err) {
+    warn(`could not read Population.selectionEngine: ${describe(err)} — reactivity status unknown`);
+    return;
+  }
+
+  if (wired === "0x0000000000000000000000000000000000000000") {
+    warn(
+      `Population.selectionEngine is UNSET. Reactivity cannot settle a window — the precompile's ` +
+        `callback target is SelectionEngine and Population would reject it as a driver anyway — so ` +
+        `this process is the only driver. Do not set CADENCE_USE_REACTIVITY, and expect ` +
+        `doSettle's poke branch to fail. Fix with setWiring(0, <engine>, 0, 0).`,
+    );
+    return;
+  }
+
+  if (wired.toLowerCase() !== m.selectionEngine.toLowerCase()) {
+    warn(
+      `Population.selectionEngine is ${wired} but the manifest records ${m.selectionEngine}. ` +
+        `This process pokes the MANIFEST's engine and Population only accepts the CHAIN's, so the ` +
+        `fallback path will revert NotDriver inside SelectionEngine's try/catch and land as a ` +
+        `successful receipt over an unsettled window.`,
+    );
+  }
+
+  // Read the flag off the engine the CHAIN trusts. Reading the manifest's instead would
+  // report the honesty posture of a contract that no longer drives anything.
+  let fallbackOpen: boolean;
+  try {
+    fallbackOpen = await publicClient.readContract({
+      address: wired,
+      abi: selectionEngineAbi,
+      functionName: "fallbackEnabled",
+    });
+  } catch (err) {
+    warn(`SelectionEngine ${wired} has no readable fallbackEnabled: ${describe(err)}`);
+    return;
+  }
+
+  log(
+    `selectionEngine ${wired} · fallback ${fallbackOpen ? "OPEN" : "CLOSED"} — ` +
+      (fallbackOpen
+        ? `this keeper may still poke(), so the licensed claim is "selection is on-chain and ` +
+          `atomic with redemption", NOT "no keeper anywhere in the causal chain". ` +
+          `disableFallback() after npm run prove passes.`
+        : `settlement is reactivity-only; poke() reverts FallbackClosed and doSettle will call ` +
+          `settleAll directly if the precompile does not fire.`),
+  );
 }
 
 /*//////////////////////////////////////////////////////////////
@@ -972,6 +1381,231 @@ function selfTestSeasonBoundary(): void {
     return;
   }
   log(`season boundary: ${total} checks pass, 2 of them controls (no chain, no key, no deployment)`);
+
+  selfTestSettleVerdict();
+}
+
+/**
+ *  The other predicate that must not lie: did the settle actually move the machine?
+ *
+ *  WHY THIS IS TESTED AT ALL, given it is nine lines. Because the bug it replaces was not a
+ *  wrong answer, it was a MISSING QUESTION — `doSettle` returned `true` on a successful receipt
+ *  and never re-read the phase, so a settle that reverted inside `poke()`'s try/catch
+ *  (`SelectionEngine.sol:222` catches it and emits `ReactionFailed`) reported progress. The loop
+ *  then skipped its idle sleep and poked a wedged phase-2 population at RPC speed while logging
+ *  advancement. A predicate whose failure mode is "reports success" is exactly the kind that has
+ *  to be pinned by a control, because every one of its outputs looks plausible in a log.
+ *
+ *  THE CONTROLS ARE THE POINT: a phase-2 result must read as "wedged" on BOTH branches of
+ *  `fallbackOpen`, because the flag governs only the wording of the message and must never be
+ *  able to talk the verdict out of an alarm.
+ */
+function selfTestSettleVerdict(): void {
+  type Case = { phase: number; open: boolean; reacted: boolean; want: SettleVerdict; why: string };
+  const cases: Case[] = [
+    // The ordinary success: settleAll wrote `phase = 0` (`Population.sol:1628`) and nothing
+    // caught anything on the way.
+    { phase: 0, open: true, reacted: false, want: "settled", why: "idle after settle is a closed window" },
+    { phase: 0, open: false, reacted: false, want: "settled", why: "same, with the fallback closed" },
+
+    // THE BUG. A successful receipt over a population still in phase 2.
+    { phase: 2, open: true, reacted: true, want: "wedged", why: "poke() swallowed the revert — the whole defect" },
+    { phase: 2, open: true, reacted: false, want: "wedged", why: "phase 2 is wedged even with no ReactionFailed log" },
+    { phase: 2, open: false, reacted: false, want: "wedged", why: "CONTROL fallbackOpen must not excuse phase 2" },
+    { phase: 2, open: false, reacted: true, want: "wedged", why: "CONTROL neither flag can excuse phase 2" },
+
+    // A ReactionFailed log with the phase already advanced is a race we LOST, not a fault: some
+    // other driver settled the window first and our poke found nothing to do. Alerting on it
+    // would make every healthy reactivity-plus-keeper deployment cry wolf once a window.
+    { phase: 0, open: true, reacted: true, want: "lost-race", why: "ReactionFailed but settled: another driver won" },
+
+    // Phase 1 after a settle should be impossible, but it is not phase 2 and the window did
+    // close, so it is progress — the loop's next tick will read the machine again either way.
+    { phase: 1, open: true, reacted: false, want: "settled", why: "thinking again: the window did close" },
+  ];
+
+  let failed = 0;
+  for (const c of cases) {
+    const got = settleVerdict(c.phase, c.open, c.reacted);
+    if (got === c.want) continue;
+    failed++;
+    console.error(`FAIL  phase ${c.phase}, open ${c.open}, reacted ${c.reacted} → ${got}, want ${c.want}: ${c.why}`);
+  }
+
+  // THE DETECTOR'S OWN CONTROL, in the idiom above: the table must be able to catch the exact
+  // regression this predicate exists to prevent — a verdict that trusts the receipt and reports
+  // progress regardless of the phase. If the always-settled stub passes, the table is inert and
+  // the predicate is unprotected.
+  const trustsReceipt = (_p: number, _o: boolean, _r: boolean): SettleVerdict => "settled";
+  if (cases.every((c) => trustsReceipt(c.phase, c.open, c.reacted) === c.want)) {
+    failed++;
+    console.error("FAIL  the table does not catch a verdict that always reports progress — it cannot detect the bug");
+  }
+
+  const total = cases.length + 1;
+  if (failed > 0) {
+    console.error(`${failed} of ${total} settle-verdict checks failed`);
+    process.exitCode = 1;
+    return;
+  }
+  log(`settle verdict: ${total} checks pass, 3 of them controls (a phase-2 read can never report progress)`);
+
+  selfTestCommitReadiness();
+}
+
+/**
+ *  The commit-timing table — the arithmetic of the 29-window fix, checked without a chain.
+ *
+ *  Same idiom as the two tables above, and the controls are the point: the table must fail
+ *  against the predicate this code REPLACED. `breaksOnEmpty` is that predicate, written
+ *  out in one line, and if it passes this table then the table cannot detect the defect and
+ *  is decoration.
+ *
+ *  The second control is the opposite mistake, and it is the one a careless fix would make:
+ *  a predicate that waits for the floor unconditionally, ignoring `answered`. That is not a
+ *  safety improvement — it adds a fixed delay to every healthy window for nothing, and on a
+ *  short market it eats the margin between `pushWindow` and the commit deadline. The table
+ *  must catch it too, which is why the "answered early" row exists.
+ */
+function selfTestCommitReadiness(): void {
+  type Case = CommitInputs & { want: CommitReadiness["act"]; why: string };
+
+  // The default shape of a healthy 8-organism window on the 1h ladder, so each row below
+  // varies one thing and the reader can see which.
+  const base: CommitInputs = {
+    pending: 0,
+    answered: 0,
+    alive: 8,
+    elapsed: 0,
+    floor: 30,
+    patience: 330,
+    untilDeadline: 3540,
+  };
+
+  const cases: Case[] = [
+    // THE DEFECT, as measured on 2026-09-06. `think()` has just landed, the requests have
+    // not registered, and nobody has answered. The old code committed here — 29 times.
+    { ...base, elapsed: 0, want: "wait", why: "THE BUG: empty pending set one second after think is not consensus" },
+    { ...base, elapsed: 5, want: "wait", why: "still inside the floor with no belief landed" },
+    { ...base, elapsed: 29, want: "wait", why: "one second short of the floor — the control for the row below" },
+    { ...base, elapsed: 30, want: "commit", why: "the floor is exhausted and nothing is outstanding" },
+
+    // THE ESCAPE HATCH. A real callback has landed, which proves the reads are seeing
+    // post-think state, so the floor has nothing left to protect against.
+    {
+      ...base,
+      elapsed: 8,
+      answered: 8,
+      want: "commit",
+      why: "all eight answered in 8s — the floor must not delay a finished window",
+    },
+    {
+      ...base,
+      elapsed: 8,
+      answered: 1,
+      pending: 7,
+      want: "wait",
+      why: "one answer proves the reads are live, but seven are still out",
+    },
+
+    // PATIENCE. A request the validators dropped never clears, so the wait must be bounded
+    // by something other than the deadline.
+    { ...base, elapsed: 330, pending: 2, answered: 6, want: "commit-anyway", why: "patience exhausted, two never answered" },
+    { ...base, elapsed: 329, pending: 2, answered: 6, want: "wait", why: "one second short of patience — control" },
+
+    // THE DEADLINE OUTRANKS EVERYTHING, including the floor. A commitment after expiry is a
+    // window every organism paid for and could not trade.
+    {
+      ...base,
+      elapsed: 2,
+      untilDeadline: 0,
+      want: "commit-anyway",
+      why: "at the deadline inside the floor: the market outranks the floor",
+    },
+    {
+      ...base,
+      elapsed: 2,
+      untilDeadline: -30,
+      pending: 8,
+      want: "commit-anyway",
+      why: "past the deadline with everyone still thinking",
+    },
+    {
+      ...base,
+      elapsed: 400,
+      untilDeadline: 0,
+      pending: 8,
+      want: "commit-anyway",
+      why: "deadline and patience both blown — still one commit, not a wait",
+    },
+
+    // A market whose expiry could not be read must not become an unbounded wait; patience
+    // is what bounds it.
+    { ...base, elapsed: 400, untilDeadline: undefined, pending: 3, want: "commit-anyway", why: "no deadline read, patience still binds" },
+    { ...base, elapsed: 10, untilDeadline: undefined, pending: 3, answered: 5, want: "wait", why: "no deadline read, still early" },
+
+    // AN EXTINCT POPULATION IS NOT A PENDING ONE. Guarded before the floor so a dead
+    // population does not sit in the loop for 330 s on its way to reporting extinction.
+    { ...base, alive: 0, elapsed: 0, want: "commit", why: "no living organisms — nothing to wait for" },
+  ];
+
+  let failed = 0;
+  for (const c of cases) {
+    const got = commitReadiness(c).act;
+    if (got === c.want) continue;
+    failed++;
+    console.error(
+      `FAIL  pending ${c.pending}, answered ${c.answered}/${c.alive}, elapsed ${c.elapsed}s, ` +
+        `deadline ${c.untilDeadline} → ${got}, want ${c.want}: ${c.why}`,
+    );
+  }
+
+  // CONTROL 1 — the predicate this replaced. It breaks out the instant nothing is pending,
+  // which is the entire 29-window defect. If the table cannot fail it, the table is inert.
+  const breaksOnEmpty = (i: CommitInputs): CommitReadiness["act"] => (i.pending === 0 ? "commit" : "wait");
+  if (cases.every((c) => breaksOnEmpty(c) === c.want)) {
+    failed++;
+    console.error("FAIL  the table does not catch a predicate that commits on an empty pending set — it cannot detect the bug");
+  }
+
+  // CONTROL 2 — the careless fix: wait out the floor no matter what, ignoring `answered`.
+  // Safe against the defect and wrong about every healthy window, which is why the
+  // "answered in 8s" row is in the table.
+  const ignoresAnswered = (i: CommitInputs): CommitReadiness["act"] => {
+    if (i.untilDeadline !== undefined && i.untilDeadline <= 0) return "commit-anyway";
+    if (i.alive === 0) return "commit";
+    if (i.elapsed < i.floor) return "wait";
+    if (i.pending === 0) return "commit";
+    return i.elapsed >= i.patience ? "commit-anyway" : "wait";
+  };
+  if (cases.every((c) => ignoresAnswered(c) === c.want)) {
+    failed++;
+    console.error("FAIL  the table does not catch a floor that ignores `answered` — it would delay every healthy window");
+  }
+
+  // CONTROL 3 — the blind-window detector must fire on the defect's signature and stay
+  // silent on a legitimate one. An abstention IS an answer, so `answered == alive` with
+  // every organism abstaining is a real unanimous abstention and must NOT be flagged.
+  if (!committedBlind(8, 0)) {
+    failed++;
+    console.error("FAIL  committedBlind does not flag a window in which no living organism answered");
+  }
+  if (committedBlind(8, 8)) {
+    failed++;
+    console.error("FAIL  committedBlind flags a unanimous abstention — an abstention is an answer, not a blind window");
+  }
+  if (committedBlind(0, 0)) {
+    failed++;
+    console.error("FAIL  committedBlind flags an extinct population as blind");
+  }
+
+  const total = cases.length + 5;
+  if (failed > 0) {
+    console.error(`${failed} of ${total} commit-readiness checks failed`);
+    process.exitCode = 1;
+    return;
+  }
+  log(`commit readiness: ${total} checks pass, 5 of them controls (an empty pending set inside the floor can never commit)`);
 }
 
 // ONE ENTRY POINT, and the `--self-test` branch is inside `main()` rather than here, so

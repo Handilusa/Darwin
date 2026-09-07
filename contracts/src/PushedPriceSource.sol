@@ -108,12 +108,12 @@ contract PushedPriceSource is IPriceSource {
      *  a whole window of fitness signal that measures the pusher, not the forecaster,
      *  and the counters it moves are permanent.
      *
-     *  This is not hypothetical: `scripts/lib/market.ts:151` names the exact failure
-     *  ("silently reads `undefined` as 0 pushes a zero opening price and every
-     *  organism is graded against nothing") and guards `undefined` — but a REST
-     *  payload carrying a literal `0`, or an `OPEN_PRICE=0` in the environment
-     *  override at `market.ts:129`, still arrives here as a well-formed zero. The
-     *  updater is a hot key on a script; this contract is the trust boundary, so the
+     *  This is not hypothetical: `scripts/lib/market.ts:149` refuses a *missing*
+     *  `OPEN_PRICE` outright — `need` throws on any falsy env var, so `undefined` and
+     *  the empty string never reach a `BigInt`. But the string `"0"` is truthy, so an
+     *  `OPEN_PRICE=0` in the manual override at `market.ts:141` still arrives here as
+     *  a well-formed zero, and so does an indexer answer whose `numericValue` is zero.
+     *  The updater is a hot key on a script; this contract is the trust boundary, so the
      *  check belongs on this side of it.
      *
      *  `marketId` is refused for a narrower reason: `currentWindow` reads a zero

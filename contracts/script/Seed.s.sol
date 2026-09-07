@@ -27,12 +27,6 @@ import {IERC20Like} from "../src/interfaces/IDreamDEX.sol";
 contract Seed is Script {
     using stdJson for string;
 
-    /// @dev Native runway, expressed in windows rather than ether, because the number
-    ///      that matters is "how long can this think for". Four windows is one hour at
-    ///      the 15-minute cadence — enough to prove the loop, not enough to leave
-    ///      unattended overnight.
-    uint256 internal constant MIN_WINDOWS_OF_RUNWAY = 4;
-
     error AlreadySeeded(uint256 existing);
     error NoGenomes();
     error GenomeNameMismatch(uint256 genomes, uint256 names);
@@ -74,12 +68,30 @@ contract Seed is Script {
         p = json.readAddress(".population");
     }
 
+    /// @dev El orden de los campos es ALFABÉTICO y eso es funcional, no
+    ///      cosmético: forge-std mapea las claves del JSON sobre los campos
+    ///      del struct por nombre de clave ORDENADO, no por posición. Si
+    ///      intercambias estos dos campos, cada organismo se siembra con su
+    ///      nombre en la ranura del genoma y su genoma en la del nombre.
+    ///      Compila, corre, y corrompe los ocho fundadores en silencio.
+    ///      (Verificado: genesis.json lista "name" ANTES de "genome", así que
+    ///      un mapeo posicional acertaría — no lo es.)
+    struct Organism {
+        string genome;
+        string name;
+    }
+
     function _loadGenomes() internal view returns (string[] memory names, string[] memory genomes) {
         string memory path = vm.envOr("GENOME_FILE", string("../genomes/genesis.json"));
         string memory json = vm.readFile(path);
 
-        names = json.readStringArray(".organisms[*].name");
-        genomes = json.readStringArray(".organisms[*].genome");
+        Organism[] memory parsed = abi.decode(json.parseRaw(".organisms"), (Organism[]));
+        names = new string[](parsed.length);
+        genomes = new string[](parsed.length);
+        for (uint256 i = 0; i < parsed.length; i++) {
+            names[i] = parsed[i].name;
+            genomes[i] = parsed[i].genome;
+        }
 
         if (genomes.length == 0) revert NoGenomes();
         if (names.length != genomes.length) revert GenomeNameMismatch(genomes.length, names.length);
@@ -103,18 +115,36 @@ contract Seed is Script {
         uint256 have = IERC20Like(collateral).balanceOf(address(population));
         if (have < need) revert InsufficientCollateral(have, need);
 
-        // Native SOMI pays the inference deposits. Not fatal — Population is fundable
-        // at any time and an unfunded think is caught per-organism rather than
-        // reverting the window — but a population that cannot think is a population
-        // that abstains, pays metabolism anyway, and dies of nothing.
+        // THE HOUSE FLOAT, WHICH IS THE ONE NATIVE NUMBER THAT CAN STOP THIS SCRIPT.
+        // `spawnGenesis` is payable and checks `address(this).balance` against
+        // `genomes.length * cognitionEndowment` ONCE, up front, reverting
+        // `HouseCannotEndowFounders(got, want)` — atomically, before any proxy is
+        // deployed. So a short float costs a broadcast and not a half-seeded population,
+        // and it is worth naming the shortfall here rather than reading it out of a
+        // revert.
+        //
+        // IT IS NOT A WARNING ABOUT RUNWAY, and this block used to print one — windows of
+        // native runway computed from Population's balance over `requestDeposit()`. That
+        // number was meaningless: each `Prophet` pays its own inference out of its OWN
+        // balance, Population's native is the birth float alone, and the founders' runway
+        // is necessarily zero here because they do not exist yet. It is bought AFTER this
+        // script with `npm run fund -- --windows N`, which walks the living. The old print
+        // also said SOMI; the native token on Shannon is STT.
+        uint256 float_ = address(population).balance;
+        uint256 cognition = population.cognitionEndowment() * n;
         uint256 perWindow = population.requestDeposit() * n;
-        uint256 runway = perWindow == 0 ? 0 : address(population).balance / perWindow;
         console.log("collateral in Population ", have);
         console.log("endowment needed         ", need);
-        console.log("native per window (wei)  ", perWindow);
-        console.log("windows of native runway ", runway);
-        if (runway < MIN_WINDOWS_OF_RUNWAY) {
-            console.log("WARNING: less than one hour of inference runway. Fund Population before starting.");
+        console.log("house float (wei)        ", float_);
+        console.log("founders' cognition (wei)", cognition);
+        console.log("  spawnGenesis reverts HouseCannotEndowFounders below this");
+        console.log("cost to think, per window", perWindow);
+        console.log("  paid by the ORGANISMS, not by Population. Fund them after seeding:");
+        console.log("  npm run fund -- --windows 400");
+        if (float_ < cognition) {
+            console.log("WARNING: house float is short. The next transaction WILL revert");
+            console.log("  HouseCannotEndowFounders. Send the difference first (wei):", cognition - float_);
+            console.log("  npm run fund -- --house 4");
         }
     }
 

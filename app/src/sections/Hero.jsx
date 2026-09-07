@@ -178,20 +178,36 @@ export function Hero({ onField }) {
             state says what is actually true instead, and none of them animate:
               live         reads are arriving      → pulse, and name the chain
               absent       forty hex, no contract  → say so; the entry form says it at length
+              wrong        code, but not this ABI  → also the address's fault, also not the network
               unreachable  the chain did not answer → blame the network, never the address
               pending      nothing has settled yet  → "connecting", the entry form's word
             `pop.status === "undeployed"` also lands on pending, which is correct: there is
             no address to read, so nothing is current.
+
+            `wrong` shares `absent`'s red because both are the address being wrong, and both are
+            things retrying cannot fix. It gets its own words for the same reason the entry form
+            gives it its own branch: "nothing is there" and "something else is there" are
+            different facts, and the second one survives a person who is sure the address is right.
           */}
-          <span className={`pill${live.verdict === "live" ? " pill-ok" : live.verdict === "absent" ? " pill-bad" : ""}`}>
+          <span
+            className={`pill${
+              live.verdict === "live"
+                ? " pill-ok"
+                : live.verdict === "absent" || live.verdict === "wrong"
+                  ? " pill-bad"
+                  : ""
+            }`}
+          >
             <span className={`dot${live.verdict === "live" ? " dot-live" : ""}`} />
             {live.verdict === "live"
               ? `Somnia Shannon · ${CHAIN_ID}`
               : live.verdict === "absent"
                 ? `No arena at that address · ${CHAIN_ID}`
-                : live.verdict === "unreachable"
-                  ? `Chain ${CHAIN_ID} did not answer`
-                  : `Somnia Shannon · ${CHAIN_ID} · connecting`}
+                : live.verdict === "wrong"
+                  ? `Not a Population at that address · ${CHAIN_ID}`
+                  : live.verdict === "unreachable"
+                    ? `Chain ${CHAIN_ID} did not answer`
+                    : `Somnia Shannon · ${CHAIN_ID} · connecting`}
           </span>
           <span className="pill">15-minute windows</span>
           {/*

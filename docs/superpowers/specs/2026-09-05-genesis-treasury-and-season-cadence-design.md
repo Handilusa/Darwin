@@ -309,8 +309,11 @@ function sweep(address token, address to, uint256 amount) external onlyOwner {
         if (!ok) revert TransferFailed();
     } else {
         // The two books are claims on this contract's collateral balance. Native is
-        // deliberately NOT capped: the house float is the operator's own money and
-        // `sweep(address(0), …)` is the documented `CognitionUnspent` remedy.
+        // NOT capped, because `sweep(address(0), …)` is the documented
+        // `CognitionUnspent` remedy and a cap would block it. That leaves the native
+        // leg operator-trusted rather than guaranteed — part of this balance is owed
+        // to organisms and nothing on chain separates it from the birth float. See
+        // the note in `Population.sweep` as shipped.
         if (token == collateral) {
             uint256 reserved = rakeAccrued + prizePool;
             uint256 held = IERC20Like(token).balanceOf(address(this));
@@ -415,9 +418,16 @@ now holds is how you lose the detector that would have caught the invariant brea
 
 ### 5.5 Copy that becomes false
 
-- `cadence.ts:730` — operator/`address(0)` copy about founders.
-- `cadence.ts:552`, `:896`, `:904-922` — the eight `seasonIsOver` fixture rows state `576`
-  explicitly, including the boundary rows (`575`/`576`/`577`) and the late-close rows.
+- `cadence.ts:944` — operator/`address(0)` copy about founders.
+- `cadence.ts:1336-1337` (cited here as `:552`, `:896`, `:904-922`, which is where those rows sat
+  on 2026-09-05) — **Done, and the line references were refreshed 2026-09-07 by `cite:check` after
+  the predicate moved out of this file.** The instruction was carried out but not the way it is
+  written above: `seasonIsOver` now lives in `scripts/lib/season.ts` and `cadence.ts` only
+  re-exports it (`:865`) and drives the fixture table (`:1359`). The table was rebuilt around the
+  shipped 24 — `initialize`'s own default, with paired false/true controls on each boundary — and
+  **two `576` rows were kept on purpose**, labelled *"the old default's boundary"*. That is the
+  opposite of stale copy: `setSeason` can still configure a long season, and a predicate exercised
+  at only one magnitude is a predicate that was tuned to it.
 - `web/js/fixture.js:70-72` — comments explaining that the shipped 576 *"can never show a close"*.
   **Corrected 2026-09-05, after checking the file rather than the comment: only the comment
   changes, and the fixture keeps `seasonWindows: 42` / `levelWindows: 12`.** The original
@@ -489,7 +499,7 @@ change, it stops having a subject. A new test for `donatePrizePool` in isolation
 
 **Rewritten:**
 
-7. `Darwin.t.sol:601` — `"genesis organism should belong to the owner"` becomes the treasury.
+7. `Darwin.t.sol:633` — `"genesis organism should belong to the owner"` becomes the treasury.
 8. `Darwin.t.sol:3105` (the A2 test) — `"a genesis founder's entrant is the OWNER, not the zero
    address"` becomes the treasury, and its name and comment change with it. Its point survives:
    the founder's entrant is **not** `address(0)`.
@@ -655,7 +665,7 @@ a number rather than reverting, and a synthetic 30,791-byte creation does too. B
 |---|---|
 | `GenesisTreasury.sol`, the four `Population` edits, the sweep cap | 1.5 |
 | Nine tests, each perturbed to prove it can fail | 1.5 |
-| Clean build, storage diff, `STORAGE.md`, README, `CLAUDE.md`, `cadence.ts:730` | 1.0 |
+| Clean build, storage diff, `STORAGE.md`, README, `CLAUDE.md`, `cadence.ts:944` | 1.0 |
 | **N1** | **4.0** |
 | Two literals + the comment block | 0.5 |
 | `cadence.ts` fixture rows (`:552`, `:896`, `:904-922`) | 0.5 |
@@ -671,6 +681,6 @@ a number rather than reverting, and a synthetic 30,791-byte creation does too. B
   reduced in impact by short seasons (§7).
 - **A second live arena** (`DirectDuelVenue`). `Deploy.s.sol` deploys one `Population`; a second
   is a second deploy, not a flag.
-- **N3** (`Deploy.s.sol:249`'s missing `:Seed` suffix) and **N4** (`MONITOR_SEASON_GRACE` absent
+- **N3** (`Deploy.s.sol:508`'s missing `:Seed` suffix) and **N4** (`MONITOR_SEASON_GRACE` absent
   from `.env.example`). Both files are permission-denied to Claude sessions; the operator applies
   exact text supplied separately.

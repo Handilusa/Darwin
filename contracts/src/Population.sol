@@ -197,7 +197,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *
      *  Gating either one on the phase is NOT the fix, and that is the whole reason
      *  this field exists. If the cadence dies mid-window the phase stays at 1 or 2,
-     *  `forcePhase` is `onlyDriver`, and a phase-gated `endSeason` could then be
+     *  `forcePhase` is `onlyOwner`, and a phase-gated `endSeason` could then be
      *  called by nobody at all — the prize pool would never pay out. The property
      *  worth keeping is "no absent operator can hold a season open"; the property
      *  worth adding is "the price of a window is fixed when the window opens".
@@ -232,7 +232,74 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      */
     address public genesisTreasury;
 
-    uint256[8] private __gap;
+    /**
+     *  THE VENUE THAT ISSUED THIS WINDOW'S POSITIONS, AND THE RAKE THEY WERE OPENED
+     *  UNDER. Audit item #55, and the same argument as `windowAnte` two fields up
+     *  applied to the other two things a window's grading depends on.
+     *
+     *  APPENDED AFTER `genesisTreasury`, NOT NEXT TO `windowAnte` where they read
+     *  better. `genesisTreasury` is already recorded at slot 38 in `STORAGE.md` and is
+     *  already deployed; inserting these before it would shift it to 39 and every
+     *  existing organism's `entrant` would be read out of the wrong slot. Layout order
+     *  is append-only and it outranks readability — which is what this note is for.
+     *
+     *  Appended 2026-09-06, ONE slot out of `__gap` (shrunk 8 -> 7): slot 39 holds both,
+     *  `windowVenue` at offset 0 and `windowRakeBps` at offset 20, 22 of 32 bytes used.
+     *  The ten spare bytes STAY spare, same rule as slots 13, 18, 21, 23, 26 and 38.
+     *
+     *  Declaring two fields into ONE FRESH slot is allowed, and is what the season group
+     *  on slot 33 already does; what `CLAUDE.md` forbids is packing into a slot an
+     *  earlier deploy already wrote. These two are appended in the same commit and
+     *  neither exists on chain yet, so the slot is theirs from the start and there is no
+     *  live layout to collide with. They are also the natural pair: both are written by
+     *  adjacent statements in `think()` and read by adjacent statements in `settleAll()`,
+     *  so a reader who finds one has found both.
+     *
+     *  WHAT GOES WRONG WITHOUT THEM. `setWiring` repoints `venue` with no phase guard
+     *  and `setSeason` moves `rakeBps`, both `onlyOwner`, both callable between
+     *  `think()` and `settleAll()`:
+     *
+     *    - A window opened on venue A and settled against venue B asks B to redeem a
+     *      position it never issued. `DreamDEXVenue.redeemFor` reverts (`poolOf` is
+     *      empty for that id), so `settleAll`'s catch fires `SettleFailed` for EVERY
+     *      organism, nobody is graded, and each `Prophet` keeps `positionOpen` — which
+     *      `commitAll` then skips, so the population sits out the FOLLOWING window too.
+     *      On `DirectDuelVenue`, where the escrow is real collateral held between open
+     *      and redemption, the ante is unrecoverable by anyone: redemption is
+     *      holder-only and `Prophet` exposes no arbitrary call.
+     *    - A rake moved mid-window taxes winnings at a rate that did not exist when the
+     *      position was opened. Smaller in consequence, identical in kind, and the one
+     *      an operator could trip accidentally by recalibrating a season between two
+     *      phases of the same window.
+     *
+     *  `collateral` IS DELIBERATELY NOT SNAPSHOT, and the audit is wrong to ask for it:
+     *  there is no setter for it anywhere. It is written once, in `initialize`, and
+     *  `setWiring` does not touch it. A snapshot of a field nothing can move is a slot
+     *  spent on decoration, and it would imply a repointing hazard that does not exist.
+     *  If a `collateral` setter is ever added, this is the note that says a third
+     *  snapshot field has to be added with it.
+     *
+     *  BOTH ARE CONSUMED, which is the difference between a snapshot and an ornament:
+     *  `windowVenue` is read by `executePair` (issuance) and `settleAll` (redemption),
+     *  which must name the same contract or the mismatch has merely moved; `windowRakeBps`
+     *  is read by `settleAll` and passed to `Prophet.settleWindow`. Nothing else reads
+     *  either — `enter`, the scripts and the frontend keep reading the LIVE `venue`,
+     *  because they describe the current arena rather than a window in flight, exactly
+     *  as `ante()` does alongside `windowAnte`.
+     *
+     *  THE ZERO FALLBACKS COVER THE FIRST WINDOW AND ONLY THAT. Both fields are zero on
+     *  a fresh deploy and on a proxy upgraded from a build that predates them, so
+     *  `settleAll` and `executePair` fall back to the live values — which is correct in
+     *  both cases: on a fresh deploy `think()` writes them before any position can
+     *  exist, and on a mid-window upgrade the live values are what that window was
+     *  actually opened under. `windowRakeBps == 0` is indistinguishable from a
+     *  deliberate zero rake, and that is the right way round: a window that settles
+     *  with no skim is a revenue miss, while one that reverts strands every ante.
+     */
+    address public windowVenue;
+    uint16 public windowRakeBps;
+
+    uint256[7] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                  EVENTS
@@ -252,10 +319,29 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 indexed prophetId, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned
     );
     event BreedingRequested(uint256 indexed parentId, uint256 requestId);
+    /// @dev A breeding request declined because this organism already has one out.
+    ///      Its own line rather than a reuse of `BreedingUnaffordable`, because the
+    ///      two say opposite things about the organism: unaffordable is a wallet
+    ///      problem, this is a request that is already paid for and still in flight.
+    ///      `requestId` is the SURVIVING request, so a log reader can pair this with
+    ///      the `BreedingRequested` it defers to. Emitted rather than reverted on the
+    ///      `settleAll` path — see `_requestMutation`.
+    event MutationAlreadyInFlight(uint256 indexed prophetId, uint256 requestId);
     /// @dev Bred on merit, could not afford the thought. Not a failure — the
     ///      organism keeps its streak and its surplus, and may breed in a later
     ///      window once someone tops its cognition up.
     event BreedingUnaffordable(uint256 indexed prophetId);
+    /// @dev A mutated genome that had landed and could not be born, because the parent
+    ///      no longer held a full `endowment` in collateral when `hatchAll` reached it.
+    ///      Audit item #34. Distinct from `BreedingUnaffordable`, which fires BEFORE the
+    ///      inference is paid for: this one fires after a real three-validator mutation
+    ///      has already been bought and delivered, so it is the more expensive failure
+    ///      and the only one that loses a genome. The genome is NOT logged — it is
+    ///      already in the organism's own `MutationReceived`, and repeating a
+    ///      model-authored string here would put unbounded calldata in a loop that runs
+    ///      once per living organism. `held` is what the parent actually had, so the
+    ///      shortfall is readable against `endowment`.
+    event BirthUnaffordable(uint256 indexed parentId, uint256 held, uint256 needed);
     event WindowClosed(uint64 indexed window, uint256 aliveCount);
     /// @dev An unattended run must never be stalled by one bad organism. Each of
     ///      these is a caught revert, kept as a log so the monitor can see it.
@@ -278,6 +364,13 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      prize pool. Emitted from the reaping branch of `settleAll`, so a
     ///      `Reaped` without one of these means the organism died with nothing left.
     event ResidueForfeited(uint256 indexed prophetId, uint256 amount);
+    /// @dev A starved organism whose residue could not be moved, so the reap was
+    ///      DEFERRED rather than completed — the organism is still alive, still in
+    ///      `living`, and `settleAll` will try again next window. Audit item #43. The
+    ///      only way to reach it is a collateral token that refuses a transfer (paused,
+    ///      or the arena blacklisted), which is why this is an event rather than a
+    ///      revert: one such organism must not stop the cadence for the population.
+    event ReapDeferred(uint256 indexed prophetId, uint256 residue);
     /// @dev `pot` is what the season had accumulated; `paid` is what the standings
     ///      actually claimed. The difference rolls into the next season rather than
     ///      being swept — an arena with fewer than three living organisms must not
@@ -316,6 +409,11 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /// @dev `withdrawRake` may only ever draw against the house's own book. The
     ///      float, the endowments and the prize pool share this balance.
     error RakeExceeded();
+    /// @dev A metabolism at or above the endowment kills every organism at its first
+    ///      settlement, and death has no counterpart. Arguments 1 and 2 of
+    ///      `setEconomics` are adjacent same-unit `uint256`s whose defaults differ by
+    ///      200x, so this is mostly a transposition guard. See `setEconomics`.
+    error MetabolismAboveEndowment(uint256 metabolicCost, uint256 endowment);
     error SeasonNotOver();
     /// @dev A season whose parameters would brick the arena — a zero `levelWindows`
     ///      divides by zero in `level()`, a `prizeShareBps` above 100% underflows
@@ -330,9 +428,55 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      without reading access control.
     error TreasuryAlreadySet();
     /// @dev `sweep` may not draw the collateral that `rakeAccrued` and `prizePool` are
-    ///      claims on. The NATIVE leg is uncapped on purpose — see `sweep`.
+    ///      claims on. There is no equivalent cap on the NATIVE leg, and that is a
+    ///      limitation rather than a policy: some of this contract's native is owed to
+    ///      organisms (`CognitionUnspent`) and nothing on chain separates it from the
+    ///      birth float. See `sweep`.
     error BooksReserved();
     error ZeroAmount();
+    /// @dev A `minStake` above the ante makes `_pair` refuse EVERY pairing: `_pair`
+    ///      clamps to `windowAnte` and then opens two empty positions below
+    ///      `minStake`, so the whole population forecasts, pays metabolism, and never
+    ///      trades. Selection then grades nothing but abstentions and the arena
+    ///      starves uniformly — which looks exactly like a broken price feed. Checked
+    ///      in BOTH directions (`setEconomics` against `baseAnte`, `setSeason` against
+    ///      `minStake`), because a one-sided guard is bypassed by setting the other.
+    error StakeFloorAboveAnte(uint256 minStake, uint256 baseAnte);
+    /// @dev A newborn endowed below the stake floor can never trade — the same
+    ///      never-pairs outcome as `StakeFloorAboveAnte`, arrived at from the other
+    ///      side, and worse because it is permanent for that organism rather than a
+    ///      season parameter. `minEndowment` bounds what an ENTRANT must bring;
+    ///      nothing bounded what the house hands a founder or a child.
+    error EndowmentBelowStakeFloor(uint256 endowment, uint256 minStake);
+    /// @dev `maxPopulation` is a gas bound, and two values break it rather than tune
+    ///      it. Below `living.length` it freezes every birth while the incumbents are
+    ///      alive — `hatchAll` breaks out of its loop — so the generation counter, the
+    ///      headline metric of the run, stops. Below 2 it forbids a pairing outright,
+    ///      since `_pair` needs two organisms holding opposing beliefs.
+    error PopulationCapTooSmall(uint256 maxPopulation, uint256 living);
+    /// @dev A `breedStreak` of zero makes `streak() >= breedStreak` true for every
+    ///      organism at every settlement, so `settleAll` requests a mutation for the
+    ///      whole surplus-holding population every window — each one a paid inference
+    ///      drawn from the organism's own cognition — and `hatchAll` runs to
+    ///      `maxPopulation` in a couple of windows. Breeding stops being a reward.
+    error ZeroBreedStreak();
+    /// @dev `_hatch` transfers exactly `endowment` from the parent, and eligibility is
+    ///      `treasury >= endowment + (endowment * breedSurplusBps / 10_000)`. So the
+    ///      surplus IS the parent's post-birth balance, and a surplus under one
+    ///      metabolism charge means every successful breed kills the parent at the very
+    ///      next settlement. Selection would then be against reproduction, which
+    ///      inverts the thing this arena measures.
+    error BreedSurplusBelowMetabolism(uint256 surplus, uint256 metabolicCost);
+    /// @dev `spawnGenesis` against a house that cannot endow every founder's cognition.
+    ///      `_houseCognition()` degrades to 0 rather than reverting, which is right for
+    ///      a BIRTH but catastrophic for a GENESIS: without this check a deploy that
+    ///      forgot the value mints all eight founders with zero native, no revert and
+    ///      no `CognitionFunded` event, and the whole population is born brain-dead —
+    ///      an entirely silent failure whose only symptom is that every organism
+    ///      abstains forever. `got` is this contract's balance INCLUDING the
+    ///      `msg.value` of this call, since `spawnGenesis` is payable and the deploy
+    ///      seeds the float in the same transaction. See `spawnGenesis`.
+    error HouseCannotEndowFounders(uint256 got, uint256 want);
 
     /// @dev The reactivity precompile. Has no bytecode and does not exist on local
     ///      chains, so this is only ever a `msg.sender` comparison here.
@@ -515,6 +659,57 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         if (venue_ != address(0)) venue = venue_;
     }
 
+    /**
+     *  ONE OF THESE SEVEN CAN EMPTY THE ARENA IN A SINGLE WINDOW, and it is the
+     *  second one.
+     *
+     *  `metabolicCost` is charged to every organism unconditionally at settlement,
+     *  and `settleAll` reaps anything left holding less than it (`:1469`), so a value
+     *  at or above `endowment` is not a mistuning — it is a kill switch. Every
+     *  organism alive, plus every organism ever born afterwards, dies at its first
+     *  settlement, and `Prophet.dead` has no counterpart anywhere in this codebase.
+     *  A population wiped that way cannot be restored by setting the number back.
+     *
+     *  THE SHAPE OF THE MISTAKE IS THE REASON FOR THE CHECK. Arguments 1 and 2 are
+     *  both bare `uint256` in the same units, adjacent, and the defaults differ by
+     *  200x (`10_000_000` against `50_000` at `:408`) — so a transposed pair passes
+     *  every type check the compiler has and reads plausibly in a calldata dump. It
+     *  is also called from `contracts/script/`, edited by hand, at the highest-risk
+     *  moment of a deploy.
+     *
+     *  BOUNDED AGAINST `endowment_`, NOT A CONSTANT, because the honest statement is
+     *  relative: metabolism must be survivable for a newborn endowed this window. `<`
+     *  rather than `<=` — equality means a newborn dies at its first settlement with
+     *  no window in between, which is the same wipe one wei cheaper. This is a floor
+     *  on survivability, not a claim that anything under it is well-tuned: a cost at
+     *  90% of the endowment still kills almost everything, and that remains the
+     *  operator's call.
+     *
+     *  FIVE MORE BOUNDS, ADDED BY AUDIT ITEM #29, and each one is the difference
+     *  between a mistuned arena and one that cannot function at all. Every error
+     *  carries the argument that justifies it at its declaration, so in order:
+     *  `StakeFloorAboveAnte`, `EndowmentBelowStakeFloor`, `PopulationCapTooSmall`,
+     *  `ZeroBreedStreak`, `BreedSurplusBelowMetabolism`. None of them is irreversible
+     *  the way a fatal metabolism is — that is why this docblock still opens with the
+     *  metabolism — but each of the five stops something the run is judged on: pairing,
+     *  trading at all, births, breeding as a reward, and the parent surviving one.
+     *
+     *  THE FIRST NEEDS ITS OTHER HALF IN `setSeason`, and this is the part worth
+     *  reading twice. `minStake <= baseAnte` here is bypassable in one transaction by
+     *  lowering `baseAnte` afterwards, so `setSeason` carries the symmetric
+     *  `baseAnte >= minStake`. A guard that either side can step around unaided is the
+     *  decorative kind — it reports a clean bill on state it cannot actually constrain.
+     *
+     *  `stakeBps` IS DELIBERATELY LEFT UNBOUNDED, and that is a decision rather than
+     *  the one omission nobody got to. It is VESTIGIAL: nothing reads it since the
+     *  escalating ante replaced `min(stakeOf(up), stakeOf(down))` (see its declaration
+     *  and `:444`), and it survives only because this layout is append-only. Every
+     *  value of it is equally inert, so any bound on it — non-zero, under 10_000,
+     *  anything — would constrain nothing on chain while reading in a diff as though
+     *  the parameter still mattered. Bounding dead storage is exactly the check #29
+     *  exists to prevent. Requiring it non-zero would also break the round-trip in the
+     *  test helper, which reads all seven values back and writes them unchanged.
+     */
     function setEconomics(
         uint256 endowment_,
         uint256 metabolicCost_,
@@ -524,6 +719,29 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint16 breedSurplusBps_,
         uint16 maxPopulation_
     ) external onlyOwner {
+        if (metabolicCost_ >= endowment_) revert MetabolismAboveEndowment(metabolicCost_, endowment_);
+
+        // Read once. `baseAnte` is the level-0 ante by construction (`ante()` multiplies
+        // up from it), so comparing against it rather than `ante()` bounds the CHEAPEST
+        // window of a season instead of whichever one happens to be live.
+        uint256 base = baseAnte;
+        if (minStake_ > base) revert StakeFloorAboveAnte(minStake_, base);
+        if (endowment_ < minStake_) revert EndowmentBelowStakeFloor(endowment_, minStake_);
+
+        uint256 alive_ = living.length;
+        // `living.length`, not `prophets.length`: the cap is a bound on the concurrent
+        // population, and `prophets` is append-only. A floor of 2 regardless, because
+        // one organism has nobody to disagree with.
+        if (maxPopulation_ < 2 || maxPopulation_ < alive_) revert PopulationCapTooSmall(maxPopulation_, alive_);
+
+        if (breedStreak_ == 0) revert ZeroBreedStreak();
+
+        // The surplus a breeder keeps, computed exactly as `_breedThreshold` and
+        // `_hatch` between them leave it: eligibility is `endowment + surplus` and the
+        // birth costs `endowment`.
+        uint256 surplus = (endowment_ * breedSurplusBps_) / 10_000;
+        if (surplus < metabolicCost_) revert BreedSurplusBelowMetabolism(surplus, metabolicCost_);
+
         endowment = endowment_;
         metabolicCost = metabolicCost_;
         minStake = minStake_;
@@ -576,6 +794,24 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ///      audit and nobody can withdraw from. See `GenesisTreasury`.
     function spawnGenesis(string[] calldata genomes) external payable onlyOwner {
         if (genesisTreasury == address(0)) revert NoGenesisTreasury();
+
+        // ONCE, UP FRONT, AGAINST THE TOTAL — never per founder inside the loop.
+        // `_houseCognition()` reads the balance fresh on every iteration and that
+        // balance FALLS by `cognitionEndowment` each time, so a per-founder check
+        // would pass for founders 1..k and then revert on k+1 — except it would not
+        // even revert, it would degrade to 0, which is the bug. And a per-founder
+        // REVERT would be worse than either: the earlier `_spawn` calls have already
+        // deployed proxies, pushed `living` and bumped `aliveCount`, and there is no
+        // un-spawn (death is irreversible and nothing clears `dead`), so it would
+        // leave a permanently half-seeded population. The whole call must be refused
+        // or none of it.
+        //
+        // `address(this).balance` here already includes this call's `msg.value` —
+        // that is the point of `payable`, and it is why the deploy can create and
+        // fund the founders in one transaction.
+        uint256 want = genomes.length * cognitionEndowment;
+        if (address(this).balance < want) revert HouseCannotEndowFounders(address(this).balance, want);
+
         for (uint256 i; i < genomes.length; ++i) {
             // THE SLOAD STAYS IN THE LOOP. `_spawn`'s `id` is documented as
             // deliberately not a local because the Yul optimizer inlines `_spawn`
@@ -618,6 +854,23 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  birth a sponsor can fix with `topUpCognition` rather than a birth that
      *  silently swallowed the float. Guarded rather than reverting because an
      *  underfunded house must still be able to bear children.
+     *
+     *  THE DEGRADE-TO-0 IS CORRECT HERE AND WRONG IN `spawnGenesis`, AND THAT
+     *  ASYMMETRY IS DELIBERATE. Do not "unify" them.
+     *
+     *    - On the breeding path (`hatchAll` → `_hatch` → `_spawn`) refusing the birth
+     *      would destroy lineage: the parent has already had its mutation inference
+     *      paid for and delivered, `pendingChildPrompt` is the only copy of that
+     *      genome, and a revert there costs a generation that cannot be recovered. A
+     *      brain-dead child is recoverable by anyone via `topUpCognition`; an unborn
+     *      one is not. (`_hatch` does not call this function at all — it passes what
+     *      `drawCognition` returned — but the same reasoning is why THAT path also
+     *      tolerates 0.)
+     *    - On the genesis path there is no lineage to lose yet and the caller is the
+     *      owner, in the deploy transaction, holding the value. Silence there means
+     *      eight founders that abstain forever with nothing on chain saying why. So
+     *      `spawnGenesis` checks the TOTAL up front and reverts
+     *      `HouseCannotEndowFounders`, and this function is left alone.
      *
      *  ONLY `spawnGenesis` may call this. `_hatch` must not: the whole point of a
      *  parent-paid birth is that the value comes out of the parent, and a fallback to
@@ -798,13 +1051,22 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  clock is the players' and only `endSeason` may move it. An owner who could
      *  reset the clock could hold a season open until the standings suited them.
      *
-     *  Validated, unlike `setEconomics`, because three of these eight can brick the
-     *  arena rather than merely mistune it — see `BadSeason`.
+     *  Three of these eight can brick the arena rather than merely mistune it — see
+     *  `BadSeason` — and a fourth, `baseAnte`, is the other half of a bound that lives
+     *  in `setEconomics`.
      */
     function setSeason(SeasonParams calldata s) external onlyOwner {
         if (s.levelWindows == 0 || s.seasonWindows == 0) revert BadSeason();
         if (s.anteMultBps < 10_000) revert BadSeason();
         if (s.rakeBps > 10_000 || s.prizeShareBps > 10_000) revert BadSeason();
+
+        // THE SYMMETRIC HALF OF `setEconomics`'s `StakeFloorAboveAnte`, and without it
+        // that guard is decorative: an owner who was refused a high `minStake` there
+        // reaches the identical never-pairs state by lowering `baseAnte` here instead.
+        // A season is not the place this is enforced — it is enforced in whichever call
+        // last touched either number, which means both of them.
+        uint256 floor_ = minStake;
+        if (s.baseAnte < floor_) revert StakeFloorAboveAnte(floor_, s.baseAnte);
 
         minEndowment = s.minEndowment;
         cognitionEndowment = s.cognitionEndowment;
@@ -1037,22 +1299,52 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  whoever put it in, which is what makes entering a wager rather than a
      *  donation.
      *
-     *  `positionOpen` is the entire anti-rage-quit gate, and it needs no new
-     *  state: it is true from `commitAll` until `settleAll`, so an entrant cannot
-     *  watch a market move against their organism and pull the stake out from
-     *  under the counterparty it is already paired 1:1 with. Between windows,
-     *  leaving is free — an organism nobody wants to keep funding should stop
-     *  costing its entrant money.
+     *  THE ANTI-RAGE-QUIT GATE IS `phase == 0`, AND THE DOCBLOCK HERE USED TO SAY IT
+     *  WAS `positionOpen`. That was false, and false in the direction that matters —
+     *  audit items #20 and #40.
+     *
+     *  `positionOpen` is true from `commitAll` until `settleAll`, so it does close
+     *  phase 2: an entrant cannot watch a market move against their organism and pull
+     *  the stake out from under the counterparty it is already paired 1:1 with. What it
+     *  does not close is PHASE 1 — after `think()` has opened the window and paid for
+     *  the inference, before `commitAll()` has risked anything. The belief callback
+     *  lands during phase 1, so in that interval the entrant can READ `belief` and
+     *  `lastThesis` off their own organism and then leave, and leaving there costs
+     *  nothing at all: metabolism is charged inside `settleWindow`, and `settleAll`
+     *  skips anything whose position is not open. So the window's rent was never paid
+     *  for a window the organism did think in, and the entrant walked away with the
+     *  whole treasury after seeing the forecast. That is a free option on every window,
+     *  granted to exactly the party the 1:1 pairing is supposed to bind.
+     *
+     *  So the guard is `inPhase(0)`: leaving is a BETWEEN-WINDOWS action, which is what
+     *  the old comment already claimed ("between windows, leaving is free") without the
+     *  code enforcing it. `positionOpen` stays below as the backstop, because it is the
+     *  check that lives on the organism actually holding the position and it still
+     *  catches the one case the phase cannot — an organism whose `settleWindow` reverted
+     *  and whose position is therefore open while the phase has already returned to 0.
+     *
+     *  The cost is a liveness one and it is accepted deliberately: a driver that stops
+     *  mid-cadence leaves entrants unable to exit until the phase moves. That is the
+     *  same exposure a stopped driver already creates for everything else in the window
+     *  path, `forcePhase` is `onlyOwner` and exists precisely as that remedy, and the
+     *  alternative — a per-organism "has it thought this window" flag — is a new storage
+     *  slot on the eve of a freeze to express something the phase already knows.
+     *
+     *  An organism nobody wants to keep funding should stop costing its entrant money,
+     *  and between windows it still can.
      *
      *  BOTH currencies come back, because the entrant put both in. Returning the
      *  collateral while stranding the unspent cognition in a dead organism would
      *  make this a partial exit and quietly turn `enter`'s native requirement into
      *  a one-way ratchet on the entrant's STT.
      */
-    function retire(uint256 prophetId) external {
+    function retire(uint256 prophetId) external inPhase(0) {
         Prophet p = Prophet(payable(prophetAt(prophetId)));
         if (msg.sender != p.entrant()) revert NotEntrant();
         if (p.dead()) revert ProphetIsDead();
+        // The backstop, not the gate — see the docblock. Reachable in phase 0 only for
+        // an organism whose settlement reverted, which is exactly the case the phase
+        // check cannot see.
         if (p.positionOpen()) revert PositionStillOpen();
 
         // `stakeOut` carries the `alive` modifier, so the drain MUST come before
@@ -1172,6 +1464,19 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         // slot of the limit and the comment at the top of this function is not
         // decoration. Nothing here needs its locals.
         windowAnte = ante();
+
+        // AND THE VENUE AND RAKE THIS WINDOW IS BEING OPENED UNDER. Same instant, same
+        // reason: this is the last moment at which nobody else can change the answer.
+        // `setWiring` can repoint `venue` and `setSeason` can move `rakeBps` between
+        // here and `settleAll`, and an organism graded against a venue that never
+        // issued its position is not graded at all. See the fields' declaration.
+        //
+        // One SSTORE for the pair, because they share slot 39 — which is also why
+        // adding this costs `think()` one warm slot write rather than two, and why it
+        // is safe in a function that sits within one stack slot of the --via-ir limit:
+        // no new locals.
+        windowVenue = venue;
+        windowRakeBps = rakeBps;
 
         string[] memory allowed = Genome.allowedBeliefs();
         uint256 dep = requestDeposit();
@@ -1391,7 +1696,14 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         // `openOpposing` reverts on its own `transferFrom` and `_pair`'s catch
         // opens two empty positions, which is a correct outcome reported under the
         // wrong name (`CommitFailed` on the organisms rather than a token failure).
-        address v = venue;
+        // THE WINDOW'S OWN VENUE HERE TOO, and this is the leg that actually matters:
+        // `settleAll` reading the snapshot while THIS read the live value would move
+        // the mismatch rather than remove it — positions issued by the new venue,
+        // redeemed against the old one. Issuance and redemption have to name the same
+        // contract, so both read the same field, with the same zero fallback for a
+        // proxy upgraded mid-window.
+        address v = windowVenue;
+        if (v == address(0)) v = venue;
         if (!IERC20Like(collateral).approve(v, amount)) revert TransferFailed();
         (uint256 upId, uint256 downId, uint256 quantity) =
             IArenaVenue(v).openOpposing(address(up), address(down), amount);
@@ -1442,7 +1754,22 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  on this path no price has been pushed since the window opened.
      */
     function settleAll() external onlyDriver inPhase(2) {
-        address v = venue;
+        // THE WINDOW'S OWN VENUE AND RAKE, not the current ones. `think` froze both
+        // when the window opened, and grading a position against a venue that never
+        // issued it is not grading — see the fields' declaration for what
+        // `setWiring`/`setSeason` can do in between, and why a phase guard is not the
+        // answer.
+        //
+        // The zero fallbacks are the same insurance `_pair` carries for `windowAnte`: a
+        // proxy upgraded mid-window from a build that predates these fields has no
+        // snapshot for the window in flight. `windowRakeBps == 0` is indistinguishable
+        // from a deliberate zero rake, and that is the right way round — a window that
+        // settles with no skim is a revenue miss, while one that reverts strands every
+        // ante. Both fallbacks stop mattering after the first `think()` on any deploy.
+        address v = windowVenue;
+        if (v == address(0)) v = venue;
+        uint16 rake = windowRakeBps;
+        if (rake == 0) rake = rakeBps;
 
         // BACKWARDS ON PURPOSE. This is the one loop that removes elements while
         // walking, and `_removeLiving` swap-removes: the hole is filled from the
@@ -1454,7 +1781,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             Prophet p = Prophet(payable(prophets[living[i - 1] - 1]));
             if (p.dead() || !p.positionOpen()) continue;
 
-            try p.settleWindow(v, collateral, metabolicCost, rakeBps) returns (
+            try p.settleWindow(v, collateral, metabolicCost, rake) returns (
                 uint256, bool starved, uint256 charged, uint256 raked
             ) {
                 // Both amounts are already in this contract — the organism moved
@@ -1475,10 +1802,38 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                     // the survivors are competing for, and a house that profits
                     // directly from each death has an incentive nobody should have
                     // to trust it to ignore.
+                    // WRAPPED, AND THE WRAP IS THE SAME SOLIDITY FACT AS #56. Audit
+                    // item #43. Everything in this block runs in the SUCCESS BODY of
+                    // the `try` above, and a revert in a success body is not routed
+                    // into that `try`'s `catch` — it propagates. So a `stakeOut` that
+                    // reverted here took down the whole of `settleAll` for the entire
+                    // population and left `phase` wedged at 2 until the owner called
+                    // `forcePhase`, exactly as `noteMutating` used to.
+                    //
+                    // `stakeOut` reverts `TransferFailed` when the collateral token
+                    // refuses the transfer, which for tUSDC means paused or the arena
+                    // blacklisted. That is not a hypothetical for an ERC-20 nobody in
+                    // this system controls, and it is precisely the moment the cadence
+                    // must keep running: the organism is dead broke either way.
+                    //
+                    // On failure the reap is DEFERRED, not faked. The organism stays
+                    // alive, stays in `living`, keeps its open position closed by
+                    // `settleWindow`, and is re-tested next window — so `aliveCount`
+                    // never drifts from `living.length`, which is the invariant the
+                    // whole living/lineage split rests on. `die()` is NOT called
+                    // outside the wrap for the same reason: a corpse's `stakeOut`
+                    // reverts `IsDead()`, so killing it after a failed drain would
+                    // strand the residue permanently, which is the trap `retire` and
+                    // the residue ordering are both written against.
                     uint256 residue = p.treasury();
                     if (residue > 0) {
-                        prizePool += p.stakeOut(address(this), residue, collateral);
-                        emit ResidueForfeited(p.prophetId(), residue);
+                        try p.stakeOut(address(this), residue, collateral) returns (uint256 moved) {
+                            prizePool += moved;
+                            emit ResidueForfeited(p.prophetId(), residue);
+                        } catch {
+                            emit ReapDeferred(p.prophetId(), residue);
+                            continue;
+                        }
                     }
 
                     p.die(windowCount);
@@ -1541,6 +1896,27 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  NATIVE, and the two balances do not interact.
      */
     function _requestMutation(Prophet p) internal {
+        // BEFORE THE DEPOSIT, AND IT IS A RETURN RATHER THAN A REVERT. Audit item #56.
+        //
+        // `Prophet.noteMutating` reverts `MutationInFlight` on a duplicate, and that
+        // call sits at the BOTTOM of this function — inside the `try` around
+        // `createAdvancedRequest`, but the `try` in `settleAll` is the one that
+        // matters. A revert raised in a `try`'s SUCCESS BODY is not routed into that
+        // `try`'s `catch`, so a duplicate reaching `noteMutating` from `settleAll`
+        // reverted the entire window and left `phase` at 2 until the owner called
+        // `forcePhase`. `breedProphet` is permissionless and moves neither `streak`
+        // nor `treasury`, so any address could arm that wedge on any eligible leader.
+        //
+        // Checked here rather than only in `breedProphet` because `settleAll` reaches
+        // this function on its own the very next window: the parent still qualifies
+        // while its first inference is out, so the population would wedge itself with
+        // no griefer involved at all.
+        uint256 inFlight = p.pendingMutationRequestId();
+        if (inFlight != 0) {
+            emit MutationAlreadyInFlight(p.prophetId(), inFlight);
+            return;
+        }
+
         uint256 dep = requestDeposit();
 
         // Unaffordable breeding is a skip, never a revert: reverting here would
@@ -1605,12 +1981,50 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     function _hatch(Prophet parent) internal {
+        // AFFORDABILITY IS CHECKED BEFORE THE GENOME IS CONSUMED. Audit item #34.
+        //
+        // `consumeChildPrompt()` DELETES `pendingChildPrompt` — that is the whole point
+        // of it, so a genome cannot be born twice. The order below used to be the other
+        // way round: consume first, then discover the parent could not pay, then refund
+        // the collateral and return. The refund made the money whole and said nothing
+        // about the genome, which was already gone. A real three-validator mutation the
+        // parent had PAID FOR was destroyed, silently, and the only recovery was to earn
+        // another breeding streak and pay for another inference — while `BreedingRequested`
+        // sat in the log with no `Spawned` and no failure line anywhere to pair it with.
+        //
+        // The parent's treasury can genuinely fall between `_requestMutation` and here:
+        // `settleAll` breeds on the streak and charges metabolism in the same call, and
+        // `hatchAll` is a separate transaction that may be one or more windows later, so
+        // an eligible parent can lose a pairing and drop under `endowment` in between.
+        // This is a real path, not a defensive one.
+        //
+        // Read rather than attempted: `stakeOut` clamps to the treasury and reports what
+        // it moved, so the old code learned the answer only by taking the money first.
+        // A `treasury()` read costs one staticcall and leaves the genome where it is,
+        // which means an under-funded parent keeps its child pending and can be topped
+        // up by `fundProphet` and hatched in a later `hatchAll` — the outcome the refund
+        // branch was reaching for and could not deliver once the prompt was deleted.
+        uint256 held = parent.treasury();
+        if (held < endowment) {
+            emit BirthUnaffordable(parent.prophetId(), held, endowment);
+            return;
+        }
+
         string memory childGenome = parent.consumeChildPrompt();
         if (bytes(childGenome).length == 0) return;
 
         // Reproduction is expensive, as it should be: the parent funds the child
         // out of its own treasury. A survivor that breeds is deliberately more
         // fragile immediately afterwards.
+        //
+        // The short-draw branch is KEPT rather than removed as unreachable. The read
+        // above and this draw are two separate calls into the parent, and treating a
+        // clamped `stakeOut` as impossible because a view said otherwise is exactly the
+        // reasoning this codebase does not do. It is now genuinely defensive, and the
+        // refund still restores the collateral — but the genome is consumed by this
+        // point, so if it ever fires it fires as `BirthUnaffordable` too, and a reader
+        // seeing that event WITHOUT a preceding `BreedingRequested` for a later window
+        // is looking at a `stakeOut` that disagreed with `treasury()`.
         uint256 taken = parent.stakeOut(address(this), endowment, collateral);
         if (taken < endowment) {
             // Could not actually afford it after all; return the collateral.
@@ -1618,6 +2032,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                 if (!IERC20Like(collateral).transfer(address(parent), taken)) revert TransferFailed();
                 parent.fund(taken);
             }
+            emit BirthUnaffordable(parent.prophetId(), taken, endowment);
             return;
         }
 
@@ -1680,12 +2095,23 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         emit CognitionFunded(prophetId, msg.sender, msg.value);
     }
 
-    /// @dev Spend a qualifying survivor's surplus to breed it now, rather than
-    ///      waiting for the next settlement to notice it qualifies. The eligibility
-    ///      rules are identical — a human can choose the moment, never the outcome.
+    /**
+     *  Spend a qualifying survivor's surplus to breed it now, rather than waiting for
+     *  the next settlement to notice it qualifies. The eligibility rules are identical
+     *  — a human can choose the moment, never the outcome.
+     *
+     *  REVERTS ON A DUPLICATE WHERE `_requestMutation` ONLY RETURNS, and the asymmetry
+     *  is deliberate. A direct caller asked for one specific thing and should be told
+     *  it did not happen; `settleAll` is grading a whole population and must not abort
+     *  over one organism. The check is here as well as there so the revert lands
+     *  BEFORE `_requestMutation` draws the deposit — otherwise the loud refusal costs
+     *  the organism a deposit that bought nothing, which is the same bleed audit item
+     *  #56 exists to close.
+     */
     function breedProphet(uint256 prophetId) external {
         Prophet p = Prophet(payable(prophetAt(prophetId)));
         if (p.dead()) revert ProphetIsDead();
+        if (p.pendingMutationRequestId() != 0) revert Prophet.MutationInFlight();
         if (p.streak() < breedStreak || p.treasury() < _breedThreshold()) revert NotEligibleToBreed();
         _requestMutation(p);
     }
@@ -1807,8 +2233,50 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             // function exists for. Stranded cognition is NATIVE — `CognitionUnspent`
             // is a native amount and the documented fix is
             // `sweep(address(0), organism, amount)` — so the whole remedy lives in
-            // the branch above and is untouched. The native float is the operator's
-            // own money and stays uncapped.
+            // the branch above and is untouched.
+            //
+            // THE NATIVE LEG IS UNCAPPED, AND NOT BECAUSE THE NATIVE IS THE
+            // OPERATOR'S. Until 2026-09-06 the line above said it was, which
+            // contradicted `CognitionUnspent`'s own declaration ("belongs, morally, to
+            // the organism") four hundred lines up, and the organism is the one that
+            // is right. FOUR things mix in this balance and only the first is the
+            // operator's:
+            //
+            //   1. the birth float this contract endows founders and newborns from;
+            //   2. cognition deposits DRAWN FROM organisms for requests that reverted;
+            //   3. `retire` refunds whose transfer bounced;
+            //   4. the inference platform's REBATE on a non-Success request.
+            //
+            // (4) went unnamed here until 2026-09-07 and it is the DOMINANT one.
+            // Measured on Shannon: a non-Success advanced request refunds ~0.029199 STT
+            // of the 0.033 deposit, and it pays it to `createAdvancedRequest`'s
+            // `msg.sender` — this contract — not to the `Prophet` whose balance funded
+            // it. Across 240 requests that is 7.008 of the 7.3675 STT held, ~95%, and
+            // every wei of it is owed to an organism.
+            //
+            // It stays uncapped because no on-chain book separates the four.
+            // `CognitionUnspent` is an event, not a counter, and adding the counter
+            // would put an SSTORE inside `think`'s loop, which is already at the
+            // --via-ir stack limit.
+            //
+            // AND THE AUDIT TRAIL IS THINNER THAN THIS COMMENT USED TO CLAIM. It said
+            // the trail was the `CognitionUnspent` and `Retired` logs. That covers (2)
+            // and (3) and MISSES (4) ENTIRELY: `CognitionUnspent`'s three emit sites are
+            // all synchronous inside `think()`, guarding a deposit that could not be
+            // SENT, while the rebate arrives a block later through `receive()` — which
+            // emits nothing, and cannot, being reached by a bare value transfer with no
+            // call data. So no log on this contract names the 95%. Reconstructing it
+            // takes the AgentRequester's own `RequestFinalized` stream cross-referenced
+            // against this contract's balance deltas, off chain.
+            //
+            // The honest statement is therefore narrower than it was: native recovery is
+            // an OPERATOR-TRUSTED path with a PARTIAL audit trail, not a permissionless
+            // guarantee like the collateral cap below. A sweep of native that a
+            // `CognitionUnspent` names, to anywhere but that organism, is a
+            // misappropriation the chain will not stop and those logs will show. A sweep
+            // of the rebated 95% is one they will NOT show. Repay it through
+            // `topUpCognition` — payable, permissionless, and it emits `CognitionFunded`
+            // — because that leaves the trail this function structurally cannot.
             if (token == collateral) {
                 uint256 reserved = rakeAccrued + prizePool;
                 uint256 held = IERC20Like(token).balanceOf(address(this));

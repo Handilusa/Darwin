@@ -122,6 +122,14 @@ logs/
 *.log
 cadence-state.json
 
+# `monitor.ts` persists its last observation here so `--once` — the cron mode — can
+# actually fire the two stall alerts. Before it did, `seen` was process-local and both
+# alerts opened with `if (seen && ...)`, so a cadence that died three days ago produced
+# one status line, zero alerts and exit 0. State is keyed `<chainId>:<population>`, so
+# it is per-deployment and must never be committed: a stale observation from another
+# arena is a false stall alert, which is how an operator learns to ignore alerts.
+.darwin/
+
 # Temporary/runtime files
 *.tmp
 *.temp

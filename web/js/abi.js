@@ -12,11 +12,11 @@
  *  Every name and type below was checked against `contracts/src/` directly rather than
  *  trusted from the mirror:
  *
- *    - `Snapshot`'s sixteen fields and their order      Population.sol:1714-1730
+ *    - `Snapshot`'s sixteen fields and their order      Population.sol:2140-2157
  *    - `enum Belief`  = None, Up, Down, Abstain          Genome.sol:5-10
  *    - `enum Thesis`  = Unknown, Momentum, Reversion,
  *                       Breakout, Range                  Genome.sol:26-32
- *    - Population events                                 Population.sol:241-292
+ *    - Population events                                 Population.sol:308-385
  *    - Prophet events                                    Prophet.sol:122-146
  *    - `phase` is `uint8`, 0 idle / 1 thinking /
  *       2 committed                                      Population.sol:93
@@ -38,7 +38,7 @@ import { parseAbi } from "./viem.js";
  *  page without being prompted to connect anything.
  */
 export const populationAbi = parseAbi([
-  // The whole population in one call. Population.sol:1733 says in as many words that the
+  // The whole population in one call. Population.sol:2159 says in as many words that the
   // frontend renders from this, so no indexer sits between the chain and the UI.
   "function snapshot() view returns ((uint256 id,address addr,uint256 parentId,uint32 generation,uint256 treasury,uint32 streak,uint32 windowsLived,uint32 correctCount,uint32 wrongCount,uint32 abstainCount,uint64 birthWindow,uint64 deathWindow,bool dead,uint8 belief,uint8 thesis,bytes32 genomeHash)[])",
 
@@ -72,7 +72,7 @@ export const populationAbi = parseAbi([
   // The three gates on reproduction. All are `setEconomics` constants, so they are discovered once
   // with the rest of the costs of living rather than polled — but the page cannot say how close
   // anything is to breeding without them, and `streak` alone is a number with no scale.
-  // `_breedThreshold()` is `endowment + endowment * breedSurplusBps / 10_000` (Population.sol:1520),
+  // `_breedThreshold()` is `endowment + endowment * breedSurplusBps / 10_000` (Population.sol:1875),
   // and `maxPopulation` is the third gate: `hatchAll` breaks at the cap (:1490), so an organism can
   // clear both bars and still have nowhere to put a child.
   "function breedStreak() view returns (uint32)",

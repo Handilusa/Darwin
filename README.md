@@ -91,7 +91,7 @@ season that is already over.
 **One naming caution, because two things in this repo are called season zero and only one of them
 is a number.** *Season 0* below and in `web/` means the **launch run** — the first deployed
 population, the event this project is submitted around. The on-chain counter is not zero on it:
-`initialize` sets `seasonId = 1` (`Population.sol:374`) and only `endSeason` ever moves it
+`initialize` sets `seasonId = 1` (`Population.sol:602`) and only `endSeason` ever moves it
 (`seasonId += 1`), so the launch run reads `seasonId() == 1` and the arena header prints
 *season 1*. `web/js/fixture.js` said `0` until 2026-09-03 and was corrected; nothing else in the
 docs claims a value for it.
@@ -319,7 +319,7 @@ darwin/
 │  │  ├─ PushedPriceSource.sol   Two pushed prices; everything else read on-chain
 │  │  ├─ interfaces/             IArenaVenue, IDreamDEX, ISomnia, IPriceSource
 │  │  └─ venues/                 DreamDEXVenue, DirectDuelVenue — swappable settlement
-│  ├─ test/Darwin.t.sol          100 tests; mocks for AgentRequester and 0x0100
+│  ├─ test/Darwin.t.sol          152 tests; mocks for AgentRequester and 0x0100
 │  ├─ script/                    Deploy.s.sol, Seed.s.sol
 │  └─ deployments/               <chainid>.json — read by every script and the frontend
 ├─ genomes/genesis.json          The eight founders. They must DISAGREE — see the file.
@@ -355,12 +355,13 @@ npm run preview --prefix app   # then: node app/test/arena.mjs   (drives /arena 
 ## Quickstart
 
 ```bash
-git clone <this repo> && cd darwin
+git clone https://github.com/Handilusa/Darwin.git && cd Darwin
 cp .env.example .env          # fill in PRIVATE_KEY and LLM_AGENT_ID
 
-# contracts
-forge install foundry-rs/forge-std openzeppelin/openzeppelin-contracts \
-              openzeppelin/openzeppelin-contracts-upgradeable --root contracts
+# contracts. The three deps are git SUBMODULES with committed gitlinks (see
+# .gitmodules), not something to install — `forge install` would try to add them
+# a second time and fail on a fresh clone.
+git submodule update --init --recursive
 forge test --root contracts -vv
 
 # deploy + seed generation 0. The order matters twice over. `spawnGenesis` REVERTS
@@ -369,11 +370,29 @@ forge test --root contracts -vv
 # it endows each founder with native STT out of Population's balance, so the house float
 # goes in BEFORE Seed; --windows (which tops up living organisms individually) only
 # works after.
-forge script script/Deploy.s.sol --root contracts --rpc-url somnia --broadcast
+#
+# TWO THINGS BELOW ARE NOT OPTIONAL, and both are measured rather than cautious —
+# docs/RUNBOOK.md carries the evidence:
+#
+#   the subshell — `forge script` is the one forge subcommand that will NOT take
+#     `--root` from a cwd above the root: it dies with `os error 3` before it even
+#     compiles. `--root` is fine for build/test/fmt, which is why those keep it.
+#   `-g 3000`    — forge never asks the chain what a creation costs; it estimates in
+#     local revm at 200 gas/byte and applies 130%. Shannon charges 3,295. The first
+#     attempt at this deploy WITHOUT the flag mined seven transactions with
+#     `gasUsed == gasLimit` and status 0, burned 0.0966 STT, and still wrote a manifest
+#     naming seven addresses that held zero bytes of code. A gasLimit is a ceiling, not
+#     a charge — unused gas is never billed, so the flag costs nothing.
+(cd contracts && forge script script/Deploy.s.sol:Deploy --rpc-url somnia --broadcast -g 3000 -vv)
 npm install
 npm run fund -- --faucet --collateral 200 --house 3
-forge script script/Seed.s.sol --root contracts --rpc-url somnia --broadcast
+(cd contracts && forge script script/Seed.s.sol:Seed --rpc-url somnia --broadcast -g 3000 -vvv)
 npm run fund -- --windows 400
+
+# Then verify CODE landed rather than that the manifest exists — the script writes
+# contracts/deployments/50312.json either way, and a manifest of zero-code addresses is
+# poison for fund.ts, Seed, the cadence and the dashboard alike. One-liner in
+# docs/RUNBOOK.md ("Always verify code landed"); all seven must report > 0 bytes.
 
 # run it, and do not stop it
 npm run cadence
@@ -438,7 +457,7 @@ ever needs re-deriving, the roster UI is
 ## Verifying the claims yourself
 
 ```bash
-forge test --root contracts -vv     # 100 tests: death irreversible, void pays both sides 0.5,
+forge test --root contracts -vv     # 152 tests: death irreversible, void pays both sides 0.5,
                                     # abstain still pays, upgrade preserves lineage, and both
                                     # venues graded through one shared organism codebase
 npm test --prefix web               # the real renderer against a fixture, no network, no browser

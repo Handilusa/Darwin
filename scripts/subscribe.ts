@@ -73,6 +73,7 @@ import {
   shannon,
   type Manifest,
 } from "./lib/darwin.js";
+import { scanRange } from "./lib/logscan.js";
 import {
   parseAbi,
   parseAbiItem,
@@ -104,16 +105,38 @@ const precompileAbi = parseAbi([
 ]);
 
 /*
- *  The event the subscription filters on. VERIFIED against `binarySettlementEventsAbi` in
- *  `@somnia-chain/markets-sdk@0.28.1`, which states it mirrors `IBinarySettlement` exactly.
+ *  The event the subscription filters on — the FINALIZE event, T_A in
+ *  `docs/SESSION_CHECKPOINT.md` §2.8, not the redeem event a subscription would trigger on
+ *  our own redemption with.
  *
  *  `pool` is indexed, so it is topic2 — which is what lets this subscription narrow from
  *  "every settlement on DreamDEX" to "settlements of our pool", and what lets
  *  `prove-same-block.ts` correlate rather than coincide. Note the key is `marketKey`, NOT
  *  `marketId`: searching this log for a marketId will never match.
+ *
+ *  THE LAST FIELD IS A PAYOUT VECTOR, AND UNTIL 2026-09-06 THIS SAID `uint8 winningOutcome`.
+ *  That is `binarySettlementEventsAbi`'s declaration in `@somnia-chain/markets-sdk@0.28.1`,
+ *  and it is STALE against the deployed singleton — the same v2 -> v3 migration the SDK
+ *  documents on the market side ("BinaryMarket emits the payout VECTOR + denominator, not a
+ *  single indexed winner",
+ *  `node_modules/@somnia-chain/markets-sdk/src/eventsAbi.ts:403`) also landed on the
+ *  settlement contract, and
+ *  the settlement ABI was never updated to follow. Two independent checks that this shape is
+ *  the live one rather than a plausible guess:
+ *
+ *    - It hashes to `0xb1884334…0ada178`, which is the topic0 MEASURED off Shannon and
+ *      recorded in §2.8's table. The `uint8` version hashes to `0xaa0d535f…` and has never
+ *      appeared on chain. Since `toEventSelector` is the whole derivation below, a stale
+ *      signature here does not narrow the filter — it makes it match NOTHING, and a
+ *      subscription that can never fire looks exactly like one that simply has not yet.
+ *    - ABI-encoding the non-indexed tail `(uint64, address, uint256, bool, uint256[])` with a
+ *      two-outcome vector gives 256 bytes, which is §2.8's measured data size. The `uint8`
+ *      shape encodes to 160.
+ *
+ *  `IDreamDEX.sol` carries the same stale v2 declaration; nothing subscribes off that copy.
  */
 const MARKET_FINALIZED = parseAbiItem(
-  "event MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64 nonce, address collateralToken, uint256 netBacking, bool voided, uint8 winningOutcome)",
+  "event MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64 nonce, address collateralToken, uint256 netBacking, bool voided, uint256[] payoutNumerators)",
 );
 const SETTLEMENT_TOPIC0 = toEventSelector(MARKET_FINALIZED);
 
@@ -155,7 +178,17 @@ const FEE_SEPARATION = 6_000_000_000n; // 6 gwei
 const MIN_OWNER_BALANCE = 32_000_000_000_000_000_000n; // 32 SOMI
 
 const ZERO32 = "0x0000000000000000000000000000000000000000000000000000000000000000" as Hex;
-const CHUNK = 9_000n;
+
+/**
+ *  Block paging now lives in `lib/logscan.ts` — see `LOG_SPAN` there for the measurement.
+ *
+ *  This file used to own a `const CHUNK`, first as `9_000n` (nine times over dream-rpc's real
+ *  cap) and then as a corrected `1_000n` copied into three scripts. The correction was right
+ *  and still insufficient: one hardcoded number is one RPC's cap, nothing had ever executed
+ *  the paging arithmetic, and a single dropped packet threw away a 200,000-block sweep. The
+ *  shared helper shrinks on refusal, retries transient failures, and has a self-test that runs
+ *  with no chain (`npx tsx scripts/lib/logscan.ts`).
+ */
 
 type Record_ = {
   chainId: number;
@@ -209,30 +242,42 @@ async function discover(m: Manifest): Promise<void> {
   log(`scanning ${from}..${latest} for logs emitted by BinarySettlement (${m.settlement})`);
 
   const seen = new Map<Hex, { count: number; sample: Hex; topics: number; bytes: number; block: bigint }>();
-  for (let start = from; start <= latest; start += CHUNK) {
-    const end = start + CHUNK - 1n > latest ? latest : start + CHUNK - 1n;
-    const logs = await publicClient.getLogs({ address: m.settlement, fromBlock: start, toBlock: end });
-    for (const l of logs) {
-      const t0 = (l.topics[0] ?? ZERO32) as Hex;
-      const prev = seen.get(t0);
-      if (prev === undefined) {
-        seen.set(t0, {
-          count: 1,
-          sample: l.transactionHash!,
-          topics: l.topics.length,
-          bytes: (l.data.length - 2) / 2,
-          block: l.blockNumber!,
-        });
-      } else {
-        prev.count++;
-        // Keep the newest sample: recent windows are the ones worth inspecting.
-        if (l.blockNumber! >= prev.block) {
-          prev.sample = l.transactionHash!;
-          prev.block = l.blockNumber!;
+  // Deliberately UNFILTERED — no `event`, because this is a topic0 census and the whole point
+  // is to see the values we did not predict. Paging and retry belong to `scanRange`; the tally
+  // is folded in through `onPage` (never returning true — this one reads the whole range), so
+  // the accumulated return value is redundant here and ignored.
+  await scanRange(
+    from,
+    latest,
+    (pageFrom, pageTo) =>
+      publicClient.getLogs({ address: m.settlement, fromBlock: pageFrom, toBlock: pageTo }),
+    {
+      onShrink: (at, span, reason) =>
+        warn(`RPC refused the block range at ${at}; retrying with ${span}-block pages (${reason})`),
+      onPage: (logs) => {
+        for (const l of logs) {
+          const t0 = (l.topics[0] ?? ZERO32) as Hex;
+          const prev = seen.get(t0);
+          if (prev === undefined) {
+            seen.set(t0, {
+              count: 1,
+              sample: l.transactionHash!,
+              topics: l.topics.length,
+              bytes: (l.data.length - 2) / 2,
+              block: l.blockNumber!,
+            });
+          } else {
+            prev.count++;
+            // Keep the newest sample: recent windows are the ones worth inspecting.
+            if (l.blockNumber! >= prev.block) {
+              prev.sample = l.transactionHash!;
+              prev.block = l.blockNumber!;
+            }
+          }
         }
-      }
-    }
-  }
+      },
+    },
+  );
 
   console.log("");
   if (seen.size === 0) {
@@ -255,12 +300,19 @@ async function discover(m: Manifest): Promise<void> {
     console.log("=============================================================");
 
     /*
-     *  The cross-check that gives this command its remaining purpose. topic0 is now DERIVED
-     *  from the markets-sdk ABI, so the question is no longer "which one is it" but "is the
+     *  The cross-check that gives this command its remaining purpose. topic0 is DERIVED from
+     *  the signature above, so the question is no longer "which one is it" but "is the
      *  derived one real". If MarketFinalized is absent from a healthy lookback window, then
      *  either the singleton was upgraded, the manifest points at the wrong address, or the
-     *  SDK's ABI has drifted — and every one of those produces a subscription that is
+     *  signature has drifted again — and every one of those produces a subscription that is
      *  created successfully and never fires.
+     *
+     *  THIS CHECK CAUGHT NOTHING FOR A WEEK, AND IT SHOULD HAVE. The derived topic0 was
+     *  `binarySettlementEventsAbi`'s stale v2 hash, which appears in zero blocks of this
+     *  emitter's logs, so this branch would have printed FAILED on the first run — the
+     *  reason it never did is that nobody could run it: `CHUNK` was 9_000n, nine times over
+     *  dream-rpc's 1,000-block `eth_getLogs` cap, so every invocation died on its first
+     *  request. An instrument behind a broken instrument is not an instrument.
      */
     if (seen.has(SETTLEMENT_TOPIC0)) {
       const info = seen.get(SETTLEMENT_TOPIC0)!;
@@ -296,18 +348,26 @@ async function gasBasis(m: Manifest): Promise<void> {
   const from = latest - 200_000n > 0n ? latest - 200_000n : 0n;
 
   let newest: { hash: Hex; block: bigint } | undefined;
-  for (let start = from; start <= latest; start += CHUNK) {
-    const end = start + CHUNK - 1n > latest ? latest : start + CHUNK - 1n;
-    const logs = await publicClient.getLogs({
-      address: m.selectionEngine,
-      event: REACTED,
-      fromBlock: start,
-      toBlock: end,
-    });
-    for (const l of logs) {
-      if (newest === undefined || l.blockNumber! >= newest.block) {
-        newest = { hash: l.transactionHash!, block: l.blockNumber! };
-      }
+  // Forward walk over the whole range — the newest `Reacted` is what we want, and a forward
+  // scan with no early exit is the simplest thing that finds it.
+  const reacted = await scanRange(
+    from,
+    latest,
+    (pageFrom, pageTo) =>
+      publicClient.getLogs({
+        address: m.selectionEngine,
+        event: REACTED,
+        fromBlock: pageFrom,
+        toBlock: pageTo,
+      }),
+    {
+      onShrink: (at, span, reason) =>
+        warn(`RPC refused the block range at ${at}; retrying with ${span}-block pages (${reason})`),
+    },
+  );
+  for (const l of reacted) {
+    if (newest === undefined || l.blockNumber! >= newest.block) {
+      newest = { hash: l.transactionHash!, block: l.blockNumber! };
     }
   }
 
@@ -431,8 +491,10 @@ async function create(m: Manifest): Promise<void> {
   console.log("=== SUBSCRIPTION ============================================");
   console.log(`emitter          ${m.settlement}   (BinarySettlement — shared singleton)`);
   console.log(`handler          ${m.selectionEngine}`);
-  console.log(`topic0           ${topic0}   ${override ? "(override)" : "(derived from markets-sdk)"}`);
-  console.log(`  MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64, address, uint256, bool, uint8)`);
+  console.log(`topic0           ${topic0}   ${override ? "(override)" : "(derived from the measured signature)"}`);
+  console.log(
+    `  MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64, address, uint256, bool, uint256[])`,
+  );
   console.log(`topic2 (pool)    ${poolFilter === ZERO32 ? "any — see the recycling note" : poolArg}`);
   console.log(`callback         ${CALLBACK_SIG}`);
   console.log(`selector         ${selector}   ${process.env.REACTIVITY_CALLBACK_SIG ? "(from env — OVERRIDE)" : "(verified against reactivity SDK)"}`);
@@ -482,7 +544,7 @@ async function create(m: Manifest): Promise<void> {
   // knowable and let --status resolve the rest from the precompile's own logs.
   const record: Record_ = {
     chainId: m.chainId,
-    subscriptionId: subscriptionIdFrom(receipt.logs) ?? "unknown",
+    subscriptionId: subscriptionIdFrom(receipt.logs, account.address) ?? "unknown",
     topic0,
     poolFilter,
     emitter: m.settlement,
@@ -512,16 +574,43 @@ async function create(m: Manifest): Promise<void> {
 }
 
 /**
- *  Best-effort extraction of the subscription id from the creation receipt.
+ *  Extraction of the subscription id from the creation receipt.
  *
- *  The precompile has no bytecode and no documented event, so it may well emit nothing.
- *  A missing id is recorded as "unknown" rather than guessed — `--unsubscribe` takes the
- *  id as an argument precisely so a failure here is not load-bearing.
+ *  MEASURED FROM A REAL RECEIPT, because the first version of this guessed and was wrong
+ *  in a way that disabled the cross-check below. The precompile emits exactly one log:
+ *
+ *      address 0x0000000000000000000000000000000000000100
+ *      topic0  0xc338904b2660b1919e916da6c5c8a16f6410eb1930a1e41b3d22649c85041640
+ *      topic1  the SUBSCRIPTION ID          <-- here
+ *      topic2  the owner
+ *      data    448 bytes: the SubscriptionData struct, whose first word is the
+ *              subscribed event's topic0
+ *
+ *  This function used to read `data[0:32]`, so it recorded MarketFinalized's topic0 —
+ *  0xb1884334…ada178, a perfectly plausible-looking 78-digit id — as the subscription id.
+ *  `getSubscriptionInfo` then reverted on every `--status`, and the warning that fires on
+ *  that revert is the same one a genuinely unsubscribed subscription produces. So the check
+ *  that exists to catch a replaced or torn-down subscription cried wolf 100% of the time
+ *  and could never have caught anything. Verified against tx
+ *  0x945feb5e9c5e1adde6d756c9f2ab3c90c1c9cd6740c37ef85eaf97d3c2cbfb72: topic1 is 0xfc149e
+ *  = 16520350, and `getSubscriptionInfo(16520350)` returns this deployment's real emitter,
+ *  handler and selector.
+ *
+ *  The owner in topic2 is asserted rather than trusted: a log from this precompile whose
+ *  owner is not the signer is not this subscription's creation event, and taking its topic1
+ *  would record someone else's id.
  */
-function subscriptionIdFrom(logs: readonly { address: string; data: string }[]): string | undefined {
+function subscriptionIdFrom(
+  logs: readonly { address: string; topics?: readonly string[] }[],
+  owner: Address,
+): string | undefined {
+  const ownerWord = padHex(owner.toLowerCase() as Hex, { size: 32 });
   for (const l of logs) {
     if (l.address.toLowerCase() !== REACTIVITY.toLowerCase()) continue;
-    if (l.data.length >= 66) return BigInt(`0x${l.data.slice(2, 66)}`).toString();
+    const topics = l.topics ?? [];
+    if (topics.length < 3) continue;
+    if ((topics[2] ?? "").toLowerCase() !== ownerWord) continue;
+    return BigInt(topics[1] as Hex).toString();
   }
   return undefined;
 }

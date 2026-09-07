@@ -583,12 +583,12 @@ established by reading code, not inferred from the spec, and each names what est
 | # | Finding | Established by | Resolved in |
 |---|---|---|---|
 | F1 | **`maxPopulation` is a lifetime birth cap, not a concurrent-population cap.** With 8 founders and `maxPopulation = 24`, only 16 further organisms can EVER exist. After that the generation counter freezes and `enter` reverts permanently while attrition empties the arena. | `Population.sol:327` gates on `prophets.length`; `:337` only pushes; `:742` makes ids array indices so `prophets` can never be compacted; `Prophet.die` (`:430`) only sets a flag | **new Task 2A**, below |
-| F2 | **An entrant has no way to get capital back.** `stakeOut` is the only collateral exit and is `onlyPopulation alive`; `endSeason` pays the top three only. A 4th-place survivor is confiscated in full, which contradicts "zero entry fee". | `Prophet.sol:270`; Task 4's `endSeason`; no withdrawal exists among `Prophet`'s externals | Task 2, new Step 7 (`retire`) |
+| F2 | **An entrant has no way to get capital back.** `stakeOut` is the only collateral exit and is `onlyPopulation alive`; `endSeason` pays the top three only. A 4th-place survivor is confiscated in full, which contradicts "zero entry fee". | `Prophet.sol:391`; Task 4's `endSeason`; no withdrawal exists among `Prophet`'s externals | Task 2, new Step 7 (`retire`) |
 | F3 | **Breeding inference is still house-paid**, so §7's "the protocol's only recurring cost is cadence gas" stays false and the STT bill still grows with evolutionary success — the exact dynamic §2 says the redesign removes. | Task 3 Step 4 leaves `_requestMutation` (`Population.sol:645`) paying from Population's balance | Task 3, Step 4 (rewritten) |
 | F4 | **The prize pool is fed only by deaths.** Task 4 books 100% of rent as `rakeAccrued`, but §8 promises a pool fed by residues **and a share of the rake** — so in a healthy season the pot is near-empty exactly when the payout event matters. | Task 4 Step 5: `rakeAccrued += charged`, no split | Task 4, Steps 3 and 5 (`prizeShareBps`) |
 | F5 | **The entry floor is not ante-aware.** `minEndowment = 10 tUSDC` while the ante doubles past 16 tUSDC by level 6, so the contract would take money from an entrant who cannot post the current ante. | Task 2 Step 6 checks only `minEndowment`; Task 4's `ante()` schedule | Task 4, Step 6 (`enter` hardened) |
 | F6 | **The default season outlives its population.** `seasonWindows = 576` with `levelWindows = 24` puts the ante above a 10 tUSDC treasury by window ~200–344; the last ~300 windows would be an empty arena with a leaderboard. | Task 4 Step 3 defaults, against `endowment = 10_000_000` and `metabolicCost = 50_000` (`Population.initialize`) | Task 4, Step 3 (`levelWindows = 72`) |
-| F7 | **The failed-request leak is now an entrant's STT**, not house money moved between its own pockets — so the disclosure must change even though the mechanism does not. | Task 3 Step 4's note; `Prophet.sol:526` shows the *successful*-request rebate already lands on the organism | Task 3, Step 4 (`CognitionUnspent`) |
+| F7 | **The failed-request leak is now an entrant's STT**, not house money moved between its own pockets — so the disclosure must change even though the mechanism does not. | Task 3 Step 4's note; `Prophet.sol:755` shows the *successful*-request rebate already lands on the organism | Task 3, Step 4 (`CognitionUnspent`) |
 | F8 | **`rakeBps` is dead storage.** It is initialized, settable and publicly readable, and never read by any logic — so the rake on winnings that §6 lists as revenue line #2 does not exist. Same fingerprint as F2's unused `NotEntrant`. | grep of this plan: `rakeBps` appears at Steps 3 and 6 and in no expression | Task 4, Step 5 (skim on profit) |
 
 Three of these — F1, F2, F8 — are capabilities the business plan asserts and the code does not
@@ -620,7 +620,7 @@ and the loops read.
 
 **Where this review did NOT find a problem**, recorded so it is not re-litigated:
 
-- `_hatch` charges the **parent** for the child's endowment (`Population.sol:696`:
+- `_hatch` charges the **parent** for the child's endowment (`Population.sol:2028`:
   `parent.stakeOut(address(this), endowment, collateral)`, with a refund path when the parent
   cannot afford it). Collateral is conserved, and Task 4's `rakeAccrued` therefore does not
   silently fund births. An earlier draft of this review claimed it did; that claim is withdrawn.
@@ -1117,7 +1117,7 @@ function test_retire_isEntrantOnly() public {
     population.retire(id);
 
     // And an entrant cannot retire a house organism. `house` is hoisted out of the
-    // call because a view read AFTER vm.prank consumes the prank — Darwin.t.sol:172.
+    // call because a view read AFTER vm.prank consumes the prank — Darwin.t.sol:714.
     _seed(1);
     uint256 house = population.prophetCount();
     vm.prank(alice);
@@ -1385,7 +1385,7 @@ Three things to notice, because each is a decision rather than an implementation
 - **The organism dies; it is not un-spawned.** `prophets` stays append-only and the lineage keeps
   the record, which is the whole point of Task 2A's split. A retired organism's descendants and
   its generation number remain part of the run's history.
-- **`p.dead()` is checked explicitly** even though `die` is idempotent (`Prophet.sol:431`:
+- **`p.dead()` is checked explicitly** even though `die` is idempotent (`Prophet.sol:613`:
   `if (dead) return;`). Without the check, a second `retire` would underflow `aliveCount`, and
   `stakeOut`'s `alive` modifier would revert with an error that says nothing about why.
 - **A reaped organism's residue is NOT returned here.** `settleAll` kills starvers, and
@@ -1493,7 +1493,7 @@ This is the change that removes the cost centre. `Prophet` already has `receive(
 > **2. `enter` is ENTRANT-funded and `payable`. The house does not grant cognition.**
 > The plan has `_spawn` endow every organism from `Population`'s float. For `enter` that is an unbounded free-inference faucet: entry is free and `retire` refunds the collateral, so enter → retire → repeat walks off with `cognitionEndowment` of the operator's STT per cycle, converted into LLM calls. So `enter(string genome, uint256 endowmentAmount)` is **`payable`** and reverts **`CognitionTooSmall()`** below the floor; every wei of `msg.value` is forwarded to the organism, the excess emitting `CognitionFunded`. `spawnGenesis` (owner-only) and `_hatch` (earned over four correct windows) stay house-funded because neither is farmable.
 >
-> **The check order inside `enter` is `EndowmentTooSmall` (`Population.sol:484`) then `CognitionTooSmall` (`:485`)**, collateral before native.
+> **The check order inside `enter` is `EndowmentTooSmall` (`Population.sol:989`) then `CognitionTooSmall` (`:999`)**, collateral before native.
 >
 > **3. `retire` returns unspent cognition**, with the native send placed after every state write, and guarded by `NotEntrant` / `ProphetIsDead` / `PositionStillOpen`. `Retired` carries four fields.
 >
@@ -3118,6 +3118,6 @@ npm run prove   # AFTER the Season 0 deploy — see below
 
 - **`fundProphet` stays permissionless.** With a flat escalating ante, funding an organism no longer buys immortality — the exploit's payoff is gone, so patching it is unnecessary. It remains what its comment says: a spectator putting backing behind an organism they believe in.
 - **~~`_requestMutation` keeps paying from Population.~~** **Reversed in Task 3** — it draws from the parent, like `think`. Breeding *is* rare relative to thinking, but that is what makes the subsidy affordable rather than what makes it right: a house-paid inference of any kind puts the recurring bill back on the growth curve, which is the dynamic this rework exists to remove. See Task 3's correction banner and the F3 row above.
-- **`Prophet.sol:209`'s hard-coded `agree >= 2`** is independent of `threshold`, so raising `subcommitteeSize` does not raise the consensus floor. Out of scope; do not let it be forgotten.
+- **`Prophet.sol:280`'s hard-coded `agree >= 2`** is independent of `threshold`, so raising `subcommitteeSize` does not raise the consensus floor. Out of scope; do not let it be forgotten.
 - **The `think` refund leak** (Task 3, Step 4): up to one deposit per failed request stays in Population. Bounded, observable via `ThinkFailed`, and not worth the stack pressure to fix inside that loop.
 - **`web/` frontend.** Task #6 in the tracker, not in this plan. It is the largest schedule risk after this rework and a running population with a thin UI beats a polished UI over a dead one.

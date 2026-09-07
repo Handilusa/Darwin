@@ -31,7 +31,7 @@ forge fmt --root contracts     # 120 cols, 4-space, no bracket spacing
 ```
 
 Single test / subset (all Solidity tests live in `contracts/test/Darwin.t.sol`, one contract
-`DarwinTest`, **124 tests as of 2026-09-05** — 124 `function test` declarations in the one file,
+`DarwinTest`, **152 tests as of 2026-09-07** — 152 `function test` declarations in the one file,
 none of them fuzzed, so the suite count and the declaration count are the same number):
 
 ```bash
@@ -76,33 +76,53 @@ Deploy and seed generation 0:
 # against live Shannon state, so it catches wrong addresses, preflight reverts and EVM-spec
 # mismatches for free. _writeManifest is guarded on vm.isContext(ScriptDryRun), so a dry run
 # will NOT write deployments/<chainid>.json — nothing downstream can be fooled by it.
-forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia -vv
+#
+# THE SUBSHELL IS NOT STYLE. `forge script` is the one forge subcommand that will NOT take
+# `--root` from a cwd above the root — see the paragraph under this block. `-g 3000` is not
+# optional either; `docs/RUNBOOK.md` carries what omitting it cost.
+(cd contracts && forge script script/Deploy.s.sol:Deploy --rpc-url somnia -g 3000 -vv)
 
-forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia --broadcast
+(cd contracts && forge script script/Deploy.s.sol:Deploy --rpc-url somnia -g 3000 --broadcast)
 
 # THE TREASURY COMES BEFORE THE FOUNDERS, and `spawnGenesis` enforces it rather than
 # defaulting: it reverts `NoGenesisTreasury` while `genesisTreasury` is zero, because a
 # founder minted against `address(0)` would be permanently ownerless AND permanently
 # unretirable (`retire` needs `msg.sender == entrant`) with no repair path. `onlyOwner`,
 # once ever — a second call reverts `TreasuryAlreadySet`, and there is no setter.
-cast send $POPULATION 'deployGenesisTreasury()' --rpc-url somnia --private-key $PK
+#
+# DO NOT CALL IT BY HAND. `Seed.s.sol:51` calls it itself, one line before `spawnGenesis`,
+# in the same broadcast — so a manual `cast send` first is not belt-and-braces, it makes
+# the seed script permanently unrunnable (`TreasuryAlreadySet` with no setter to undo it).
+# `NoGenesisTreasury` is only reachable by calling `spawnGenesis` outside that script.
 
 # ORDER IS LOAD-BEARING. `spawnGenesis` is payable and `_spawn` endows each newborn out of
 # `address(this).balance`, so the house float must already be there when Seed runs — 8
 # founders x 0.33 STT = 2.64. Fund it FIRST and a Seed script that attaches no value of its
 # own still produces a generation 0 that can think.
 npm run fund -- --faucet --collateral 200 --house 3
-forge script script/Seed.s.sol:Seed --root contracts --rpc-url somnia --broadcast
+(cd contracts && forge script script/Seed.s.sol:Seed --rpc-url somnia -g 3000 --broadcast)
 
 # And --windows only AFTER seeding: it tops up living organisms one by one, so before
 # generation 0 exists there is nobody to top up and it warns instead of acting.
 npm run fund -- --windows 400
 ```
 
-The deploy was dry-run clean against live Shannon on 2026-08-29: **~11.9M gas, ~0.143 STT**. Note the
-script path needs the `:Deploy` suffix and must be run with the Foundry root as cwd or via `--root`;
-`forge script script/Deploy.s.sol --root contracts` from `darwin/` fails with *"contract source info
-format must be `<path>:<contractname>`"*, which is a path-resolution error, not a code error.
+The deploy was dry-run clean against live Shannon on 2026-08-29: **~11.9M gas, ~0.143 STT**.
+
+**`forge script` will not accept `--root`, and the reason this took two sessions to notice is that
+the two failures look like one.** Both were re-measured on 2026-09-07, from `darwin/`:
+
+| Command | What you get |
+|---|---|
+| `forge script script/Deploy.s.sol --root contracts` | *"contract source info format must be `<path>:<contractname>`"* |
+| `forge script script/Deploy.s.sol:Deploy --root contracts` | *"no such path (os error 3)"* — never compiles |
+
+Argument parsing runs before path resolution, so the missing `:Deploy` suffix masks the second
+failure entirely. Adding the suffix — which is what this paragraph used to tell you to do — does not
+fix the command, it just advances it to the next error. **`--root` is fine for `build`, `test`,
+`fmt` and `inspect`, which is why those keep it above; for `script` the root must be the cwd.** Hence
+the `(cd contracts && ...)` subshells. `docs/RUNBOOK.md`'s *"`forge script` and the working
+directory"* is the authority and carries the measurement table.
 
 Operations (viem + tsx, no Hardhat on this path):
 
@@ -388,7 +408,7 @@ EvmError: NotActivated  →  Error: script failed: <empty revert data>
 which names neither PUSH0 nor `evm_version`. **`--broadcast` simulates before sending, so this was
 never dry-run-only — the deploy itself would have failed at the first command.** The same script
 unchanged under `shanghai` simulates the full deploy clean. Tests: 56/56 under both — that is the
-suite **as it stood on 2026-08-29**, not a current count (it is 124 now), and the figure is left
+suite **as it stood on 2026-08-29**, not a current count (it is 152 now), and the figure is left
 alone deliberately: the claim is that one identical suite passed under both EVM versions, and
 substituting today's number would assert a `paris` run that never happened. Storage layout:
 byte-identical (`evm_version` does not affect it).

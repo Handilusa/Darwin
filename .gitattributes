@@ -1,0 +1,21 @@
+# Normalise to LF in the repository and ON CHECKOUT, on every platform.
+#
+# `text=auto` alone is not enough here. It normalises what gets STORED, but a judge
+# on Windows with Git for Windows' default `core.autocrlf=true` still gets CRLF in
+# their working tree — and `forge fmt --check`, which `npm run gate` runs, then flags
+# 16 files and the whole gate exits 1. That reads as "this project is broken" when the
+# only thing wrong is a line ending. `eol=lf` pins the checkout too, so the gate gives
+# the same answer on Linux, macOS and Windows.
+#
+# Measured 2026-09-07: this machine has `core.autocrlf=true` and the repo had no
+# .gitattributes, so the Windows-judge path was a real failure, not a hypothetical.
+* text=auto eol=lf
+
+# Binary — never touch these, and never try to diff them as text.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.woff  binary
+*.woff2 binary

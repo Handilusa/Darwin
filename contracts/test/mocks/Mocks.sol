@@ -31,10 +31,47 @@ contract MockERC20 {
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
 
+    /**
+     *  Refuse transfers FROM one address, optionally after letting `grace` of them
+     *  through first.
+     *
+     *  Per-holder rather than a blanket `paused` flag because the interesting case is
+     *  ONE holder failing while the rest of the population settles normally — a halted
+     *  cadence and a deferred single reap are indistinguishable if everybody fails at
+     *  once.
+     *
+     *  THE `grace` COUNTER IS SYNTHETIC AND THE TEST THAT USES IT SAYS SO. A real
+     *  pausable token cannot start refusing between two transfers inside one
+     *  transaction, so this does not model a reachable Shannon state; it exists to make
+     *  a handler that is otherwise unprovable actually watchable. Same precedent as
+     *  `GenesisTreasury`'s `ZeroArena` check, which was decorative until a test
+     *  constructed the argument the factory can never produce.
+     */
+    mapping(address => bool) public frozen;
+    mapping(address => uint256) public transferGrace;
+
     constructor(string memory n, string memory s, uint8 d) {
         name = n;
         symbol = s;
         decimals = d;
+    }
+
+    function setFrozen(address who, bool on) external {
+        frozen[who] = on;
+        transferGrace[who] = 0;
+    }
+
+    /// @dev Freeze `who`, but let its next `grace` transfers succeed first.
+    function setFrozenAfter(address who, uint256 grace) external {
+        frozen[who] = true;
+        transferGrace[who] = grace;
+    }
+
+    function _checkFrozen(address from) internal {
+        if (!frozen[from]) return;
+        uint256 g = transferGrace[from];
+        if (g == 0) revert("frozen");
+        transferGrace[from] = g - 1;
     }
 
     function mint(address to, uint256 amount) external {
@@ -47,13 +84,20 @@ contract MockERC20 {
         return true;
     }
 
+    /// @dev REVERTS rather than returning false when frozen. Both are real ERC-20
+    ///      behaviours and `Prophet.stakeOut` already checks the boolean
+    ///      (`if (!transfer(...)) revert TransferFailed()`), so a `false` would be
+    ///      converted into a revert one frame up and could not tell whether the revert
+    ///      is caught. Reverting here exercises the raw propagation path instead.
     function transfer(address to, uint256 amount) external returns (bool) {
+        _checkFrozen(msg.sender);
         balanceOf[msg.sender] -= amount;
         balanceOf[to] += amount;
         return true;
     }
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
+        _checkFrozen(from);
         if (from != msg.sender) {
             uint256 a = allowance[from][msg.sender];
             if (a != type(uint256).max) allowance[from][msg.sender] = a - amount;
@@ -312,7 +356,17 @@ contract MockAgentRequester {
     }
 
     uint256 public nextId = 1;
-    uint256 public depositFloor = 0.03 ether;
+    /// @dev PER VALIDATOR, because `getAdvancedRequestDeposit` multiplies by the
+    ///      subcommittee size below. 0.01 ether is the floor MEASURED on Shannon, and
+    ///      it is measured rather than guessed: the real `AgentRequester` returns
+    ///      exactly `0.01 STT * subcommitteeSize`, linearly, with no fixed component.
+    ///      Until 2026-09-06 this was 0.03, which made `requestDeposit()` report 0.093
+    ///      against a live 0.033 — a 2.8x overstatement, in the one direction that
+    ///      hides a problem: every cognition-budget test was passing against a bill
+    ///      almost three times the real one, so a genuinely underfunded organism would
+    ///      have looked fine here. A mock that is wrong in the SAFE direction is worse
+    ///      than one that is wrong loudly.
+    uint256 public depositFloor = 0.01 ether;
     mapping(uint256 => Pending) public pending;
 
     /// @dev Set to make every `createAdvancedRequest` revert, proving one organism's

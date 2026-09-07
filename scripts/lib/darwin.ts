@@ -309,6 +309,16 @@ export const selectionEngineAbi = parseAbi([
   "function fallbackEnabled() view returns (bool)",
   "function population() view returns (address)",
   "function settlementEmitter() view returns (address)",
+  // `poke` is gated on the ENGINE's owner (`SelectionEngine.sol:47`, checked at `:119`),
+  // NOT on `Population.owner`. Without this fragment a preflight could confirm the
+  // signer owns the population and still be unable to say whether it can call `poke()`
+  // at all — and on a deployment where the two differ, that gap is silent in the worst
+  // possible way: `_handle` wraps `try population.settleAll()` and catches, so a
+  // `NotAuthorized` poke lands as a SUCCESSFUL RECEIPT over an unsettled window, with
+  // only a `ReactionFailed` log to say otherwise. `Deploy.s.sol` defaults
+  // `ENGINE_OWNER` to `UPDATER`, so they normally agree; this fragment is what lets a
+  // script prove it rather than assume it.
+  "function owner() view returns (address)",
   "event Reacted(address indexed emitter, uint64 indexed window, uint256 blockNumber, bytes32 parentHash, bool viaReactivity)",
   "event ReactionFailed(address indexed emitter, uint256 blockNumber, bytes reason)",
   "error FallbackClosed()",

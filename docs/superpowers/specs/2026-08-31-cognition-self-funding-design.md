@@ -76,7 +76,7 @@ function _hatch(Prophet parent) internal {
     if (bytes(childGenome).length == 0) return;
 
     // NATIVE BEFORE COLLATERAL, and the order is load-bearing. `drawCognition` is
-    // the only all-or-nothing draw of the two (`Prophet.sol:610` returns 0 rather
+    // the only all-or-nothing draw of the two (`Prophet.sol:691` returns 0 rather
     // than sending a partial amount), so taking it first means the one shortfall
     // worth worrying about strands nothing: the collateral has not moved yet.
     //
@@ -292,8 +292,8 @@ fail is not evidence — and each must be confirmed to fail by perturbation, not
 Checked by arithmetic against the harness's own parameters, to be confirmed by running.
 
 **The deposit in tests is not the deposit in production, and the spec's first draft got this
-wrong by 3×.** `Mocks.sol:303` sets `depositFloor = 0.03 ether` and returns `depositFloor ×
-subcommitteeSize` from `getAdvancedRequestDeposit`, so in the suite:
+wrong by 3×.** `Mocks.sol:369` set `depositFloor = 0.03 ether` at the time of this spec and returns
+`depositFloor × subcommitteeSize` from `getAdvancedRequestDeposit`, so in the suite:
 
 ```
 requestDeposit() = (0.03 x 3) + (0.001 x 3) = 0.093 STT per inference
@@ -397,7 +397,7 @@ folded in above. What follows is what produced **no** finding.
 - **Gas is not the binding constraint.** `_spawn` deploys a `BeaconProxy` per birth, which
   dominates; the three added external calls are noise beside it, and `maxPopulation = 24` already
   sets the ceiling for a worst-case `hatchAll`. No change to the bound.
-- **`Prophet.fund` is `onlyPopulation` with no `alive` modifier** (`Prophet.sol:536`), so the
+- **`Prophet.fund` is `onlyPopulation` with no `alive` modifier** (`Prophet.sol:664`), so the
   refund branch is callable exactly where it needs to be.
 - **Reverts inside `_spawn` are safe by construction.** If anything past the two draws reverts,
   the whole `hatchAll` transaction rolls back and the parent's payment rolls back with it. Value

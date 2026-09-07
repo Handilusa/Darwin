@@ -139,7 +139,7 @@ requestId 12650214, agentId matches). It decodes as
 
 1. `inferString(string prompt, string system, bool chainOfThought, string[] allowedValues)`
    is correct as declared — **arg1 is a system prompt, not a model name**, which is exactly
-   what `Population.think` passes (`p.systemPrompt()`, `Population.sol:1084`). This was the
+   what `Population.think` passes (`p.systemPrompt()`, `Population.sol:1501`). This was the
    one thing in this segment that looked like it might be a live bug in our code. It is not.
 2. `abi.encodeCall(ILLMAgent.inferString, ...)` matches the live payload encoding: the
    selector computed from our declaration, `0xfe7ca098`, is the selector live requests
@@ -239,6 +239,18 @@ Fixed this segment; `npm run typecheck` clean. Changes to `measure-fee.ts`:
 filter on `eth_getLogs`**. A filtered query returns the unfiltered set, so two different
 topic0s produced byte-identical output in the first attempt. Filter client-side. (It also
 caps `eth_getLogs` at a 1,000-block range.)
+
+**Status of both quirks, 2026-09-06.** The 1,000-block cap is measured, not inferred: a ladder
+probe with a negative control accepted spans of 999 and 1000 and was refused at 4999, 8999 and
+9999 with `block range exceeds 1000`. Every `eth_getLogs` call site in `scripts/` now pages
+through `scripts/lib/logscan.ts`, which shrinks the span on refusal instead of hardcoding one
+RPC's cap and retries transient failures rather than throwing a whole sweep away; its paging
+arithmetic and retry classifier are covered by a chainless self-test
+(`npx tsx scripts/lib/logscan.ts`, 25 checks, 6 of them controls). What has **not** happened is
+an end-to-end scan against Shannon: `contracts/deployments/` is empty, so `manifest()` throws
+before the first request and no page of a real filtered query has ever been fetched by these
+scripts. The client-side `topics[0]` re-check is therefore still carried on trust from the sweep
+above — `logscan.ts` changes paging only, and every call site keeps its own client-side filter.
 
 With client-side filtering and every print asserting `l.topics[0]`:
 
@@ -482,7 +494,9 @@ makes dry-running safe to repeat — the point, since it is the cheapest check a
 
 Also recorded: the script argument needs the `:Deploy` suffix, and
 `forge script script/Deploy.s.sol --root contracts` from `darwin/` fails with *"contract
-source info format must be `<path>:<contractname>`"* — path resolution, not code.
+source info format must be `<path>:<contractname>`"* — path resolution, not code. **What was
+NOT recorded that day, and should have been: adding the suffix does not make the command work.
+`--root` is unusable on `forge script` entirely. See the "two path traps" note in §6.**
 
 ### 2.13 The inference deposit is consumed, not refunded — the STT budget is real
 
@@ -538,7 +552,7 @@ the floor is a per-validator price, not a fixed fee, and it **corroborates §2.1
 the 0.0309 STT that real payers spend is `3 x (0.01 + 0.0003)`.
 
 **2. The cost is a request count, and the floor dominates it.** One request per alive organism
-per window (`Population.sol:1177`, `dep = requestDeposit()` inside the loop), so:
+per window (`Population.sol:1482`, `dep = requestDeposit()` inside the loop), so:
 
 > cost = `subcommitteeSize x (0.01 + perAgentReward) x aliveCount x windows`
 
@@ -691,8 +705,10 @@ the only unverified action left in this list, and only because it needs a funded
 # 0. dry-run first, ALWAYS. Identical to step 2 minus --broadcast. Executes the entire
 #    script against live Shannon state; _writeManifest is guarded on ScriptDryRun so it
 #    cannot poison deployments/50312.json. Last run 2026-08-29: clean, ~11.9M gas.
-LLM_AGENT_ID=12847293847561029384 SOMNIA_RPC_URL=https://dream-rpc.somnia.network \
-  forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia -vv
+#    The subshell and -g 3000 are both mandatory — see the two path traps below and
+#    docs/RUNBOOK.md's "-g 3000 is mandatory, on BOTH scripts".
+(cd contracts && LLM_AGENT_ID=12847293847561029384 SOMNIA_RPC_URL=https://dream-rpc.somnia.network \
+  forge script script/Deploy.s.sol:Deploy --rpc-url somnia -g 3000 -vv)
 
 # 1. storage layout — DONE 2026-08-29, zero discrepancies, re-verified after the
 #    evm_version raise. Re-run only if src/*.sol changes. Needs --extra-output.
@@ -702,8 +718,8 @@ forge inspect Prophet    storage-layout --root contracts
 forge inspect Population storage-layout --root contracts
 
 # 2. deploy. Needs ~0.15 STT for gas; note the :Deploy suffix. Writes deployments/50312.json.
-LLM_AGENT_ID=12847293847561029384 \
-  forge script script/Deploy.s.sol:Deploy --root contracts --rpc-url somnia --broadcast
+(cd contracts && LLM_AGENT_ID=12847293847561029384 \
+  forge script script/Deploy.s.sol:Deploy --rpc-url somnia -g 3000 --broadcast)
 
 # 3. collateral, AND the genesis birth float in the same call. `spawnGenesis` is payable and
 #    `_spawn` endows each founder out of `address(this).balance`, so the STT has to already be
@@ -718,8 +734,8 @@ npm run fund -- --faucet --collateral 200 --house 3
 
 # 4. seed the 8 founding organisms. MUST come before step 5, which can only fund organisms
 #    that already exist — see the note below.
-LLM_AGENT_ID=12847293847561029384 \
-  forge script script/Seed.s.sol:Seed --root contracts --rpc-url somnia --broadcast
+(cd contracts && LLM_AGENT_ID=12847293847561029384 \
+  forge script script/Seed.s.sol:Seed --rpc-url somnia -g 3000 --broadcast)
 
 # 5. inference runway. 0.033 STT/organism/window (§2.14), so 8 organisms x 400 windows = 106 STT.
 #    Fund what you actually hold — this tops up, so it is safe to run repeatedly.
@@ -750,10 +766,15 @@ idempotent and an organism already flush is skipped instead of being handed STT 
 `retire` can get back out. It is also the step that spends the most STT of any here, so read
 what it prints before letting it run.
 
-Two path traps, both hit for real: the script argument needs the **`:Deploy`** suffix, and
-`forge script script/Deploy.s.sol --root contracts` run from `darwin/` fails with *"contract
-source info format must be `<path>:<contractname>`"* — a path-resolution error wearing the
-costume of a code error.
+Two path traps, both hit for real, and the first hides the second. The script argument needs the
+**`:Deploy`** suffix — `forge script script/Deploy.s.sol --root contracts` run from `darwin/` fails
+with *"contract source info format must be `<path>:<contractname>`"*, a path-resolution error wearing
+the costume of a code error. **But adding the suffix does not fix the command.** Re-measured
+2026-09-07: `forge script script/Deploy.s.sol:Deploy --root contracts` from `darwin/` then dies with
+*"(os error 3)"* before it compiles anything. Argument parsing runs ahead of path resolution, so trap
+one masks trap two, and the real rule is that **`forge script` does not accept `--root` at all** —
+unlike `build`, `test`, `fmt` and `inspect`, which is why step 1 above still uses it. The root must
+be the cwd, hence the `(cd contracts && ...)` subshells.
 
 Note for step 6: `subscribe.ts --discover` measures topic0 from chain, but its tally cannot
 distinguish finalize from redeem — and it would rank **redeem higher by frequency** (281 vs
@@ -1430,7 +1451,7 @@ season-close work (audit item C2) added `SeasonEnded` / `SeasonPrizePaid` to the
 compressed the demo season so a judge can watch one close, so the block above should be read as a
 dated record, not as a description of the tree. What changed, all re-measured today rather than
 inferred: `seasonWindows` is **42**, so `windowCount: 41n` is **41/42** into the first season and the
-header renders `season 1 · 41 / 42` (`render.js:250` prints the progress with spaces around the
+header renders `season 1 · 41 / 42` (`render.js:287` prints the progress with spaces around the
 slash); the suite is **189 checks over 167 `assert()` call sites**, not 149; the renderer is driven
 **50 call sites / 313 executed calls**, not 36; and the 44 scripted-season sub-count is intact but
 its region now ends at **`smoke.mjs:462-611`**, the boundary assertions being `season plays 4 frames`
@@ -1608,17 +1629,17 @@ declared only `ThinkFailed`. The three are a deliberate set (`CLAUDE.md`: *"one 
 halt the population"*), and a swallowed failure leaves **no state trace at all** — no counter moves,
 nothing differs — so only the caller holding the receipt can ever see one. `monitor.ts` polls state and
 is therefore incapable by construction. `SettleFailed` and `CommitFailed` were added and are consumed
-by a new helper, `reportStragglers()` (`cadence.ts:448`), hooked behind think (`:237`), commit
-(`:278`) and settle (`:381`). Filtering by emitter works on **both** settle branches because `poke()`
+by a new helper, `reportStragglers()` (`cadence.ts:768`), hooked behind think (`:283`), commit
+(`:395`) and settle (`:570`). Filtering by emitter works on **both** settle branches because `poke()`
 calls `settleAll` internally, so Population's own logs are in the receipt either way — the comment at
-`cadence.ts:379-380` says so at the site. `SettleFailed` now states explicitly that the position is
+`cadence.ts:566-569` says so at the site. `SettleFailed` now states explicitly that the position is
 **still open with the ante escrowed**, which is half of N10 made visible.
 
 ### N13 — two dead grants, pinned with a test instead of deleted
 
 `Prophet.grantPopulation`'s two grants (infinite ERC-20 allowance plus 6909 operator to `Population`,
 from every organism) are used by nobody, and they contradict the rule the repo writes down at
-`Population.sol:1190`. `Population` reaches `transferFrom` at exactly `:632` and `:1459`, both times
+`Population.sol:924`. `Population` reaches `transferFrom` at exactly `:1000` and `:1171`, both times
 from `msg.sender`, and never touches `IOutcomeToken6909` — settlement is a **push** from the organism
 because the 6909 surface has no `transferFrom`.
 
@@ -1636,12 +1657,14 @@ permissionless and un-phase-gated. So an organism could be asked at one price an
 Fixed as the finding itself asked: **photograph the ante, do not add a phase guard.**
 
 - `Population.sol:211` — `uint256 public windowAnte;`, with its rationale in the block above it.
-- `Population.sol:235` — `uint256[8] private __gap;`. It was `[9]` at the time of this entry;
-  `genesisTreasury` (slot 38, `:233`) took another one later the same day. **`windowAnte` is slot 37**, envelope still ends at 46. Re-derived from the compiler, and `STORAGE.md`'s
-  tables, status block and changelog all carry it.
-- `Population.sol:1062` — `windowAnte = ante();` inside `think`, with `:1054-1057` explaining that this
+- `Population.sol:302` — `__gap`. It was `uint256[9]` before this entry and `[8]` after it;
+  `genesisTreasury` (slot 38, `:233`) took another one later the same day and the
+  `windowVenue`/`windowRakeBps` pair took one more, so the declaration reads `uint256[7]` today.
+  **`windowAnte` is slot 37**, envelope still ends at 46. Re-derived from the compiler, and
+  `STORAGE.md`'s tables, status block and changelog all carry it.
+- `Population.sol:1466` — `windowAnte = ante();` inside `think`, with `:1456-1461` explaining that this
   is the last instant at which nobody else can change the answer.
-- `Population.sol:1229-1230` — `uint256 want = windowAnte; if (want == 0) want = ante();` in `_pair`.
+- `Population.sol:1646-1647` — `uint256 want = windowAnte; if (want == 0) want = ante();` in `_pair`.
   The fallback is not paranoia: a proxy upgraded mid-window has storage predating the field, and one
   window priced live beats a whole population staking zero.
 
@@ -1816,7 +1839,7 @@ stop rendering as `None`.
   would never emit. The lever is **one owner transaction, no redeploy**: `setSeason` does not move
   `seasonStartWindow`, so lowering `seasonWindows` shortens the season already in progress.
 
-**Small items the user owns ([TUYO] in the audit):** `Deploy.s.sol:249` documents
+**Small items the user owns ([TUYO] in the audit):** `Deploy.s.sol:508` documents
 `forge script script/Seed.s.sol --broadcast` **without the `:Seed` suffix** (N3), and `.env.example`
 does not document `MONITOR_SEASON_GRACE` (`monitor.ts:98`, default 1) (N4). Both files that need the
 first fix — `Seed.s.sol` and `Deploy.s.sol` — are **permission-denied to Claude sessions** in this

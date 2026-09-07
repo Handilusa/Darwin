@@ -51,6 +51,7 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { KEYS, addressUrl, remember } from "../../../web/config.js";
 import { collateralAbi, populationAbi, populationReadAbi } from "../lib/abi.js";
 import { usePopulation } from "../lib/population.js";
+import { fmtOutflow, fmtUnits, minSentence } from "../lib/quote.js";
 import { readFailure, readReport } from "../lib/reads.js";
 import { shannon } from "../lib/wagmi.js";
 import { useReveal } from "../motion/hooks.js";
@@ -94,11 +95,12 @@ const TEMPLATES = [
 
 const pick = (data, i) => data?.[i]?.result;
 
-function fmtUnits(v, decimals, digits = 2) {
-  if (typeof v !== "bigint" || typeof decimals !== "number") return null;
-  const n = Number(formatUnits(v, decimals));
-  return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
-}
+/*
+ *  `fmtUnits`, `fmtOutflow` and `minSentence` moved to `../lib/quote.js`. They are pure
+ *  functions over maybe-`undefined` reads, and while they lived in this `.jsx` file the
+ *  offline suite could not import them to prove they never print a formatter's `null` — which
+ *  is how a `−null` and a "minimum null tUSDC" both reached the page. See that file's header.
+ */
 
 function fmtStt(v, digits = 3) {
   if (typeof v !== "bigint") return null;
@@ -249,6 +251,9 @@ export function Enter() {
   const decimals = pick(token.data, 0);
   const symbol = pick(token.data, 1) ?? "tUSDC";
 
+  /* `null` until BOTH the figure and its scale have landed — see `../lib/quote.js`. */
+  const minText = useMemo(() => minSentence(required, decimals, symbol), [required, decimals, symbol]);
+
   const acct = useReadContracts({
     allowFailure: true,
     contracts:
@@ -322,7 +327,23 @@ export function Enter() {
   const shortOfNative =
     typeof nativeValue === "bigint" && typeof cognition === "bigint" && nativeValue < cognition;
 
-  const step = shortOfTokens ? 1 : shortOfAllowance ? 2 : 3;
+  /*
+   *  WHICH STEP THE VISITOR IS ON — or 0, meaning "not knowable yet".
+   *
+   *  Both `shortOf*` above are false when their read is not a bigint, and without a wallet
+   *  neither ever is: `acct` is gated on `address`, so it runs zero contracts. A bare
+   *  ternary chain therefore collapsed to 3 for every DISCONNECTED visitor and painted
+   *  `funded` and `approved` — two transactions nobody had sent — as the first thing on the
+   *  page. The `!isConnected` guard further down never covered it, because at step 3 the
+   *  buttons it disables are not rendered at all; the pills are.
+   *
+   *  So the checklist needs a fourth state, and 0 is it. A step is only ever claimed
+   *  complete against numbers actually in hand — which also covers a connected wallet whose
+   *  `balanceOf`/`allowance` reads failed, where "approved" would be just as much a lie.
+   */
+  const quoted =
+    typeof balance === "bigint" && typeof allowance === "bigint" && typeof need === "bigint";
+  const step = !quoted ? 0 : shortOfTokens ? 1 : shortOfAllowance ? 2 : 3;
 
   /* ── preflight: find out before the wallet opens ──────────────────────────── */
   const sim = useSimulateContract({
@@ -530,6 +551,55 @@ export function Enter() {
               </div>
             </div>
           </div>
+        ) : report.verdict === "wrong" ? (
+          /*
+           *  There IS a contract here and it is not this one. The likeliest way anyone reaches
+           *  this branch is the same as `absent`'s — a saved address from a previous deploy —
+           *  except that the previous deploy left code behind, so nothing returns `0x` and the
+           *  reads revert instead. It was filed under `unreachable` until 2026-09-06 and
+           *  therefore told to leave the address alone and retry, which is the one instruction
+           *  that cannot possibly help here.
+           *
+           *  Same affordance as `absent`, opposite sentence: `forgetSaved` is reused rather
+           *  than rewritten so both branches drop the identical key.
+           */
+          <div className="notice notice-bad" data-rise>
+            <span className="notice-mark">✕</span>
+            <div>
+              <b>There is a contract at this address, but it is not a Population.</b> All{" "}
+              {report.total} reads against <code>{population}</code> <em>reverted</em> rather than
+              returning empty, so something is deployed here and it does not answer this ABI — an
+              arena from an earlier deploy, or an unrelated contract.{" "}
+              {pop.source === "saved" ? (
+                <>
+                  The address is one <em>this browser saved</em> from a previous visit, which is
+                  exactly how a superseded deploy outlives its season.
+                </>
+              ) : pop.source === "url" ? (
+                <>
+                  It came from the <code>?population=</code> override in the address bar, which is
+                  checked for shape and never for what answers there.
+                </>
+              ) : (
+                <>It came from {pop.source}.</>
+              )}{" "}
+              Retrying will not change this answer. The form is withheld.
+              <pre className="revert">{report.reason}</pre>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--s-3)", marginTop: "var(--s-3)" }}>
+                {pop.source === "saved" ? (
+                  <button className="btn" type="button" onClick={forgetSaved}>
+                    Forget this address
+                  </button>
+                ) : null}
+                <a className="btn" href="/arena/?demo=1">
+                  See the offline demo
+                </a>
+                <a className="btn" href={addressUrl(population)} target="_blank" rel="noreferrer">
+                  Open it in the explorer
+                </a>
+              </div>
+            </div>
+          </div>
         ) : report.verdict === "unreachable" ? (
           /*
            *  Also nine failures, and deliberately NOT the same sentence. Nothing here says
@@ -568,7 +638,11 @@ export function Enter() {
                       {faucetTx.isPending ? "Confirm in wallet…" : faucetRcpt.isLoading ? "Mining…" : "Mint"}
                     </button>
                   ) : (
-                    <span className="pill pill-ok">funded</span>
+                    // `step > 1`, never `step !== 1` — step 0 means the balance is unknown,
+                    // and "funded" is a claim about a transaction, not a default.
+                    <span className={`pill ${step > 1 ? "pill-ok" : ""}`}>
+                      {step > 1 ? "funded" : "connect to quote"}
+                    </span>
                   )}
                 </div>
 
@@ -678,8 +752,16 @@ export function Enter() {
                     Use the minimum
                   </button>
                   <span className={parsed !== undefined && typeof required === "bigint" && parsed < required ? "over" : ""}>
-                    {typeof required === "bigint"
-                      ? `minimum ${fmtUnits(required, decimals)} ${symbol}`
+                    {/*
+                      `required` resolving is NOT enough to print it. `fmtUnits` also needs
+                      `decimals`, which cannot be requested until the arena read resolves
+                      `collateral` — the same two-round-trip window that made the metabolic row
+                      render `−null` before `fmtOutflow` existed. A minimum whose scale is
+                      unknown is still unread, so this stays on the pending sentence until both
+                      halves have landed rather than printing "minimum null tUSDC".
+                    */}
+                    {minText !== null
+                      ? minText
                       : minFailed
                         ? "the contract did not return a minimum"
                         : "reading minimum…"}
@@ -799,7 +881,7 @@ export function Enter() {
                 <div className="quote-row">
                   <span className="quote-k">Metabolism per window</span>
                   <Val tone="is-heat" failed={readFailure(arena.data, 4)}>
-                    {metabolic !== undefined ? `−${fmtUnits(metabolic, decimals)}` : null}
+                    {fmtOutflow(metabolic, decimals)}
                   </Val>
                 </div>
                 <div className="quote-row">

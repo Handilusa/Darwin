@@ -27,6 +27,7 @@
  *  `(uint256(uint160(pool)) << 64) | nonce`, which is exactly topic1 of a settlement log.
  */
 import { fmt, log, manifest, populationAbi, publicClient, warn, type Manifest } from "./lib/darwin.js";
+import { scanRange } from "./lib/logscan.js";
 import { parseAbi, parseAbiItem, type Address } from "viem";
 
 /**
@@ -56,7 +57,14 @@ const WINDOW_OPENED = parseAbiItem(
   "event WindowOpened(uint64 indexed window, bytes32 indexed marketId, address pool, uint256 openPrice)",
 );
 
-const CHUNK = 9_000n;
+/**
+ *  Block paging now lives in `lib/logscan.ts` — see `LOG_SPAN` there for the measurement.
+ *
+ *  This file used to own a `const CHUNK`, first as `9_000n` (nine times over dream-rpc's real
+ *  cap, which made `npm run fee` fail on its first call) and then as a corrected `1_000n`
+ *  copied into three scripts. The shared helper shrinks on refusal, retries transient
+ *  failures, and has a self-test that runs with no chain (`npx tsx scripts/lib/logscan.ts`).
+ */
 
 /** `settlementFeeBpsTimes1k` is basis points x1000, so a fraction is /1e7. */
 const FEE_DENOMINATOR = 10_000_000n;
@@ -250,24 +258,34 @@ async function recentPools(m: Manifest, limit: number): Promise<Address[]> {
   const latest = await publicClient.getBlockNumber();
   const floor = BigInt(m.deployedAtBlock);
   const out: Address[] = [];
-  let to = latest;
 
-  while (to >= floor && out.length < limit) {
-    const from = to - CHUNK + 1n > floor ? to - CHUNK + 1n : floor;
-    const logs = await publicClient.getLogs({
-      address: m.population,
-      event: WINDOW_OPENED,
-      fromBlock: from,
-      toBlock: to,
-    });
-    for (const l of [...logs].reverse()) {
-      const pool = l.args.pool;
-      if (pool && !out.includes(pool)) out.push(pool);
-      if (out.length >= limit) break;
-    }
-    if (from === floor) break;
-    to = from - 1n;
-  }
+  // Backward, newest first, and it STOPS as soon as `limit` distinct pools have been collected
+  // rather than sweeping every block since deployment. Accumulation happens in `onPage` because
+  // the stop condition is a property of what has been gathered so far, not of the current page.
+  await scanRange(
+    floor,
+    latest,
+    (pageFrom, pageTo) =>
+      publicClient.getLogs({
+        address: m.population,
+        event: WINDOW_OPENED,
+        fromBlock: pageFrom,
+        toBlock: pageTo,
+      }),
+    {
+      direction: "backward",
+      onPage: (logs) => {
+        for (const l of [...logs].reverse()) {
+          const pool = l.args.pool;
+          if (pool && !out.includes(pool)) out.push(pool);
+          if (out.length >= limit) return true;
+        }
+        return out.length >= limit;
+      },
+      onShrink: (at, span, reason) =>
+        warn(`RPC refused the block range at ${at}; retrying with ${span}-block pages (${reason})`),
+    },
+  );
 
   log(`measuring against ${out.length} of this population's own recent pool(s)`);
   return out;

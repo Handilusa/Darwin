@@ -106,7 +106,7 @@ Everything else already flows through parameters. Critically,
 `Prophet.settleWindow(settlement, pool, collateral, metabolicCost)`
 (as it stood before this spec) takes the settlement address and pool **as arguments**, not
 from storage — `Population` decides who gets called
-(`Population.sol:559`). So the abstraction is a change of *callee*, not a
+(`Population.sol:1784`). So the abstraction is a change of *callee*, not a
 restructuring.
 
 ```solidity
@@ -503,7 +503,7 @@ later start costs no generations that funding was going to buy anyway.
 - **`maxPopulation` raised for an open arena bounds `think()`'s loop.** Measure
   the gas ceiling before raising it, or a full population makes the window
   unexecutable.
-- **`Prophet.sol:209` hard-codes `agree >= 2`** as the consensus floor,
+- **`Prophet.sol:280` hard-codes `agree >= 2`** as the consensus floor,
   independent of `threshold`. Raising `subcommitteeSize` does not raise this.
   Out of scope here, but it should not be forgotten.
 

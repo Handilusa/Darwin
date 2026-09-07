@@ -46,11 +46,29 @@ export const LABELS_PATH = `../contracts/deployments/${CHAIN_ID}.organisms.json`
 export const DEFAULT_POLL_MS = 10_000;
 
 /**
- *  `eth_getLogs` chunk, in blocks. 9,000 is not a guess: it is the value
- *  `scripts/prove-same-block.ts:60` already uses against this RPC, chosen there because
- *  "public RPCs cap `eth_getLogs` ranges, and Somnia's blocks are fast".
+ *  `eth_getLogs` span per request, in blocks, INCLUSIVE — `readFeed` asks for
+ *  `[to - LOG_CHUNK + 1n, to]`, so this is the span and not the stride.
+ *
+ *  1_000n, and this is the SECOND number here. It was 9_000n, justified by pointing at
+ *  `prove-same-block.ts` — a citation that was true (that script really did say 9,000) and
+ *  still wrong, because the script was wrong too. Measured against dream-rpc on 2026-09-06
+ *  with a ladder and a negative control: `to - from` of 999 and 1000 are accepted, 1001 and
+ *  9000 are both rejected with `block range exceeds 1000` (JSON-RPC -1). So every feed
+ *  request this page has ever made against the real RPC was refused.
+ *
+ *  It was refused SILENTLY, which is why the number survived. `readFeed` wraps its three
+ *  scans in `Promise.allSettled` and reads them through `got(pop, [])`, so a rejection
+ *  becomes an empty array and the feed renders "no activity yet" — indistinguishable from a
+ *  quiet chain. `readFeed` now surfaces the reason instead of swallowing it; a range error
+ *  that reaches the UI gets this constant fixed in an afternoon, one that does not costs a
+ *  demo.
+ *
+ *  The scripts solved the same problem in `scripts/lib/logscan.ts`, which shrinks its span
+ *  when a node refuses. That helper is Node-side and this file is browser-side, so the value
+ *  is duplicated rather than imported. Keep them in step: if one moves, measure, then move
+ *  both.
  */
-export const LOG_CHUNK = 9_000n;
+export const LOG_CHUNK = 1_000n;
 
 /** How far back the feed scans on first load, in blocks. Bounded so a cold open is cheap. */
 export const FEED_LOOKBACK = 45_000n;

@@ -69,7 +69,7 @@ that both corpses stay on the page; and that a chain that never answered is neve
 address with no contract behind it.
 
 Forty-four of those assertions cover the scripted season in `?demo=1` — the block running from
-`test/smoke.mjs:462` to the banner at `:614` that marks its end — and they are the only ones
+`test/smoke.mjs:461` to the banner at `:646` that marks its end — and they are the only ones
 in the suite that check a number rather than a rendering. The per-window deltas are recomputed from
 `config` and the breeding rules from `Population.sol`, so the suite fails if someone later tunes a
 figure to make the demo look better: that the window never goes backwards, that nothing is ever
@@ -137,8 +137,12 @@ numbers. Anything the chain can answer, the chain answers.
 `Population.snapshot()` returns the entire population — 16 static fields per organism — in **one
 `eth_call`**. Generation, treasury, belief, thesis, streak, record and death window all arrive
 together, so the grid, the tree and the census are three views of a single read. The only log
-scanning is for the feed, bounded to the last 45,000 blocks in 9,000-block chunks (the range
-`scripts/prove-same-block.ts:60` already proved works against Somnia's public RPC).
+scanning is for the feed, bounded to the last 45,000 blocks in 1,000-block chunks and stopping once
+it has enough rows to render. That chunk size is `LOG_CHUNK` in `config.js`, and it is measured
+rather than chosen: dream-rpc rejects any `eth_getLogs` spanning more than 1,000 blocks. It shipped
+at 9,000 — citing a script that was equally wrong — so every feed request the page made was refused,
+and `Promise.allSettled` rendered the refusals as an empty feed. `readFeed` now returns the reasons
+and the page prints one, which is the part that was actually broken.
 
 RPC calls per poll: **one** batched request covering the snapshot and roughly twenty scalars, plus a
 feed scan when the window number changes or 60 seconds have passed. Polling stops entirely while the
@@ -147,7 +151,7 @@ tab is hidden.
 ## Invariants worth not breaking
 
 **No `innerHTML`. Anywhere.** `Population.enter(string genome, uint256 endowment)`
-(`Population.sol:654`) is permissionless: anybody with testnet tUSDC and a little STT can spawn an
+(`Population.sol:988`) is permissionless: anybody with testnet tUSDC and a little STT can spawn an
 organism whose `systemPrompt` is a string of their choosing, and displaying genomes is this page's
 entire job. So genomes, `lastReasoning`, and every `reasoning` in a `Believed` log are **untrusted
 input arriving over a public write path**. `js/dom.js` puts every string child through

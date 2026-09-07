@@ -22,6 +22,7 @@ import {
   DEFAULT_RPC,
   EXPLORER,
   FEED_LOOKBACK,
+  FEED_ROWS,
   LABELS_PATH,
   LOG_CHUNK,
   MANIFEST_PATH,
@@ -189,6 +190,31 @@ function saysNoCode(err) {
 }
 
 /**
+ *  Did the call EXECUTE and revert?
+ *
+ *  A revert is PROOF OF CODE. An address holding a real contract that is not this one — an arena
+ *  from a superseded deploy, a proxy aimed at the wrong implementation — does not return `0x`: it
+ *  runs, finds no matching selector and reverts. So every read fails, nothing says "returned no
+ *  data", and the two-way verdict called that `unreachable` — *"the chain did not answer"*, over a
+ *  chain that answered every call, with the advice to leave the address alone and retry. That is
+ *  the one instruction that cannot work for the one visitor whose address is definitely wrong.
+ *
+ *  Kept in step with `app/src/lib/reads.js:saysReverted` for the same reason `saysNoCode` is: the
+ *  two surfaces must not disagree about what is at an address.
+ */
+function saysReverted(err) {
+  return causes(err).some(
+    (e) =>
+      e?.name === "ContractFunctionRevertedError" ||
+      // NOT `CallExecutionError` — it is on a transport failure's chain too, so matching it turns
+      // every RPC outage into "wrong contract". The measured chains are in `reads.js:saysReverted`.
+      e?.name === "ExecutionRevertedError" ||
+      e?.name === "RawContractError" ||
+      /execution reverted/i.test(e?.message ?? ""),
+  );
+}
+
+/**
  *  What a batch of independently-settled reads actually proved.
  *
  *  Returns `"live"` if ANY read answered, else `"absent"` or `"unreachable"` — and those last two
@@ -208,7 +234,11 @@ export function readVerdict(settled) {
   if (rows.length === 0) return "unreachable";
   const failures = rows.filter((s) => s?.status === "rejected");
   if (failures.length < rows.length) return "live";
-  return failures.some((f) => saysNoCode(f.reason)) ? "absent" : "unreachable";
+  // Most specific diagnosis first, and `unreachable` LAST because it is the only one of the three
+  // that is an absence of evidence rather than evidence. See `saysReverted`.
+  if (failures.some((f) => saysNoCode(f.reason))) return "absent";
+  if (failures.some((f) => saysReverted(f.reason))) return "wrong";
+  return "unreachable";
 }
 
 /**
@@ -289,6 +319,16 @@ export async function discover(client, population) {
         `rather than the network. (${failures[keys[0]] || "returned no data"})`,
     );
   }
+  if (verdict === "wrong") {
+    throw readVerdictError(
+      "wrong",
+      `There is a contract at ${population} on chain ${CHAIN_ID}, but it is not a Population. ` +
+        `All ${keys.length} reads REVERTED rather than returning empty, which is what code that ` +
+        `does not answer this ABI does — an arena from an earlier deploy, or an unrelated ` +
+        `contract. Retrying will not change this; check the address. ` +
+        `(${failures[keys[0]] || "execution reverted"})`,
+    );
+  }
   if (verdict === "unreachable") {
     throw readVerdictError(
       "unreachable",
@@ -298,9 +338,29 @@ export async function discover(client, population) {
     );
   }
 
-  // Collateral decimals decide every money number on the page. 6 is the Shannon tUSDC
-  // value and the fallback, but it is read rather than assumed.
+  /*
+   *  Collateral decimals decide EVERY money number on the page, and until 2026-09-06 a dropped
+   *  `decimals()` was completely invisible.
+   *
+   *  Three things were wrong with `let decimals = 6` and an `if (fulfilled)`.
+   *
+   *  The rejection reason went nowhere. `failures` is what `readErrors` renders, and this block
+   *  wrote into neither — so a node that answered all twenty-two population calls and dropped this
+   *  one produced a page with no banner, no error row, and no dash: it produced a page of
+   *  CONFIDENT WRONG NUMBERS. On an 18dp collateral every treasury on the screen would read as a
+   *  millionth of its real value, and the only surface saying otherwise would be the chain.
+   *  Same defect shape as `readFeed`'s swallowed `eth_getLogs` refusals, and fixed the same way.
+   *
+   *  6 was presented as a reading. It is the Shannon tUSDC value and it is still the fallback,
+   *  because blanking every figure on the page is a worse answer than a marked one — but
+   *  `decimalsUnverified` now travels with it, `main.js` raises a banner off that flag, and the
+   *  figures are labelled as unverified rather than printed as measurements. A default that
+   *  cannot be told apart from a reading is the thing this whole file is written against.
+   *
+   *  And `symbol` is not decoration either: it is the unit those numbers are denominated in.
+   */
   let decimals = 6;
+  let decimalsUnverified = false;
   let tokenSymbol = "tUSDC";
   if (out.collateral) {
     const t = await Promise.allSettled([
@@ -308,20 +368,64 @@ export async function discover(client, population) {
       client.readContract({ address: out.collateral, abi: erc20Abi, functionName: "symbol" }),
     ]);
     if (t[0].status === "fulfilled") decimals = Number(t[0].value);
+    else {
+      decimalsUnverified = true;
+      failures.decimals = why(t[0]);
+    }
     if (t[1].status === "fulfilled") tokenSymbol = t[1].value;
+    else failures["collateral symbol"] = why(t[1]);
+  } else {
+    // `collateral` itself failed — it is already named in `failures`, but the scale of every
+    // money figure is just as unknown as it is above, so the banner has to fire here too.
+    decimalsUnverified = true;
   }
 
   // `positionToken() == address(0)` is how an organism knows to skip the ERC-6909 push and
   // redeem directly, so it is also the honest way to name which settlement family is wired.
+  // A FAILED read and a zero address are different answers — one means "direct redemption", the
+  // other means "we do not know which" — and both used to arrive as `null`.
   let positionToken = null;
   if (out.venue) {
     const v = await Promise.allSettled([
       client.readContract({ address: out.venue, abi: venueAbi, functionName: "positionToken" }),
     ]);
     positionToken = got(v[0], null);
+    const reason = why(v[0]);
+    if (reason) failures.positionToken = reason;
   }
 
-  return { population, ...out, decimals, tokenSymbol, positionToken, failures };
+  return { population, ...out, decimals, decimalsUnverified, tokenSymbol, positionToken, failures };
+}
+
+/**
+ *  `discover`, but a transport hiccup does not cost the visitor the whole page.
+ *
+ *  `boot()` calls discovery exactly once and stores the result for the life of the connection —
+ *  every later poll reads `app.cfg` rather than re-reading the wiring, which is the right design
+ *  and also means ONE dropped request at exactly the wrong moment left the page permanently
+ *  unwired behind a Retry button nobody is guaranteed to press. Twenty-two calls in one batch
+ *  against a public testnet RPC is not a rare thing to lose.
+ *
+ *  It retries `unreachable` and nothing else. `absent` is a CONCLUSION — viem decoded a `0x` from
+ *  an address with no code, and asking the same question twice cannot change that answer; retrying
+ *  it would only delay the one banner that tells the visitor to edit the address. That asymmetry is
+ *  the same one `errorBanner` and `setupCard` are built on, applied to the retry policy.
+ */
+export async function discoverWithRetry(client, population, attempts = 3, delayMs = 600) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await discover(client, population);
+    } catch (e) {
+      last = e;
+      // Both are CONCLUSIONS about what is at the address, reached from what the chain said. A
+      // second identical question cannot change either answer, and retrying would only delay the
+      // banner that tells the visitor to fix the address.
+      if (e?.kind === "absent" || e?.kind === "wrong") throw e;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw last;
 }
 
 /**
@@ -447,8 +551,24 @@ function eventsOf(abi) {
  *  Scan backwards in chunks for the population's log stream and the organisms' own.
  *
  *  Backwards because the feed shows newest first and a bounded scan should spend its budget
- *  on the recent past. Chunked at `LOG_CHUNK` because public RPCs cap `eth_getLogs` ranges —
- *  the same reason and the same number as `prove-same-block.ts:60`.
+ *  on the recent past. Chunked at `LOG_CHUNK` (`web/config.js:71`) because dream-rpc refuses a span above 1,000
+ *  blocks — see the measurement in `config.js`, and note the number there used to be nine
+ *  times too large, so every request this function made was rejected.
+ *
+ *  IT WAS REJECTED SILENTLY, and that is the part worth fixing rather than the constant.
+ *  `Promise.allSettled` plus `got(pop, [])` turns a rejection into an empty page, so a broken
+ *  scan and a quiet chain rendered identically. This now collects the reasons and returns them
+ *  in `errors`, and `main.js` shows the first one beside the feed. A wrong chunk size is an
+ *  afternoon's fix when the UI says `block range exceeds 1000`, and a lost demo when it says
+ *  nothing. `allSettled` is still right — one failing address array should not blank the
+ *  population's own logs — but "settled" is not "fine".
+ *
+ *  THE SCAN ALSO STOPS EARLY, once `FEED_ROWS` logs are in hand. At a 1,000-block span the
+ *  full `FEED_LOOKBACK` is 45 sequential rounds of three requests, which is a slow cold open
+ *  for rows nothing renders: the feed shows `FEED_ROWS` of them. Stopping is safe because the
+ *  scan runs newest-first, so the rows it would have found are strictly older than the ones it
+ *  already has. `scanned` reports the range actually covered, not the range intended, so the
+ *  "in the scanned range" wording in `render.js` stays true.
  *
  *  Organism logs are fetched with an ADDRESS ARRAY rather than one request each: sixteen
  *  organisms would otherwise be sixteen scans per chunk.
@@ -471,13 +591,14 @@ export async function readFeed(client, cfg, { organisms = [], lookback = FEED_LO
   const addresses = organisms.filter(Boolean);
 
   const found = [];
+  const errors = [];
   let to = head;
   let scanned = 0n;
 
   while (to >= floor) {
     const from = to - LOG_CHUNK + 1n > floor ? to - LOG_CHUNK + 1n : floor;
 
-    const [pop, org, sel] = await Promise.allSettled([
+    const settled = await Promise.allSettled([
       client.getLogs({ address: cfg.population, events: popEvents, fromBlock: from, toBlock: to }),
       addresses.length
         ? client.getLogs({ address: addresses, events: prophetEvents, fromBlock: from, toBlock: to })
@@ -486,6 +607,14 @@ export async function readFeed(client, cfg, { organisms = [], lookback = FEED_LO
         ? client.getLogs({ address: cfg.selectionEngine, events: selEvents, fromBlock: from, toBlock: to })
         : Promise.resolve([]),
     ]);
+    const [pop, org, sel] = settled;
+
+    // Record WHY, once per distinct reason. A range refusal repeats on all 45 rounds and on all
+    // three requests; 135 copies of one sentence would bury it as effectively as swallowing it.
+    for (const s of settled) {
+      const reason = why(s);
+      if (reason && !errors.includes(reason)) errors.push(reason);
+    }
 
     for (const l of got(pop, [])) found.push({ ...l, origin: "population" });
     for (const l of got(org, [])) found.push({ ...l, origin: "organism" });
@@ -493,6 +622,8 @@ export async function readFeed(client, cfg, { organisms = [], lookback = FEED_LO
 
     scanned += to - from + 1n;
     if (from === 0n || from === floor) break;
+    // Enough to render. See the docblock: newest-first makes the remainder strictly older.
+    if (found.length >= FEED_ROWS) break;
     to = from - 1n;
   }
 
@@ -501,7 +632,7 @@ export async function readFeed(client, cfg, { organisms = [], lookback = FEED_LO
     return Number(b.logIndex ?? 0) - Number(a.logIndex ?? 0);
   });
 
-  return { logs: found, from: floor, to: head, scanned };
+  return { logs: found, from: head - scanned + 1n, to: head, scanned, errors };
 }
 
 const blockTimes = new Map();

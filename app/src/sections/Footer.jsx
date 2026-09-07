@@ -27,7 +27,7 @@ const READ = [
 
 /** Each of these is a real script or a real grep. None of them need our cooperation. */
 const VERIFY = [
-  { cmd: "npm run test", what: "98 Solidity tests" },
+  { cmd: "npm run test", what: "152 Solidity tests" },
   { cmd: "npm run prove", what: "settlement and selection in one block" },
   { cmd: "npm run fee", what: "venue fee measured, not assumed" },
   { cmd: 'grep -rn "dead = false" contracts/src', what: "no revival path exists" },

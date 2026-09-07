@@ -1,0 +1,17 @@
+{
+  "chainId": 50312,
+  "subscriptionId": "16520350",
+  "topic0": "0xb1884334e955f8d8727678d4fa52dd9fc7140ff5e4ad38d358453bd400ada178",
+  "poolFilter": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "emitter": "0xbF4a49e0Dfd092e5FBE8E5761064C49533e6Ed23",
+  "handler": "0xa21Be35123cb7f95F6B95513ae6D3798A39993E6",
+  "callbackSig": "onEvent(address,bytes32[],bytes)",
+  "callbackSelector": "0x53edf33d",
+  "owner": "0x1420cF8Bb9D92C3fDb674ECc5A57295c59078fDA",
+  "gasLimit": "10000000",
+  "isGuaranteed": false,
+  "isCoalesced": true,
+  "createdAtBlock": "481482602",
+  "createdAt": "2026-09-06T19:03:37.063Z",
+  "txHash": "0x945feb5e9c5e1adde6d756c9f2ab3c90c1c9cd6740c37ef85eaf97d3c2cbfb72"
+}

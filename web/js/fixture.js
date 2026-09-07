@@ -395,8 +395,20 @@ export const logs = [
     address: organisms[4].addr, args: { prophetId: 5n, window: 33n, windowsLived: 33, correct: 14, wrong: 16 } },
   { origin: "population", eventName: "Reaped", blockNumber: 8_402_551n, logIndex: 2, transactionHash: TX,
     address: config.population, args: { prophetId: 5n, window: 33n, aliveRemaining: 9n } },
+  // `Starved` ALWAYS REPORTS A TREASURY OF ZERO, and this row said 0.18 until 2026-09-06.
+  //
+  // `Prophet.settleWindow` (`Prophet.sol:576-579`) takes `charge = min(treasury, metabolicCost)`,
+  // sets `starved = charge < metabolicCost`, then subtracts. Starving therefore MEANS the charge was
+  // the whole treasury, so the treasury the event carries is `0` in every case the chain can produce
+  // — a non-zero one is an organism that paid the full cost and did not starve at all. The figure
+  // that varies is `metabolicCost`, which is what it could not reach.
+  //
+  // The pair below is the other half of the same reading: #5 starved, so there was nothing left to
+  // forfeit and no `ResidueForfeited` row follows it. #3's forfeit at the bottom of this feed is the
+  // OTHER death, and the two are mutually exclusive per organism per window — see `:1748-1762` of
+  // `Population.sol`, where `residue = p.treasury()` is read after that subtraction.
   { origin: "organism", eventName: "Starved", blockNumber: 8_402_550n, logIndex: 1, transactionHash: TX,
-    address: organisms[4].addr, args: { prophetId: 5n, metabolicCost: 250_000n, treasury: 180_000n } },
+    address: organisms[4].addr, args: { prophetId: 5n, metabolicCost: config.metabolicCost, treasury: 0n } },
   { origin: "population", eventName: "BreedingUnaffordable", blockNumber: 8_398_223n, logIndex: 4, transactionHash: TX,
     address: config.population, args: { prophetId: 1n } },
   { origin: "population", eventName: "CognitionUnspent", blockNumber: 8_395_110n, logIndex: 2, transactionHash: TX,
@@ -405,8 +417,16 @@ export const logs = [
     address: config.population, args: { prophetId: 7n } },
   { origin: "population", eventName: "Reaped", blockNumber: 8_371_884n, logIndex: 2, transactionHash: TX,
     address: config.population, args: { prophetId: 3n, window: 26n, aliveRemaining: 10n } },
+  // A FORFEIT IS ALWAYS SMALLER THAN THE METABOLIC COST. This said 0.41 against a 0.25 charge until
+  // 2026-09-06, which is an organism that could afford to think and would not have been reaped.
+  //
+  // The reachable shape is narrow. `Population.sol:1796` reaps on `starved || treasury < cost`, and
+  // `residue` is read after the charge, so a non-zero residue means the organism was NOT starved —
+  // it paid the full cost — and was still reaped, which requires what remained to be under one more
+  // charge. So `0 < amount < metabolicCost`, strictly, and this row is the other death: #3 covered
+  // its rent and then could not cover the next one.
   { origin: "population", eventName: "ResidueForfeited", blockNumber: 8_371_884n, logIndex: 1, transactionHash: TX,
-    address: config.population, args: { prophetId: 3n, amount: 410_000n } },
+    address: config.population, args: { prophetId: 3n, amount: config.metabolicCost - 90_000n } },
 ];
 
 /** Plausible timestamps, so `ago()` renders something sane in demo mode. */
@@ -509,10 +529,10 @@ const money = (id, delta) => at(id).treasury + delta;
 const RESIDUE_8 = at(8n).treasury - ANTE;
 
 /**
- *  `_book` (`Population.sol:874`), mirrored, because a prize pool is not a number this file gets to
+ *  `_book` (`Population.sol:1136`), mirrored, because a prize pool is not a number this file gets to
  *  pick — it is what the settlement paid into it.
  *
- *  `settleAll` calls `_book(charged + raked)` ONCE PER ORGANISM (`:1264`), and each call splits that
+ *  `settleAll` calls `_book(charged + raked)` ONCE PER ORGANISM (`:1791`), and each call splits that
  *  organism's income at `prizeShareBps`, keeping integer division's remainder in the rake. Per
  *  organism is the part that matters: a winner books 0.328125, which halves with one wei left over,
  *  nine times over rather than once. A pool computed off the summed income is three wei out — small
@@ -528,21 +548,31 @@ const bookRake = (income) => income - bookPool(income);
  *  #7, #9, #10 and #12 settle and pay rent only. The three winners are exactly the rows carrying a
  *  `Raked` log in frame 0, and the six others are the rest of the living population.
  *
- *  #8 BOOKS NOTHING, and that is this fixture's model rather than the contract's. Here it reaches
- *  settlement with 0.09375 and loses the whole of it to the FORFEIT — the `Starved` and
- *  `ResidueForfeited` pair in frame 0 both carry that figure, as the base feed's #5 and #3 rows have
- *  since this file was written. `Prophet.settleWindow` would instead take `min(treasury,
- *  metabolicCost)` first (`Prophet.sol:516`), leaving nothing to forfeit and booking 0.09375 as rent,
- *  so the two models move the same money by different doors and split it differently: the forfeit
- *  sends all of it to the pool (`Population.sol:1480`), the charge would send half to the house.
- *  Following the fixture's own rows is what keeps the header and the feed from contradicting each
- *  other on screen; the divergence is real and belongs to whoever owns the demo's death scenario.
+ *  #8 PAYS WHAT IT HAS AS RENT, AND FORFEITS NOTHING. This was a `Starved` row and a
+ *  `ResidueForfeited` row both carrying 0.09375 until 2026-09-06 — the same money reported twice, in
+ *  a pair the contract cannot emit for one organism in one window.
+ *
+ *  `Prophet.settleWindow` charges `min(treasury, metabolicCost)` (`Prophet.sol:576-579`), so an
+ *  organism that starves has paid its ENTIRE balance as rent and its `treasury` is 0 by the time
+ *  `settleAll` reads it. `Population.sol:1757` computes `residue = p.treasury()` after that. So a
+ *  starved organism has nothing to forfeit, and an organism WITH a residue was not starved. The two
+ *  events are mutually exclusive per organism per window, and #8 is the starving one: 0.09375 against
+ *  a 0.25 charge.
+ *
+ *  It matters to the pot rather than only to the feed, which is why this is not a cosmetic edit. The
+ *  forfeit would have sent all 0.09375 to the players whole (`Population.sol:1760`); the charge sends
+ *  it through `_book`, which halves it at `prizeShareBps` and gives the house the other half. The
+ *  demo's pot is 0.046875 smaller for following the contract, and every figure below re-derives.
  */
 const INCOME_41 = [
   ...[1n, 6n, 11n].map(() => META + RAKE_ON_WIN),
   ...[2n, 4n, 7n, 9n, 10n, 12n].map(() => META),
+  // The organism that starved is income too — `settleAll` calls `_book(charged + raked)` for every
+  // organism it settles, "including one that dies in the same breath: the rent was paid, and rent is
+  // income" (`Population.sol:1738-1743`). What it paid is all it had.
+  RESIDUE_8,
 ];
-const POOL_41 = INCOME_41.reduce((a, i) => a + bookPool(i), 0n) + RESIDUE_8;
+const POOL_41 = INCOME_41.reduce((a, i) => a + bookPool(i), 0n);
 const RAKE_41 = INCOME_41.reduce((a, i) => a + bookRake(i), 0n);
 
 // Window 42's market. A NEW pool address and new outcome ids, because pools are recycled and
@@ -615,7 +645,7 @@ const SCRIPT = [
       // forfeits a corpse's residue INTO the prize pool, so the header's pool sat still while the feed
       // said it had just been paid. See `bookPool`/`bookRake` above: nine organisms paid rent, three of
       // them also paid a skim, `prizeShareBps: 5_000` halves each of those payments as it arrives, and
-      // the forfeit goes to the players whole (`Population.sol:1480`).
+      // the forfeit goes to the players whole (`Population.sol:1831`).
       rakeAccrued: state.rakeAccrued + RAKE_41,
       prizePool: state.prizePool + POOL_41,
       blockNumber: 8_412_950n,
@@ -639,7 +669,9 @@ const SCRIPT = [
       7: { treasury: money(7n, IDLE), windowsLived: 42, belief: 0 },
       // THE ESCALATING ANTE DOES THE KILLING. #8 had 4.00 and the ante at level 3 is 3.90625, so
       // one wrong call leaves 0.09375 against a metabolic charge of 0.25. It starves inside the
-      // same settlement, the residue is forfeited, and it is reaped. Nothing chose it.
+      // same settlement and is reaped. Nothing chose it. It forfeits NOTHING — `Prophet.sol:596`
+      // charges `min(treasury, metabolicCost)`, so starving means the charge took everything and
+      // `Population.sol:1828` reads the residue after that. See `INCOME_41`.
       8: { treasury: 0n, streak: 0, windowsLived: 42, wrongCount: 20, dead: true, deathWindow: 41n, belief: 0 },
       // Up, but every Down was already taken, so it held a zero-size position: no stake at risk,
       // metabolism charged anyway. Its streak of 4 survives untested.
@@ -662,12 +694,17 @@ const SCRIPT = [
         address: config.population, args: { prophetId: 8n, window: 41n, aliveRemaining: 9n } },
       { origin: "organism", eventName: "Died", blockNumber: 8_412_950n, logIndex: 9, transactionHash: TX2,
         address: at(8n).addr, args: { prophetId: 8n, window: 41n, windowsLived: 42, correct: 19, wrong: 20 } },
-      { origin: "population", eventName: "ResidueForfeited", blockNumber: 8_412_950n, logIndex: 8, transactionHash: TX2,
-        address: config.population, args: { prophetId: 8n, amount: RESIDUE_8 } },
+      // NO `ResidueForfeited` HERE — see `INCOME_41`. #8 starved, which means the charge took its
+      // whole 0.09375 as rent, which means there was nothing left for the forfeit to move. This block
+      // emitted both events with the same amount until 2026-09-06, reporting one payment twice in a
+      // combination `settleAll` cannot produce for one organism in one window.
+      //
+      // `Settled` and `Starved` both report the treasury AFTER the charge, and `Prophet.sol:576-579`
+      // makes that exactly 0 whenever `starved` is true.
       { origin: "organism", eventName: "Starved", blockNumber: 8_412_950n, logIndex: 7, transactionHash: TX2,
-        address: at(8n).addr, args: { prophetId: 8n, metabolicCost: META, treasury: RESIDUE_8 } },
+        address: at(8n).addr, args: { prophetId: 8n, metabolicCost: META, treasury: 0n } },
       { origin: "organism", eventName: "Settled", blockNumber: 8_412_950n, logIndex: 6, transactionHash: TX2,
-        address: at(8n).addr, args: { prophetId: 8n, marketId: state.activeMarketId, correct: false, collateralOut: 0n, treasury: RESIDUE_8 } },
+        address: at(8n).addr, args: { prophetId: 8n, marketId: state.activeMarketId, correct: false, collateralOut: 0n, treasury: 0n } },
       { origin: "organism", eventName: "Raked", blockNumber: 8_412_950n, logIndex: 5, transactionHash: TX2,
         address: at(6n).addr, args: { prophetId: 6n, profit: ANTE, amount: RAKE_ON_WIN } },
       { origin: "organism", eventName: "Settled", blockNumber: 8_412_950n, logIndex: 4, transactionHash: TX2,
@@ -835,12 +872,12 @@ function topThree(rows) {
  *  of it a second time from `Population.sol`'s constants.
  *
  *  WHAT THE CONTRACT DOES THAT THE FEED THEREFORE SHOWS:
- *    - the pot is read ONCE (`:947`), so all three shares divide the same number and the two rounded
+ *    - the pot is read ONCE (`:894`), so all three shares divide the same number and the two rounded
  *      wei that integer division loses roll over instead of being paid;
- *    - `paid` is the SUM OF WHAT WAS ACTUALLY TRANSFERRED, so `prizePool = pot - paid` (`:974`) is the
+ *    - `paid` is the SUM OF WHAT WAS ACTUALLY TRANSFERRED, so `prizePool = pot - paid` (`:922`) is the
  *      roll-over — `Darwin.t.sol` calls this out: unawarded places must roll over, not vanish;
- *    - the events carry the season that ENDED (`:971`, `:981`), and `seasonId += 1` happens after
- *      (`:982`), so the feed says "season 1 ended" while the header has already moved to season 2;
+ *    - the events carry the season that ENDED (`:910`, `:916`), and `seasonId += 1` happens after
+ *      (`:923`), so the feed says "season 1 ended" while the header has already moved to season 2;
  *    - `seasonStartWindow = windowCount` (`:980`), which resets `level()` to 0 and `ante()` to
  *      `baseAnte` — the escalating ante starts over, which is the point of having seasons at all.
  *
@@ -894,7 +931,7 @@ function closeSeason({ state: s, logs: l }) {
       blockNumber: CLOSE_BLOCK,
     },
     // Newest-first, which is the order `main.js` hands the feed. `endSeason` emits the payouts first
-    // and `SeasonEnded` last (`:825` then `:835`), so reversing the chain's own log order puts the
+    // and `SeasonEnded` last (`:908` then `:914`), so reversing the chain's own log order puts the
     // close on top and the placings climbing UP from tenth to sixtieth beneath it. That is not the
     // flattering order — first place is at the bottom — and it is the only one a chain read produces.
     logs: [...rows.reverse(), ...l],

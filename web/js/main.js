@@ -34,6 +34,11 @@ const app = {
   details: new Map(),
   selected: null,
   error: null,
+  errorKind: null,
+  // The collateral's `decimals()` never answered, so every money figure is scaled by an assumed 6.
+  // Separate from `app.error` because that field is cleared on every successful poll and this fact
+  // is not transient — it lasts as long as the config it came from.
+  unverified: false,
   sourceLabel: "",
   lastFeedAt: 0,
   lastWindow: null,
@@ -138,7 +143,22 @@ function advance(state, logs) {
 
     const was = before.get(id);
     if (!was) organisms.set(id, "born");
-    else if (o.dead === true && !was.dead) organisms.set(id, "died");
+    else if (o.dead === true && !was.dead) {
+      organisms.set(id, "died");
+      // AND its last treasury, which is not a count-up — it is the drain.
+      //
+      // `motion.js`'s `died()` tweens `.vitals-fill` from `data-was` to 0%, and that beat is the
+      // one that reads as a death rather than as an error, because it is the same bar that has
+      // been counting down all along. `render.js`'s `vitals()` stamps `data-was` only when it is
+      // handed a previous value — and this branch used to `return` without recording one, so the
+      // stamp was UNREACHABLE and the drain silently never played. The `else if` below cannot
+      // cover it: an organism cannot be both dying and merely moving in the same frame.
+      //
+      // Feeding the same map is safe because `card()` gates its count-up on `moved && !o.dead`,
+      // so a corpse's entry here can never become a treasury tween. What it can become is the
+      // one beat the death timeline was written for.
+      if (was.treasury != null) prev.set(id, was.treasury);
+    }
     // A card gets a count-up only if it is neither born nor dying this frame, so the three
     // treatments can never fire on the same node and fight over its treasury text.
     else if (was.treasury != null) prev.set(id, was.treasury);
@@ -179,6 +199,10 @@ function paint() {
   mount(
     $("#banner"),
     app.demo ? ui.demoBanner() : null,
+    // Non-dismissible and above the error banner, for the same reason the demo banner is: a page
+    // whose numbers are scaled by a guess must say so before it says anything else. It survives
+    // successful polls because `app.unverified` is a property of the config, not of the last read.
+    app.unverified ? ui.unverifiedBanner() : null,
     app.error ? ui.errorBanner(app.error, boot, app.errorKind) : null,
   );
 
@@ -200,9 +224,11 @@ function paint() {
           chainId: CHAIN_ID,
           badQuery: s.badQuery,
           // An address with no contract behind it is remedied by editing the address, so the field
-          // that edits it is opened. `unreachable` deliberately does NOT open it: the address is
-          // unjudged there and inviting an edit would be advice to break a working setting.
-          noContract: app.errorKind === "absent" ? s.population : null,
+          // that edits it is opened. `wrong` — code that is not this ABI — has the same remedy and
+          // opens it too. `unreachable` deliberately does NOT: the address is unjudged there and
+          // inviting an edit would be advice to break a working setting.
+          noContract:
+            app.errorKind === "absent" || app.errorKind === "wrong" ? s.population : null,
         },
         { onConnect },
       ),
@@ -470,8 +496,23 @@ async function boot() {
   try {
     const { client } = await chain.connect(s.rpc);
     app.client = client;
-    app.cfg = await chain.discover(client, population);
+    // Retried, not called once. Discovery happens exactly once per connection and its result is
+    // held for the life of the page, so a single lost request used to leave the page permanently
+    // unwired behind a Retry button. `absent` is not retried — see `discoverWithRetry`.
+    app.cfg = await chain.discoverWithRetry(client, population);
     app.error = null;
+    /*
+     *  A collateral whose `decimals()` never answered is not a missing field — it is the SCALE of
+     *  every money figure the page is about to print. `chain.js` falls back to 6 rather than
+     *  blanking the arena, so this is the sentence that stops that fallback from reading as a
+     *  measurement. It is set here rather than in `readErrors` because the flag is a property of
+     *  the numbers themselves, and a warning folded into a `<details>` is not a warning.
+     */
+    // Its OWN field, not `app.error`: `refresh()` clears `app.error` on every successful poll, so
+    // the one sentence saying the figures are unscaled would survive for ten seconds and then
+    // vanish while the wrong figures stayed. This is a property of the config, so it lives as long
+    // as the config does.
+    app.unverified = app.cfg.decimalsUnverified === true;
   } catch (e) {
     app.cfg = null;
     app.error = e?.shortMessage || e?.message || String(e);
@@ -531,6 +572,14 @@ async function refresh(force = false) {
       });
       app.logs = f.logs;
       app.feedRange = f;
+      // `readFeed` resolves even when every request inside it was refused — see its docblock.
+      // Until 2026-09-06 that silence was the bug: an oversized LOG_CHUNK made dream-rpc reject
+      // all three scans on every round, and the page rendered "no activity yet". Naming the
+      // reason costs one banner line and is the difference between a fixable afternoon and a
+      // demo that looks dead.
+      if (f.errors?.length && !f.logs.length) {
+        app.error = app.error || `log scan refused: ${f.errors[0]}`;
+      }
       await chain.stampBlocks(app.client, f.logs.slice(0, FEED_ROWS).map((l) => l.blockNumber));
       app.stamps = stampMap(f.logs);
     } catch (e) {

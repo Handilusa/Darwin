@@ -1,0 +1,23 @@
+{
+  "chainId": 50312,
+  "deployedAtBlock": 481441054,
+  "deployedAtTimestamp": 1788717260,
+  "deployer": "0x1420cF8Bb9D92C3fDb674ECc5A57295c59078fDA",
+  "owner": "0x1420cF8Bb9D92C3fDb674ECc5A57295c59078fDA",
+  "updater": "0x1420cF8Bb9D92C3fDb674ECc5A57295c59078fDA",
+  "population": "0xe0F46e61Cb3c87c01c4f79b6E9727772388838Cb",
+  "populationImpl": "0x1FD13d2285b3CAe9F9998AEa7353B01c6761180c",
+  "prophetBeacon": "0x404858852fF0d9C68507EeE531bE5278146043c1",
+  "prophetImpl": "0xCe34592A6F55D43A9B7De1D966ac8dB1dA1C6782",
+  "priceSource": "0x4D0d3e59F473139890C4281b34fBcebe1f9BD9ec",
+  "venue": "0x7c3F3E1c9AFB8Efac8B08E747b5E3AD85BD4A358",
+  "selectionEngine": "0xa21Be35123cb7f95F6B95513ae6D3798A39993E6",
+  "agentRequester": "0x037Bb9C718F3f7fe5eCBDB0b600D607b52706776",
+  "marketsModule": "0x3ecC694Cef705358864a646142ac17A90E29e388",
+  "settlement": "0xbF4a49e0Dfd092e5FBE8E5761064C49533e6Ed23",
+  "outcomeToken": "0xB52c5934113Af5c0Bb20eb3C72290C8215f755b9",
+  "collateral": "0x70a86D8842FB63C4Ad2b7cdddF530eBf1BB25d8E",
+  "collateralDecimals": 6,
+  "llmAgentId": 12847293847561029384,
+  "symbol": "BTC"
+}

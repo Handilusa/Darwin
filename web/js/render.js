@@ -122,32 +122,69 @@ export function demoBanner() {
 }
 
 /**
+ *  Every money figure on this page is scaled by a guess.
+ *
+ *  `discover()` reads the collateral's `decimals()` and falls back to 6 — the Shannon tUSDC value —
+ *  when it cannot. Blanking the whole arena over one dropped ERC-20 call would be a worse answer
+ *  than a marked one, but an UNMARKED fallback is the worst of the three: on an 18dp collateral
+ *  every treasury, ante and metabolic cost on the screen is wrong by twelve orders of magnitude and
+ *  nothing on the page says so. This is what makes the difference visible.
+ *
+ *  It is a banner rather than a row in `readErrors` because that panel is a collapsed `<details>`,
+ *  and a warning the reader has to open is not a warning. Not dismissible, for the same reason
+ *  `demoBanner` is not: a page that can be mistaken for a measured one is worse than a page that
+ *  admits it is not.
+ */
+export function unverifiedBanner() {
+  return el(
+    "div",
+    { class: "banner banner-warn", role: "alert" },
+    el("strong", { text: "Amounts unverified. " }),
+    "The collateral's ",
+    el("code", { text: "decimals()" }),
+    " did not answer, so every amount below is scaled by an assumed 6 decimals. Figures may be " +
+      "wrong by orders of magnitude — check the token before believing a treasury.",
+  );
+}
+
+/**
  *  The banner over a page that could not resolve an arena.
  *
  *  `kind` comes from `chain.js`'s read verdict and it changes the SENTENCE, not just the wording,
  *  because the three cases need three different actions from the reader:
  *
  *    absent       forty valid hex, no contract → the address is wrong. Check it.
+ *    wrong        code, but not this ABI       → the address is wrong. Retrying cannot help.
  *    unreachable  the node did not answer      → the address is unjudged. Do NOT touch it.
  *    (default)    everything else — a wrong chain id, a dead endpoint, a broken import
  *
  *  It printed *"Cannot read the chain"* for all of them until 2026-09-03, which is the wrong
  *  headline exactly when it matters: over an address with no contract behind it, the chain read
- *  fine and the page blamed the network for it.
+ *  fine and the page blamed the network for it. `wrong` is the same mistake one step along: a
+ *  superseded deploy still has code, so its reads REVERT rather than returning empty, and until
+ *  2026-09-06 that was filed under `unreachable` and told to retry — advice that can never work.
+ *
+ *  The Retry button is withheld for both address verdicts. It is not decoration: offering a retry
+ *  for a conclusion invites the reader to press it instead of reading the sentence.
  */
 export function errorBanner(message, onRetry, kind) {
   const head =
     kind === "absent"
       ? "No arena at that address. "
-      : kind === "unreachable"
-        ? "The chain did not answer. "
-        : "Cannot read the chain. ";
+      : kind === "wrong"
+        ? "That address is not a Population. "
+        : kind === "unreachable"
+          ? "The chain did not answer. "
+          : "Cannot read the chain. ";
+  const settled = kind === "absent" || kind === "wrong";
   return el(
     "div",
     { class: "banner banner-error", role: "alert" },
     el("strong", { text: head }),
     el("span", { text: String(message) }),
-    onRetry ? el("button", { class: "btn btn-inline", type: "button", click: onRetry }, "Retry") : null,
+    onRetry && !settled
+      ? el("button", { class: "btn btn-inline", type: "button", click: onRetry }, "Retry")
+      : null,
   );
 }
 
@@ -746,7 +783,13 @@ function tomb(o, cfg, ctx) {
   const fx = ctx.fx?.organisms?.get(id) || null;
   const prev = ctx.fx?.prev?.get(id);
   const now = o.treasury == null ? null : BigInt(o.treasury);
+  // `moved` gates a LIVING card's count-up, so it requires the number to have changed. A death does
+  // not: `vitals()` forces a corpse's fill to 0 whatever its treasury says, so the bar drains from
+  // wherever it stood even when the balance is untouched — a starved organism can die holding the
+  // same figure it held last poll. Requiring `moved` here would have made the drain depend on an
+  // unrelated fact about the treasury.
   const moved = prev != null && now != null && BigInt(prev) !== now;
+  const drains = fx === "died" && prev != null;
 
   return el(
     "article",
@@ -790,7 +833,7 @@ function tomb(o, cfg, ctx) {
     // `.vitals-fill` from `data-was` to 0% and that is the beat that reads as a death rather than as
     // an error; moving the corpse must not cost the drain its target. `vitals()` already knows a dead
     // organism's fill is 0 and stamps `data-was`, not `data-fx`, when fx === "died".
-    vitals(o, cfg, moved ? prev : null, fx),
+    vitals(o, cfg, drains || moved ? prev : null, fx),
   );
 }
 
@@ -811,6 +854,9 @@ function card(o, cfg, ctx) {
   const prev = fx === "born" ? null : ctx.fx?.prev?.get(id);
   const now = o.treasury == null ? null : BigInt(o.treasury);
   const moved = prev != null && now != null && BigInt(prev) !== now;
+  // See `tomb()`: a death drains the bar from wherever it stood, and does not require the treasury
+  // to have changed in the same frame.
+  const drains = fx === "died" && prev != null;
   const dec = cfg.decimals ?? 6;
   const breed = breeding(o, cfg, ctx);
 
@@ -913,7 +959,9 @@ function card(o, cfg, ctx) {
       ? el("div", { class: "card-foot", text: `died at window ${o.deathWindow}` })
       : el("div", { class: "card-foot" }, runway(o.treasury, cfg)),
 
-    vitals(o, cfg, moved ? prev : null, fx),
+    // `drains || moved` for the same reason `tomb()` uses it: a death drains the bar whatever the
+    // treasury did, and `moved` alone made `data-was` depend on the balance having changed.
+    vitals(o, cfg, drains || moved ? prev : null, fx),
   );
 }
 
@@ -997,7 +1045,7 @@ function runwayTone(treasury, cfg) {
 }
 
 /**
- *  `_breedThreshold()` (`Population.sol:1520`): `endowment + endowment * breedSurplusBps / 10_000`.
+ *  `_breedThreshold()` (`Population.sol:1875`): `endowment + endowment * breedSurplusBps / 10_000`.
  *
  *  One function so the detail pane and the wiring panel cannot print two different thresholds — the
  *  same reason `runwayTone` is derived from `runway`'s bands instead of repeating them. Returns null
@@ -1012,7 +1060,7 @@ function breedThreshold(cfg) {
 /**
  *  How close an organism is to reproducing — the other end of the same story `runway()` tells.
  *
- *  `Population.sol:1488` gates reproduction on TWO bars at once, `streak() >= breedStreak` AND
+ *  `Population.sol:1843` gates reproduction on TWO bars at once, `streak() >= breedStreak` AND
  *  `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`:1520`) is
  *  `endowment + endowment * breedSurplusBps / 10_000`. Both constants are `setEconomics` values that
  *  `discover()` reads once, and until this existed the page rendered `streak` as a bare number: a 3
@@ -1181,7 +1229,7 @@ export function detail(row, info, cfg, ctx = {}) {
       breed
         ? field("breeding", breedingSummary(breed, cfg), {
             tone: breed.ready && !breed.full ? "ok" : undefined,
-            title: `streak >= ${breed.needStreak} and treasury >= ${money2(breed.need, cfg)} (Population.sol:1488)`,
+            title: `streak >= ${breed.needStreak} and treasury >= ${money2(breed.need, cfg)} (Population.sol:1843)`,
           })
         : null,
       field("windows lived", String(row.windowsLived)),
@@ -1966,7 +2014,7 @@ export function wiringPanel(cfg) {
       cfg.breedStreak == null
         ? null
         : field("breeds at", `${Number(cfg.breedStreak)} in a row · ${money2(breedThreshold(cfg), cfg)}`, {
-            title: "streak bar and treasury bar, both from setEconomics — Population.sol:1488",
+            title: "streak bar and treasury bar, both from setEconomics — Population.sol:1843",
           }),
       cfg.maxPopulation == null ? null : field("max population", `${Number(cfg.maxPopulation)} alive at once`),
     ),

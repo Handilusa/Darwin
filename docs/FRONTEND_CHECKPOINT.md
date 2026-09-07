@@ -520,7 +520,7 @@ The blocking seven, in order of damage:
    as a model transaction (`render.js:886`, `:897`). `Genome.beliefPrompt` is never rendered even
    though all five of its inputs are already in the window strip.
 7. **On first paint there is no genome and no model output at all.** `app.selected` is null
-   (`main.js:318`, `:420`), so the sticky column renders the invite; the verbatim answer and the
+   (`main.js:319`, `:469`), so the sticky column renders the invite; the verbatim answer and the
    validator count sit behind a click advertised in one line of muted text (`render.js:813`).
 
 ### 8.2 Verified by hand this session — not merely asserted by an agent
@@ -551,9 +551,9 @@ Each of these was re-checked against the code before being recorded. They are sa
 - **`"spectator"` appears zero times in `web/`**, and there is **no link to `/` anywhere** in
   `web/js` or `web/index.html`, while the landing sends judges to the arena from three places
   (`Nav.jsx:33`, `Hero.jsx:217`, `Footer.jsx:24`). The arena is a one-way door.
-- **`metabolicCost` never appears as a price.** It is read (`chain.js:164`) and drives the vitals
-  bar and runway, but as a number it surfaces only in a `title` (`render.js:731`), a `Starved` feed
-  row (`render.js:1166`) and the collapsed wiring `<details>` (`render.js:1397`). The stats rail
+- **`metabolicCost` never appears as a price.** It is read (`chain.js:277`) and drives the vitals
+  bar and runway, but as a number it surfaces only in a `title` (`render.js:1030`), a `Starved` feed
+  row (`render.js:1580`) and the collapsed wiring `<details>` (`render.js:1994`). The stats rail
   shows five economic numbers, none of which is the cost of staying alive.
 
 ### 8.3 Two process failures in the audit run — read this before re-running anything
@@ -801,8 +801,8 @@ their own literals (`5_000n`, `4`, `THRESHOLD === 60_000_000n`): they are the in
 against `Population.sol`, and the new `config` fields are pinned *to them*.
 
 The design previously drafted here was *refuted* and was not used: it premised that fixture `#8` is
-dead, and `fixture.js:149-152` has `dead: false` — `#8` only dies in the season frame at
-`fixture.js:531`.
+dead, and `fixture.js:182-185` has `dead: false` — `#8` only dies in the season frame at
+`fixture.js:673`.
 
 **5. CLOSED 2026-09-02 — the review ran, and it is written up in §8.13.** ~~Rewrite the two checks then
 at `arena.mjs` lines 510/516 to their intent~~ — **done, §8.5 is CLOSED.** ~~Relaunch the agent society to review §8.7 rather than
@@ -1765,9 +1765,9 @@ they did not before §8.16.
 
 **One detail in the close is deliberately backwards, and it would read as a bug.** The chain emits
 `SeasonPrizePaid` once per winner and `SeasonEnded` **last**; the fixture reverses that order
-(`fixture.js:873`) because the feed is newest-first, and reversing the chain's own log order is what
+(`fixture.js:937`) because the feed is newest-first, and reversing the chain's own log order is what
 puts the summary at the **top** rather than buried under three payouts. Both events carry the season
-that **ended** (`:849`, `:855` read `s.seasonId`) while `seasonId += 1` happens after (`:862`) — same
+that **ended** (`:908`, `:914` read `s.seasonId`) while `seasonId += 1` happens after (`:923`) — same
 as the contract.
 
 **Verified in a browser, not by reading**, which is the part C2's old tag was missing.

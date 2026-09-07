@@ -345,6 +345,15 @@ code {
   background: linear-gradient(90deg, var(--life-deep) 0%, var(--ink-2) 40%);
 }
 
+/* Amber, not coral: the page is readable and every structural reading on it is real — it is the
+   SCALE of the money figures that is assumed. That is a caveat about the numbers, not a failure of
+   the page, and colouring it like a dead read would train a reader to ignore both. */
+.banner-warn {
+  border-color: var(--heat-dim);
+  background: linear-gradient(90deg, var(--heat-deep) 0%, var(--ink-2) 40%);
+  color: var(--text);
+}
+
 .banner-error {
   border-color: var(--bad-dim);
   background: linear-gradient(90deg, var(--bad-deep) 0%, var(--ink-2) 40%);
@@ -907,6 +916,34 @@ code {
   background: var(--ash-deep);
 }
 
+/* SELECTING A CORPSE MUST NOT RESURRECT IT — the third instance of the collision the two lineage
+   rules at the bottom of this file already answer, and the worst-placed of the three, because the
+   grid is where a judge looks first.
+
+   `render.js`'s `card()` and `tomb()` both build `["card", o.dead && "card-dead", selected &&
+   "card-selected"]`, so a clicked corpse carries BOTH classes. `.card-selected` (0,1,0) and
+   `.card-dead` (0,1,0) tie, and `.card-dead` is the later rule, so `border-color` and `background`
+   were already resolving to ash on their own. `box-shadow` was not, and could not: `.card-selected`
+   is the ONLY rule in this file that declares it, so there is no tie for source order to settle —
+   `inset 2px 0 0 var(--life)` applied unconditionally, and a selected corpse wore a full-height
+   mint rail down its left edge. Mint is this palette's word for alive (§2) on a page whose loudest
+   claim is that death is irreversible, and the dead card sitting in the corpse band above the grid
+   is exactly the card a reader clicks to find out what happened to it.
+
+   Answered inside the ash ramp rather than by removing the rail, for the same reason
+   `.tree-node.is-dead.is-selected circle` keeps its wider stroke: selection must still be visibly
+   answered, just not with the colour that means the organism is fine. (0,2,0), so this does not
+   depend on source order either. */
+.card-dead.card-selected {
+  border-color: var(--ash);
+  background: var(--ash-deep);
+  box-shadow: inset 2px 0 0 var(--ash);
+}
+
+.card-dead.card-selected:hover {
+  border-color: var(--ash);
+}
+
 /*  THE CORPSE BAND
 
     The dead sit ABOVE the living grid, not at the end of it — reasoning in `render.js`'s `band()`.
@@ -1193,7 +1230,20 @@ code {
   background: var(--bad);
 }
 
-.card-dead .vitals-fill {
+/* A GREEN RAIL ON A CORPSE, ONE LEVEL DOWN. `.card-dead .vitals-fill` is (0,2,0) and beats the bare
+   `.vitals-fill` above, so a dead organism's bar was already ash — but `.vitals-fill.bad` and
+   `.vitals-fill.warn` are ALSO (0,2,0), and they come first, so source order was the only thing
+   deciding. It happened to decide correctly, which is not the same as being correct: reordering
+   these three rules, or adding a fourth severity band above them, would have silently painted the
+   dead bar coral. `render.js`'s `vitals()` forces `left = 0n` for a corpse so `bad`/`warn` are not
+   normally stamped on one — but that is a second file's invariant holding this one up, and it is
+   exactly the kind of coupling that breaks quietly.
+
+   (0,3,0) with the class it must beat named explicitly, so the outcome no longer depends on which
+   rule was written last. Same resolution as the two lineage pairs at the bottom of this file. */
+.card-dead .vitals-fill,
+.card-dead .vitals-fill.warn,
+.card-dead .vitals-fill.bad {
   background: var(--ash-dim);
 }
 

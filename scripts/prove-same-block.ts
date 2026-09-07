@@ -18,6 +18,7 @@
  *  chain." If this script fails, the narration changes — not the script.
  */
 import { manifest, publicClient, log, warn, shannon, type Manifest } from "./lib/darwin.js";
+import { scanRange } from "./lib/logscan.js";
 import { decodeEventLog, parseAbiItem, toEventSelector, type Address, type Hex } from "viem";
 
 const REACTED = parseAbiItem(
@@ -25,21 +26,32 @@ const REACTED = parseAbiItem(
 );
 
 /*
- *  The settlement event, VERIFIED 2026-08-29 against `binarySettlementEventsAbi` in
- *  `@somnia-chain/markets-sdk@0.28.1`.
+ *  The settlement event — the FINALIZE one, T_A in `docs/SESSION_CHECKPOINT.md` §2.8.
  *
  *  This used to be unknown, and its absence is why `references()` below fell back to
- *  scanning a log's raw hex for a 32-byte word. With the ABI in hand the correlation can be
- *  an exact decode of an indexed field instead of a substring search — which matters,
+ *  scanning a log's raw hex for a 32-byte word. With the signature in hand the correlation
+ *  can be an exact decode of an indexed field instead of a substring search — which matters,
  *  because the substring version would also match an unrelated event that merely happened
  *  to contain our pool address somewhere in its payload.
  *
  *  Note it is keyed by `marketKey`, not `marketId`. Matching on our marketId can therefore
  *  NEVER succeed against this event; `pool` (topic2) is the field that ties a settlement to
  *  this population.
+ *
+ *  THE LAST FIELD IS A PAYOUT VECTOR, AND UNTIL 2026-09-06 THIS SAID `uint8 winningOutcome`
+ *  — copied from `binarySettlementEventsAbi` in `@somnia-chain/markets-sdk@0.28.1`, which is
+ *  stale against the deployed singleton. See the long note in `subscribe.ts`, which carries
+ *  the same constant and the two checks (measured topic0 `0xb1884334…`, 256-byte data) that
+ *  fix this shape as the live one.
+ *
+ *  THE CONSEQUENCE HERE WAS A SILENT DOWNGRADE OF THIS SCRIPT'S OWN VERDICT, which is worse
+ *  than a failure. A topic0 that never matches means `references()` can never take its
+ *  `"decoded"` branch, so every correlation fell through to the raw hex scan and the run
+ *  printed "correlated only by RAW HEX" — the weak claim — on a block that in fact satisfied
+ *  the strong one.
  */
 const MARKET_FINALIZED = parseAbiItem(
-  "event MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64 nonce, address collateralToken, uint256 netBacking, bool voided, uint8 winningOutcome)",
+  "event MarketFinalized(uint256 indexed marketKey, address indexed pool, uint64 nonce, address collateralToken, uint256 netBacking, bool voided, uint256[] payoutNumerators)",
 );
 const MARKET_FINALIZED_TOPIC0 = toEventSelector(MARKET_FINALIZED);
 
@@ -57,7 +69,15 @@ const WINDOW_OPENED = parseAbiItem(
   "event WindowOpened(uint64 indexed window, bytes32 indexed marketId, address pool, uint256 openPrice)",
 );
 
-const CHUNK = 9_000n;
+/**
+ *  Block paging now lives in `lib/logscan.ts` — see `LOG_SPAN` there for the measurement.
+ *
+ *  This file used to own a `const CHUNK`, first as `9_000n` (nine times over dream-rpc's real
+ *  cap, which is what `scan`'s own comment below was written to prevent and did not) and then
+ *  as a corrected `1_000n` copied into three scripts. The shared helper shrinks on refusal,
+ *  retries transient failures, and has a self-test that runs with no chain
+ *  (`npx tsx scripts/lib/logscan.ts`).
+ */
 
 type Reaction = {
   blockNumber: bigint;
@@ -224,22 +244,36 @@ type WindowIdentity = { marketId: Hex; pool: Address };
  */
 async function windowIdentity(m: Manifest, r: Reaction): Promise<WindowIdentity | undefined> {
   const floor = BigInt(m.deployedAtBlock);
-  let to = r.blockNumber;
 
-  while (to >= floor) {
-    const from = to - CHUNK + 1n > floor ? to - CHUNK + 1n : floor;
-    const logs = await publicClient.getLogs({
-      address: m.population,
-      event: WINDOW_OPENED,
-      args: { window: r.window },
-      fromBlock: from,
-      toBlock: to,
-    });
-    const hit = logs.at(-1);
-    if (hit) return { marketId: hit.args.marketId!, pool: hit.args.pool! };
-    if (from === floor) break;
-    to = from - 1n;
-  }
+  // Backward, and it STOPS at the first page that carries a hit — `WindowOpened` for this
+  // window was emitted just before the reaction, so reading further back is pure waste.
+  // `onPage` returning true is what preserves that; without it this becomes a full sweep of
+  // every block since deployment.
+  const logs = await scanRange(
+    floor,
+    r.blockNumber,
+    (pageFrom, pageTo) =>
+      publicClient.getLogs({
+        address: m.population,
+        event: WINDOW_OPENED,
+        args: { window: r.window },
+        fromBlock: pageFrom,
+        toBlock: pageTo,
+      }),
+    {
+      direction: "backward",
+      // dream-rpc IGNORES the `topics` filter, so `args: { window }` above may have narrowed
+      // nothing and a page can be full of OTHER windows' logs. Stopping on `rows.length > 0`
+      // would therefore stop on a page with no match in it at all; the predicate has to be the
+      // same client-side check the filter below applies.
+      onPage: (rows) => rows.some((l) => l.args.window === r.window),
+      onShrink: (at, span, reason) =>
+        warn(`RPC refused the block range at ${at}; retrying with ${span}-block pages (${reason})`),
+    },
+  );
+
+  const hit = logs.filter((l) => l.args.window === r.window).at(-1);
+  if (hit) return { marketId: hit.args.marketId!, pool: hit.args.pool! };
   return undefined;
 }
 
@@ -285,27 +319,33 @@ function references(l: { topics: readonly Hex[]; data: Hex }, w: WindowIdentity)
                              PLUMBING
 //////////////////////////////////////////////////////////////*/
 
-/** Chunked because public RPCs cap `eth_getLogs` ranges, and Somnia's blocks are fast. */
+/** Paged by `scanRange`, because public RPCs cap `eth_getLogs` ranges and Somnia's blocks are fast. */
 async function scan(m: Manifest, from: bigint, to: bigint): Promise<Reaction[]> {
-  const out: Reaction[] = [];
-  for (let start = from; start <= to; start += CHUNK) {
-    const end = start + CHUNK - 1n > to ? to : start + CHUNK - 1n;
-    const logs = await publicClient.getLogs({
-      address: m.selectionEngine,
-      event: REACTED,
-      fromBlock: start,
-      toBlock: end,
-    });
-    for (const l of logs) {
-      out.push({
-        blockNumber: l.blockNumber!,
-        txHash: l.transactionHash!,
-        window: l.args.window ?? 0n,
-        recordedBlock: l.args.blockNumber ?? 0n,
-        viaReactivity: l.args.viaReactivity ?? false,
-      });
-    }
-  }
+  // The whole range, no early exit: `main` counts reactive against manual and takes the LAST
+  // reactive one, so a partial scan would misreport both.
+  const logs = await scanRange(
+    from,
+    to,
+    (pageFrom, pageTo) =>
+      publicClient.getLogs({
+        address: m.selectionEngine,
+        event: REACTED,
+        fromBlock: pageFrom,
+        toBlock: pageTo,
+      }),
+    {
+      onShrink: (at, span, reason) =>
+        warn(`RPC refused the block range at ${at}; retrying with ${span}-block pages (${reason})`),
+    },
+  );
+
+  const out: Reaction[] = logs.map((l) => ({
+    blockNumber: l.blockNumber!,
+    txHash: l.transactionHash!,
+    window: l.args.window ?? 0n,
+    recordedBlock: l.args.blockNumber ?? 0n,
+    viaReactivity: l.args.viaReactivity ?? false,
+  }));
   out.sort((a, b) => (a.blockNumber < b.blockNumber ? -1 : a.blockNumber > b.blockNumber ? 1 : 0));
   return out;
 }

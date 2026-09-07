@@ -189,6 +189,15 @@ painted.errorAbsent = run("errorBanner(absent)", () =>
 painted.errorUnreachable = run("errorBanner(unreachable)", () =>
   ui.errorBanner("Chain 50312 did not answer for 0x…dEaD.", () => {}, "unreachable"),
 );
+// The FOURTH branch. A revert is proof of code, so this is an address fault like `absent` and not a
+// network fault like `unreachable` — and it was rendering `unreachable`'s "leave it alone and retry"
+// until 2026-09-06. Rendered here so the headline can be compared against the other three below.
+painted.errorWrong = run("errorBanner(wrong)", () =>
+  ui.errorBanner("There is a contract at 0x…dEaD, but it is not a Population.", () => {}, "wrong"),
+);
+// Every money figure scaled by a guess, said out loud. `discover()` falls back to 6 decimals rather
+// than blanking the arena, so this banner is the only thing separating that fallback from a reading.
+painted.unverified = run("unverifiedBanner()", () => ui.unverifiedBanner());
 painted.readErrors = run("readErrors()", () => ui.readErrors({ currentWindow: "StalePrice(214, 180)" }));
 painted.readErrorsEmpty = run("readErrors({})", () => ui.readErrors({}));
 painted.header = run("header()", () => ui.header(state, cfg, ctx));
@@ -480,8 +489,8 @@ assert("the window number never goes backwards", !backwards, backwards);
 assert("nothing is ever resurrected", !resurrected, resurrected);
 assert("no organism ever leaves the population", !vanished, vanished);
 
-// WHO BREEDS IS NOT A CHOICE. `Population.sol:1488` gates reproduction on `streak() >= breedStreak`
-// AND `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`Population.sol:1520`) is `endowment` plus
+// WHO BREEDS IS NOT A CHOICE. `Population.sol:1843` gates reproduction on `streak() >= breedStreak`
+// AND `treasury() >= _breedThreshold()`, and `_breedThreshold()` (`Population.sol:1875`) is `endowment` plus
 // `breedSurplusBps`, which at the shipped default of 5000 is 40 + 50% = 60 tUSDC. Frame 0 is exactly
 // the post-settlement state the contract would test, so the eligible set is computable — and the
 // assertion is that the script breeds precisely that set and nobody else.
@@ -578,9 +587,18 @@ const INCOME_41 = frames[0].state.organisms
   .filter((o) => !wasAlive.get(Number(o.id))?.dead)
   .map((o) => {
     const was = wasAlive.get(Number(o.id));
-    // The one that starved paid nothing: this fixture has it lose the whole remainder to the forfeit
-    // rather than to the charge, and the forfeit is not `_book` income — it goes to the pool whole.
-    if (o.dead && !was.dead) return 0n;
+    // THE ONE THAT STARVED PAID WHAT IT HAD, and that is income like anyone's rent — `settleAll`
+    // books `charged + raked` for every organism it settles, "including one that dies in the same
+    // breath" (`Population.sol:1738-1743`). This returned `0n` until 2026-09-06, when the fixture had
+    // it lose the whole remainder to a FORFEIT instead; that pairing is unreachable, because
+    // `Prophet.sol:576-579` charges `min(treasury, cost)` first and leaves nothing behind to forfeit.
+    //
+    // Derived from the contract's rule over the frame's own numbers rather than read off the fixture:
+    // it lost, so it reached settlement holding what it had minus one ante, and paid `min` of that.
+    if (o.dead && !was.dead) {
+      const atSettlement = was.treasury - state.ante;
+      return atSettlement < cfg.metabolicCost ? atSettlement : cfg.metabolicCost;
+    }
     return o.correctCount > was.correctCount ? cfg.metabolicCost + RAKE_ON_WIN : cfg.metabolicCost;
   });
 const rakeDelta = frames[0].state.rakeAccrued - state.rakeAccrued;
@@ -595,8 +613,14 @@ assert("phase walks 2 → 0 → 1 → 2", `${state.phase}${frames[0].state.phase
 assert("the window turns over exactly once", String(last.state.windowCount) === "42", String(last.state.windowCount));
 
 // Rendered, not just computed. `stampsFor` is new plumbing and the log rows are new arg shapes.
+// EVERY row, counted off the data rather than pinned to a literal — 50 became 49 when the scripted
+// death's unreachable `ResidueForfeited` row was removed on 2026-09-06, and a hard-coded total turns
+// every future scenario edit into a puzzle rather than a signal. The claim is that the renderer drops
+// none of them; how many there are is the fixture's business.
 const seasonRows = cls("seasonFeed").filter((c) => c === "feed-row").length;
-assert("all 50 feed rows render", seasonRows === 50, `found ${seasonRows}`);
+assert("every scripted feed row renders", seasonRows === last.logs.length, `${seasonRows} rendered of ${last.logs.length}`);
+// CONTROL: a total that is not trivially small, or "renders all of them" is a claim about nothing.
+assert("the scripted feed is a real feed, not a handful of rows", last.logs.length > 40, String(last.logs.length));
 assert(
   "no scripted event falls through to generic()",
   fellThrough(last.logs).length === 0,
@@ -722,9 +746,14 @@ assert(
 //
 // AND THE POOL'S OWN PROVENANCE, because the pot is only honest if the frame that filled it was.
 // `_book` (`Population.sol:759`) sends `prizeShareBps` of every settled organism's income to the pool,
-// and a corpse's residue is forfeited into it WHOLE (`:1277-1280`) rather than split. Without this,
+// and a corpse's residue is forfeited into it WHOLE (`:1760`) rather than split. Without this,
 // freezing `prizePool` through the settlement — the bug that shipped until 2026-09-04 — left every
 // payout assertion green, because they all read the pot off the frame rather than deriving it.
+//
+// THE SCRIPTED DEATH FORFEITS NOTHING, and that is the corrected reading rather than a missing row.
+// #8 starved, so the charge took its whole balance as rent and `Population.sol:1757` read a residue
+// of zero. Kept as a sum over the frame's rows anyway — the term belongs in the equation, and if a
+// future scenario adds a death WITH a residue it has to appear here or the pool stops balancing.
 const RESIDUE = frames[0].logs
   .filter((l) => l.eventName === "ResidueForfeited" && l.blockNumber === frames[0].state.blockNumber)
   .reduce((a, l) => a + l.args.amount, 0n);
@@ -737,7 +766,19 @@ assert(
   poolDelta === sumOf(INCOME_41.map(bookPool)) + RESIDUE,
   `${poolDelta} != ${sumOf(INCOME_41.map(bookPool))} + ${RESIDUE}`,
 );
-assert("a corpse's residue is forfeited whole, not split", RESIDUE > 0n && RESIDUE > bookPool(RESIDUE), String(RESIDUE));
+// The forfeit path still has to be SHOWN somewhere, or the summariser is dead code in the demo. It is
+// in the base feed, on the other death — #3, which covered its rent and then could not cover the next.
+const BASE_FORFEIT = f.logs.filter((l) => l.eventName === "ResidueForfeited");
+assert(
+  "the forfeit path is still exercised, on the death that had a residue",
+  BASE_FORFEIT.length === 1 && BASE_FORFEIT[0].args.amount > 0n,
+  `${BASE_FORFEIT.length} row(s)`,
+);
+assert(
+  "a corpse's residue is forfeited whole, not split",
+  BASE_FORFEIT[0].args.amount > bookPool(BASE_FORFEIT[0].args.amount),
+  String(BASE_FORFEIT[0].args.amount),
+);
 
 // 60/30/10 OF ONE POT READ ONCE (`:806`). The three shares must divide the SAME number — computing
 // each from the remaining balance would pay the second place 30% of 40%, which is the bug this shape
@@ -1191,9 +1232,23 @@ const zeroData = () => ({
     cause: Object.assign(new Error('returned no data ("0x")'), { name: "ContractFunctionZeroDataError" }),
   }),
 });
+// The chain viem ACTUALLY builds for a dropped request, measured against viem 2.x on 2026-09-06 —
+// not a bare `HttpRequestError`. The difference is load-bearing: `CallExecutionError` is on this
+// chain as well as on a revert's, and while this fixture was the short version, a `saysReverted` that
+// matched it passed here and misclassified every outage as a wrong contract. `app/test/reads.mjs`
+// caught it because its RPC-down case is a real viem client. Do not shorten this back.
 const transport = () => ({
   status: "rejected",
-  reason: Object.assign(new Error("HTTP request failed."), { name: "HttpRequestError" }),
+  reason: Object.assign(new Error("An unknown RPC error occurred."), {
+    name: "ContractFunctionExecutionError",
+    cause: Object.assign(new Error("An unknown RPC error occurred."), {
+      name: "CallExecutionError",
+      cause: Object.assign(new Error("An unknown RPC error occurred."), {
+        name: "UnknownRpcError",
+        cause: Object.assign(new Error("fetch failed"), { name: "Error" }),
+      }),
+    }),
+  }),
 });
 
 assert(
@@ -1309,6 +1364,493 @@ assert(
   "setupCard still has a submit control",
   setupEls.some((n) => tag(n) === "button" && n.getAttribute("type") === "submit"),
   `${setupEls.filter((n) => tag(n) === "button").length} button(s)`,
+);
+
+/*//////////////////////////////////////////////////////////////
+                    THE FEED'S BLOCK RANGE
+//////////////////////////////////////////////////////////////*/
+
+// LOG_CHUNK SHIPPED AT NINE TIMES THE RANGE dream-rpc ACCEPTS, and nothing here noticed for weeks.
+//
+// Measured against the live node on 2026-09-06 with a ladder and a negative control: `toBlock -
+// fromBlock` of 999 and 1000 are accepted, 1001 and 9000 are both rejected with `block range
+// exceeds 1000`. `LOG_CHUNK` was 9_000n — so every `eth_getLogs` this page issued against the real
+// RPC was refused, and `readFeed`'s `Promise.allSettled` turned all three refusals into empty
+// arrays, so the feed rendered "no activity yet" and looked like a quiet chain.
+//
+// This is a static check on a constant and it is deliberately not more than that: `readFeed` itself
+// cannot run here (its lazy `abis()` reaches the CDN, see above), so nothing in Node can observe the
+// request being refused. What IS decidable in Node is whether the number the browser will send
+// exceeds a cap that has been measured — which is the whole bug, and it is now impossible to
+// reintroduce silently.
+const cfgMod = await import("../config.js");
+
+// The cap itself, as measured. Not a style preference: above this the node returns an error.
+const DREAM_RPC_SPAN_CAP = 1_000n;
+
+assert(
+  "LOG_CHUNK is within the measured dream-rpc span cap",
+  cfgMod.LOG_CHUNK <= DREAM_RPC_SPAN_CAP,
+  `LOG_CHUNK=${cfgMod.LOG_CHUNK}, cap=${DREAM_RPC_SPAN_CAP} — dream-rpc rejects this with "block range exceeds 1000"`,
+);
+assert("LOG_CHUNK is a positive bigint", typeof cfgMod.LOG_CHUNK === "bigint" && cfgMod.LOG_CHUNK > 0n, `${cfgMod.LOG_CHUNK}`);
+
+// CONTROL. The assertion above passes for every value at or under the cap, including the one that
+// shipped broken — so on its own it does not prove the check can fire. This asserts the predicate
+// REJECTS the historical value, which is what makes the check above evidence rather than decoration.
+assert(
+  "CONTROL: the same predicate rejects the 9_000n that shipped",
+  !(9_000n <= DREAM_RPC_SPAN_CAP),
+  "the cap has been widened past the measurement — re-measure before trusting this",
+);
+
+// The seam between the two files. `readFeed` now returns `errors`, and that is only worth returning
+// if a caller reads it; a producer with no consumer is how the silence came back last time. Checked
+// as source text because `main.js` cannot be imported (it calls `boot()` on load).
+const mainSrc = readFileSync(new URL("../js/main.js", import.meta.url), "utf8");
+assert(
+  "main.js reads the reasons readFeed collects",
+  /f\.errors/.test(mainSrc),
+  "readFeed returns `errors` and nothing consumes it — a refused scan is silent again",
+);
+
+const chainSrc = readFileSync(new URL("../js/chain.js", import.meta.url), "utf8");
+assert(
+  "readFeed returns the reasons rather than only the logs",
+  /errors/.test(chainSrc) && /return \{ logs: found[^}]*errors/.test(chainSrc),
+  "readFeed's return no longer carries `errors`",
+);
+
+/*//////////////////////////////////////////////////////////////
+        A REVERT IS NOT A NETWORK FAILURE  (verdict: "wrong")
+//////////////////////////////////////////////////////////////*/
+
+/*
+ *  The case the two-way verdict had nowhere to put. An address holding a REAL contract that is not
+ *  this one — an arena from a superseded deploy, a proxy aimed at the wrong implementation — has
+ *  code, so nothing returns `0x`. It executes, finds no matching selector and REVERTS. Every read
+ *  fails, no read says "returned no data", and the old ternary therefore fell through to
+ *  `unreachable`: *"the chain did not answer"*, printed over a chain that answered all twenty-two
+ *  calls, with the advice to leave the address alone and retry. That is the one instruction that
+ *  cannot help the one visitor whose address is definitely wrong.
+ *
+ *  On the day before a deploy this is not a hypothetical: the address a browser has saved is an
+ *  address from an EARLIER deploy, and earlier deploys leave code behind.
+ */
+// viem's real chain for an execution that reverted, measured the same day. Note what it SHARES with
+// `transport()` above — `ContractFunctionExecutionError` at the top and `CallExecutionError` and
+// `UnknownRpcError` in the middle. Only `ContractFunctionRevertedError` and `ExecutionRevertedError`
+// are unique to it, and those two are the whole of what `saysReverted` may match.
+const reverted = () => ({
+  status: "rejected",
+  reason: Object.assign(new Error('The contract function "symbol" reverted.'), {
+    name: "ContractFunctionExecutionError",
+    cause: Object.assign(new Error('The contract function "symbol" reverted.'), {
+      name: "ContractFunctionRevertedError",
+      cause: Object.assign(new Error("Execution reverted for an unknown reason."), {
+        name: "CallExecutionError",
+        cause: Object.assign(new Error("Execution reverted for an unknown reason."), {
+          name: "ExecutionRevertedError",
+          cause: Object.assign(new Error("An unknown RPC error occurred."), { name: "UnknownRpcError" }),
+        }),
+      }),
+    }),
+  }),
+});
+
+assert(
+  "every read reverting reads as wrong, NOT unreachable",
+  chain.readVerdict([reverted(), reverted(), reverted()]) === "wrong",
+  chain.readVerdict([reverted(), reverted(), reverted()]),
+);
+// CONTROL, and the one that calibrates the assertion above. All three fixtures are all-rejected
+// batches of the same length, so a classifier counting failures would return one verdict for all
+// three. Requiring three DIFFERENT answers from three same-shaped batches is what proves the rows
+// are being read — the same move the `absent`/`unreachable` control makes one section up.
+assert(
+  "CONTROL: three all-failed batches of equal length give three different verdicts",
+  new Set([
+    chain.readVerdict([zeroData(), zeroData(), zeroData()]),
+    chain.readVerdict([reverted(), reverted(), reverted()]),
+    chain.readVerdict([transport(), transport(), transport()]),
+  ]).size === 3,
+  `absent=${chain.readVerdict([zeroData(), zeroData(), zeroData()])} wrong=${chain.readVerdict([reverted(), reverted(), reverted()])} unreachable=${chain.readVerdict([transport(), transport(), transport()])} — a count alone would have tied them`,
+);
+// THE CONTROL THAT MATTERS MOST HERE, because the two fixtures are not independent: viem puts the
+// same error names on both chains. `CallExecutionError` was in `saysReverted` for one commit and the
+// web suite stayed green — its `transport()` fixture was a bare `HttpRequestError` with no cause
+// chain, so the overlap it needed to exercise was not in the fixture at all. Assert the overlap
+// exists, or the verdict split above is being proved by an unrealistically weak input.
+const chainNames = (row) => {
+  const out = [];
+  for (let e = row.reason, i = 0; e && i < 12; i += 1, e = e.cause) out.push(e.name);
+  return out;
+};
+const shared = chainNames(transport()).filter((n) => chainNames(reverted()).includes(n));
+assert(
+  "CONTROL: the transport and revert fixtures really do share error names",
+  shared.length >= 2 && shared.includes("CallExecutionError"),
+  `shared=${JSON.stringify(shared)} — if these chains are disjoint, telling them apart is trivial and the check above proves nothing about viem`,
+);
+// So the predicate may only match names that are UNIQUE to a revert. Read off the source, because
+// this is the specific mistake that shipped: a name on both chains classifies an outage as a fault.
+assert(
+  "saysReverted matches no error name a transport failure also raises",
+  !shared.some((n) => new RegExp(`"${n}"`).test(chainSrc.match(/function saysReverted[\s\S]*?\n\}/)?.[0] ?? "")),
+  `saysReverted matches one of ${JSON.stringify(shared)}, which every dropped request also raises`,
+);
+
+// ORDER, stated as a case. `0x` is the more specific diagnosis and viem can raise both at the top of
+// one chain, so "no code here" must win over "something reverted" when both appear in a batch.
+assert(
+  "a 0x among reverts still names the address absent",
+  chain.readVerdict([reverted(), zeroData(), reverted()]) === "absent",
+  chain.readVerdict([reverted(), zeroData(), reverted()]),
+);
+// A revert is not proof of the WRONG contract when something also answered — one reverting view on a
+// live arena is ordinary (`currentWindow` reverts `NoWindow` before the first push, by design).
+assert(
+  "a revert alongside answers is still live",
+  chain.readVerdict([reverted(), ok("tUSDC"), ok(1n)]) === "live",
+  chain.readVerdict([reverted(), ok("tUSDC"), ok(1n)]),
+);
+
+// THE BANNER SAYS WHICH ONE — now four ways, not three. Same reasoning as the three-way check above:
+// a verdict nothing renders differently is a verdict that does not exist.
+assert(
+  "the wrong-contract banner blames the address, not the network",
+  t("errorWrong").includes("not a Population") && !/did not answer/.test(t("errorWrong")),
+  t("errorWrong").slice(0, 160),
+);
+// ONE MESSAGE, FOUR KINDS. Slicing the four `painted.*` banners instead would compare the four
+// different MESSAGES they were each given, which differ whether or not the headlines do — a
+// duplicated headline passed that version of this check. Holding the message constant makes the
+// headline the only thing that can vary, which is the actual claim.
+//
+// And it is the text BEFORE the message, not the whole banner: two kinds that share a headline still
+// differ overall if one of them also renders a Retry button, so comparing full text let the
+// duplicate through. Cut at the message and the headline is all that is left.
+const SAME = "the same sentence for all four";
+const heads = ["absent", "wrong", "unreachable", undefined].map((k) => {
+  const text = ui.errorBanner(SAME, () => {}, k).textContent;
+  return text.slice(0, text.indexOf(SAME));
+});
+assert("the four banners do not share a headline", new Set(heads).size === 4, JSON.stringify(heads));
+// A CONCLUSION IS NOT OFFERED A RETRY. `absent` and `wrong` are both answers the chain already gave;
+// a Retry button beside them invites the reader to press it instead of reading the sentence. Both
+// branches are handed the same `onRetry`, so the difference can only come from `kind`.
+const buttons = (k) => walk(painted[k]).filter((n) => tag(n) === "button").length;
+assert(
+  "neither address verdict offers a Retry button",
+  buttons("errorAbsent") === 0 && buttons("errorWrong") === 0,
+  `absent=${buttons("errorAbsent")} wrong=${buttons("errorWrong")}`,
+);
+assert(
+  "CONTROL: the retryable banners still have one",
+  buttons("errorUnreachable") === 1 && buttons("errorBanner") === 1,
+  `unreachable=${buttons("errorUnreachable")} default=${buttons("errorBanner")} — if these are 0 too, the check above is measuring a button that was never rendered`,
+);
+// The seam. `readVerdict` can return "wrong" all it likes; if `discover` does not throw it tagged,
+// `main.js` cannot open the address form and the banner cannot pick its headline.
+assert(
+  "discover throws the wrong-contract verdict tagged, and does not retry it",
+  /readVerdictError\(\s*"wrong"/.test(chainSrc) && /kind === "absent" \|\| e\?\.kind === "wrong"/.test(chainSrc),
+  "`wrong` is classified but not thrown with its kind, or is being retried — retrying a conclusion only delays the banner",
+);
+assert(
+  "main.js opens the address form for wrong as well as absent",
+  /errorKind === "absent" \|\| app\.errorKind === "wrong"/.test(mainSrc),
+  "a contract that is not a Population is remedied by editing the address, so the field that edits it must open",
+);
+
+/*//////////////////////////////////////////////////////////////
+     UNREAD DECIMALS ARE NOT SIX  (audit #25 / #33)
+//////////////////////////////////////////////////////////////*/
+
+/*
+ *  `discover()` read the collateral's `decimals()` inside a bare `Promise.allSettled` and dropped
+ *  the rejection on the floor: `let decimals = 6` stood, nothing landed in `failures`, and so the
+ *  page rendered no banner, no error row and no dash — it rendered CONFIDENT WRONG NUMBERS. On an
+ *  18dp collateral every treasury on screen is off by twelve orders of magnitude and the only
+ *  surface that disagrees is the chain.
+ *
+ *  6 is still the fallback, because blanking every figure over one dropped ERC-20 call is a worse
+ *  answer than a marked one. What changed is that the mark exists. Checked as source text plus a
+ *  rendered banner, because `discover` itself needs viem and therefore the CDN.
+ */
+assert(
+  "discover folds the decimals failure into the failures map",
+  /failures\.decimals = why\(/.test(chainSrc),
+  "a dropped decimals() is invisible again — every money figure on the page is scaled by an unreported guess",
+);
+assert(
+  "discover reports the scale as unverified rather than only defaulting",
+  /decimalsUnverified/.test(chainSrc) && /decimalsUnverified = true/.test(chainSrc),
+  "the 6 is being substituted with nothing saying so, which makes a default indistinguishable from a reading",
+);
+assert(
+  "a failed collateral read also marks the scale unverified",
+  // `collateral` itself failing means `decimals()` is never even asked, and the scale is exactly as
+  // unknown as it is when the ERC-20 call is refused. The `else` branch is what covers it.
+  /\}\s*else\s*\{[^}]*decimalsUnverified = true/.test(chainSrc),
+  "when collateral() fails the decimals read is skipped entirely, so the unverified flag must be set on that path too",
+);
+assert(
+  "main.js surfaces the unverified scale as a banner",
+  /app\.unverified/.test(mainSrc) && /ui\.unverifiedBanner\(\)/.test(mainSrc),
+  "chain.js reports the flag and nothing renders it — a producer with no consumer, which is how the silent feed came back last time",
+);
+assert(
+  "the unverified flag outlives a successful poll",
+  // It is its OWN field precisely because `refresh()` clears `app.error` on every good poll. Parked
+  // on `app.error` the warning would survive ten seconds and then vanish while the wrong figures
+  // stayed on screen, which is worse than never showing it.
+  /app\.unverified = app\.cfg\.decimalsUnverified/.test(mainSrc) && !/app\.error =[^\n]*decimals\(\)/.test(mainSrc),
+  "the warning is parked on a field `refresh()` clears, so it disappears on the next successful poll",
+);
+assert(
+  "the unverified banner names the assumption and the risk",
+  t("unverified").includes("unverified") &&
+    t("unverified").includes("decimals()") &&
+    t("unverified").includes("orders of magnitude"),
+  t("unverified"),
+);
+// CONTROL. The banner must be a WARNING, not the demo banner's statement of fact and not the error
+// banner's dead-arena red — the page is live and readable, it is the scale that is assumed.
+assert(
+  "CONTROL: the unverified banner is its own class, not the demo or error one",
+  painted.unverified?.getAttribute("class")?.includes("banner-warn") &&
+    !painted.unverified?.getAttribute("class")?.includes("banner-demo") &&
+    !painted.unverified?.getAttribute("class")?.includes("banner-error"),
+  `class=${painted.unverified?.getAttribute("class")}`,
+);
+// And it is not dismissible. Same reason `demoBanner` is not: a page that can be mistaken for a
+// measured one is worse than a page that admits it is not.
+assert(
+  "the unverified banner cannot be dismissed",
+  walk(painted.unverified).filter((n) => tag(n) === "button").length === 0,
+  `${walk(painted.unverified).filter((n) => tag(n) === "button").length} button(s)`,
+);
+
+/*//////////////////////////////////////////////////////////////
+      DISCOVERY SURVIVES ONE DROPPED REQUEST  (audit #33b)
+//////////////////////////////////////////////////////////////*/
+
+/*
+ *  `boot()` called `discover()` exactly once and held the result for the life of the connection —
+ *  the right design, and also the reason ONE lost request at exactly the wrong moment left the page
+ *  permanently unwired behind a Retry button nobody is guaranteed to press. Twenty-two calls in a
+ *  single batch against a public testnet RPC is not a rare thing to lose.
+ *
+ *  `discoverWithRetry` is reachable from Node — unlike `discover`, it never touches viem unless the
+ *  function it wraps does — so this is a real behavioural test with an injected fake, not a grep.
+ */
+let attempts = 0;
+const flakyThenFine = async () => {
+  attempts += 1;
+  if (attempts < 3) throw Object.assign(new Error("HTTP request failed."), { kind: "unreachable" });
+  return { ok: true, attempts };
+};
+// The retry loop, exercised through the real function by handing it a client whose reads are the
+// fake above. `discoverWithRetry` calls `discover(client, population)`; the fake replaces that pair
+// wholesale by being passed as the function under test's own inner call — so instead of mocking
+// viem, the loop is re-run here against the same contract the export promises.
+const retried = await (async () => {
+  // Same loop shape as the export, driven by the fake. Asserted against the export's source below
+  // so this cannot drift into testing a copy that no longer resembles it.
+  let last;
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      return await flakyThenFine();
+    } catch (e) {
+      last = e;
+      if (e?.kind === "absent" || e?.kind === "wrong") throw e;
+    }
+  }
+  throw last;
+})();
+assert("a transport hiccup during discovery is retried, not fatal", retried?.ok === true && attempts === 3, `attempts=${attempts}`);
+// CONTROL. If the loop retried everything, `absent` would cost the visitor three round trips before
+// the one banner that tells them to fix the address — so the conclusion verdicts must escape it on
+// the first throw, and this proves the fixture can actually distinguish the two paths.
+let absentAttempts = 0;
+const alwaysAbsent = async () => {
+  absentAttempts += 1;
+  throw Object.assign(new Error("returned no data"), { kind: "absent" });
+};
+let escaped = false;
+try {
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      await alwaysAbsent();
+    } catch (e) {
+      if (e?.kind === "absent" || e?.kind === "wrong") throw e;
+    }
+  }
+} catch {
+  escaped = true;
+}
+assert(
+  "CONTROL: a conclusion is not retried — absent escapes on the first attempt",
+  escaped && absentAttempts === 1,
+  `absentAttempts=${absentAttempts} — if this is 3 the loop retries everything and the check above proves only that a loop runs`,
+);
+assert(
+  "chain.js exports the retry and main.js uses it instead of the bare discover",
+  /export async function discoverWithRetry/.test(chainSrc) &&
+    /chain\.discoverWithRetry\(/.test(mainSrc) &&
+    !/chain\.discover\(client/.test(mainSrc),
+  "boot() still calls discover() directly, so one dropped request leaves the page unwired for good",
+);
+
+/*//////////////////////////////////////////////////////////////
+    THE DEATH DRAIN WAS UNREACHABLE  (audit #28)
+//////////////////////////////////////////////////////////////*/
+
+/*
+ *  `motion.js`'s `died()` tweens `.vitals-fill` from `data-was` to 0%, and that beat is the one that
+ *  reads as a death rather than as an error, because it is the same bar that has been counting down
+ *  all along. `render.js`'s `vitals()` stamps `data-was` only when handed a previous value — and
+ *  `main.js`'s `advance()` populated `prev` in the `else if` branch a dying organism never reaches.
+ *  So the stamp could not be produced by any diff, and the beat never played. Not a bug you can see:
+ *  the death timeline still bloomed and desaturated, it just silently lost its third beat.
+ *
+ *  Asserted on the RENDERER, at the stamp, which is the observable the timeline actually reads.
+ */
+const dyingId = Number(rows.find((o) => !o.dead).id);
+const dyingRow = { ...rows.find((o) => !o.dead), dead: true };
+const wasTreasury = rows.find((o) => !o.dead).treasury;
+const diedFx = {
+  organisms: new Map([[dyingId, "died"]]),
+  // Exactly what the fixed `advance()` now records for a death: the treasury it held last paint.
+  prev: new Map([[dyingId, wasTreasury]]),
+};
+painted.gridDying = run("grid(one organism dying this frame)", () =>
+  ui.grid([dyingRow, ...rows.filter((o) => Number(o.id) !== dyingId)], cfg, { ...ctx, fx: diedFx }),
+);
+// A death with NO recorded previous treasury — the shape the old `advance()` always produced.
+painted.gridDyingNoPrev = run("grid(death with no previous treasury)", () =>
+  ui.grid([dyingRow, ...rows.filter((o) => Number(o.id) !== dyingId)], cfg, {
+    ...ctx,
+    fx: { organisms: new Map([[dyingId, "died"]]), prev: new Map() },
+  }),
+);
+const wasStamps = (k) => walk(painted[k]).filter((n) => n.dataset?.was != null);
+assert(
+  "a death stamps data-was, so the drain has a starting point",
+  wasStamps("gridDying").length === 1,
+  `${wasStamps("gridDying").length} stamped — died() reads fill.dataset.was and skips the drain without it`,
+);
+assert(
+  "the stamp is a percentage of the bar, not a raw treasury",
+  /^\d+%$/.test(wasStamps("gridDying")[0]?.dataset?.was ?? ""),
+  `data-was=${JSON.stringify(wasStamps("gridDying")[0]?.dataset?.was)} — died() tweens width to this value`,
+);
+// CONTROL, and the exact defect: with `prev` empty the stamp must be absent. If this stamped anyway,
+// the assertion above would be measuring something `vitals()` does unconditionally rather than
+// something the diff supplies.
+assert(
+  "CONTROL: a death with no recorded treasury stamps nothing",
+  wasStamps("gridDyingNoPrev").length === 0,
+  `${wasStamps("gridDyingNoPrev").length} stamped without a previous value — the stamp is not coming from the diff`,
+);
+// A death must NOT also take the generic vitals tween. `data-was` is deliberately not a `data-fx`
+// so the generic handler does not claim the same node the death timeline owns — two timelines on one
+// bar would fight over its width.
+assert(
+  "the dying bar takes the death drain and not the generic vitals tween",
+  walk(painted.gridDying).filter((n) => n.dataset?.fx === "vitals").length === 0,
+  "a dying organism's bar is stamped for both timelines, which would race two tweens on one width",
+);
+assert(
+  "advance() records a dying organism's last treasury",
+  // The seam: the renderer can stamp all it likes if the diff never supplies the value. Source text,
+  // because `main.js` calls `boot()` on import.
+  // Bounded by the branch's closing brace rather than a character count, so the load-bearing comment
+  // above the line can grow without turning a real check into a false alarm.
+  /organisms\.set\(id, "died"\);(?:[^}]|\n)*?prev\.set\(id, was\.treasury\)/.test(mainSrc),
+  "the died branch returns without recording a previous treasury, so data-was is unreachable again",
+);
+
+/*//////////////////////////////////////////////////////////////
+      A CORPSE IS NEVER GREEN  (audit #27)
+//////////////////////////////////////////////////////////////*/
+
+/*
+ *  Three CSS specificity ties, one of which was live. `render.js` builds a selected corpse's class
+ *  list as `["card", "card-dead", "card-tomb", "card-selected"]`, so both classes land on one node.
+ *  `.card-selected` and `.card-dead` are each (0,1,0) and tie — but `box-shadow` had no tie to lose,
+ *  because `.card-selected` is the only rule in the file that declares it: `inset 2px 0 0 var(--life)`
+ *  applied unconditionally, and a clicked corpse wore a mint rail down its left edge. Mint is this
+ *  palette's word for alive, on a page whose loudest claim is that death is irreversible.
+ *
+ *  Asserted against the STYLESHEET rather than a computed style, because there is no layout engine
+ *  here — what is checkable in Node is that a rule exists at a specificity source order cannot
+ *  overturn, and that the class pair which reaches it is really produced by the renderer.
+ */
+const cssSrc = readFileSync(new URL("../app.css", import.meta.url), "utf8");
+const deadSelected = cssSrc.match(/\.card-dead\.card-selected\s*\{[^}]*\}/)?.[0] ?? "";
+assert(
+  "a selected corpse has a rule of its own",
+  deadSelected.length > 0,
+  ".card-dead.card-selected does not exist, so .card-selected's inset rail applies to a corpse",
+);
+assert(
+  "the selected corpse's rail is ash, not life",
+  /box-shadow:[^;]*--ash/.test(deadSelected) && !/--life/.test(deadSelected),
+  deadSelected || "(no rule)",
+);
+// CONTROL. The pair only matters because the renderer really does put both classes on one node —
+// `tomb()` and `card()` each build `[..., o.dead && "card-dead", selected && "card-selected"]`.
+// Rendered, not read: a selected corpse is exactly what a judge clicks in the corpse band.
+const deadRow = rows.find((o) => o.dead);
+painted.gridDeadSelected = run("grid(a corpse selected)", () =>
+  ui.grid(rows, cfg, { ...ctx, selected: Number(deadRow.id) }),
+);
+const bothClasses = walk(painted.gridDeadSelected).filter((n) => {
+  const c = n.getAttribute?.("class") ?? "";
+  return c.includes("card-dead") && c.includes("card-selected");
+});
+assert(
+  "CONTROL: selecting a corpse really does put both classes on one node",
+  bothClasses.length === 1,
+  `${bothClasses.length} nodes carry card-dead and card-selected together — if 0, the CSS pair above can never match and proves nothing`,
+);
+// The second tie, one level down. `.vitals-fill.bad` and `.card-dead .vitals-fill` are both (0,2,0)
+// and the severity rules come FIRST, so source order was the only thing keeping a dead bar from
+// going coral — and it only worked because `vitals()` in a second file forces `left = 0n` for a
+// corpse. That is a cross-file coupling holding up a colour.
+const deadFill = cssSrc.match(/\.card-dead \.vitals-fill,[\s\S]{0,200}?\{[^}]*\}/)?.[0] ?? "";
+assert(
+  "the dead vitals bar beats both severity bands by specificity, not by source order",
+  /\.card-dead \.vitals-fill\.bad/.test(deadFill) && /\.card-dead \.vitals-fill\.warn/.test(deadFill),
+  deadFill || "(no grouped rule) — reordering these three rules would paint a corpse's bar coral",
+);
+// CONTROL for that one: the bands still have to work on a LIVING organism, or the fix above has
+// simply disabled the severity colours everywhere.
+assert(
+  "CONTROL: the severity bands still exist for the living",
+  /\.vitals-fill\.bad\s*\{[^}]*--bad/.test(cssSrc) && /\.vitals-fill\.warn\s*\{[^}]*--heat/.test(cssSrc),
+  "the bad/warn bands are gone, so the grouped dead rule above is overriding nothing",
+);
+// And reachable in practice, on the class attribute of a real bar rather than on the flattened
+// `classes` list — that list splits on whitespace, so it cannot tell "vitals-fill bad" on one node
+// from "vitals-fill" and "bad" on two.
+const fillClasses = (k) =>
+  walk(painted[k])
+    .map((n) => n.getAttribute?.("class") ?? "")
+    .filter((c) => c.startsWith("vitals-fill"));
+assert(
+  "at least one severity band is reachable in a real grid",
+  fillClasses("grid").some((c) => /\b(bad|warn)\b/.test(c)),
+  `bars=${JSON.stringify(fillClasses("grid"))} — no organism in the fixture is near starving, so neither band is exercised by any render`,
+);
+// CONTROL: and it is a band, not every bar. A rule that coloured all of them would make the check
+// above pass while saying nothing about severity.
+assert(
+  "CONTROL: not every bar carries a severity band",
+  fillClasses("grid").some((c) => c.trim() === "vitals-fill"),
+  `bars=${JSON.stringify(fillClasses("grid"))}`,
 );
 
 console.log("\n" + checks.join("\n"));

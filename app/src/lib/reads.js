@@ -33,6 +33,25 @@
  *  ("0x")"*. A transport failure has no such cause anywhere in its chain. So the distinction
  *  is read off the error viem raised, never inferred from a tally.
  *
+ *  ── WHY A REVERT IS A THIRD THING ───────────────────────────────────────────
+ *  There is a case neither of those two describes, and it used to be filed under the wrong one.
+ *  An address holding a REAL contract that is not this contract — an old Population from a
+ *  previous deploy, a proxy pointing at the wrong implementation, some other project's
+ *  address — has code, so it does not return `0x`. It executes, finds no matching selector,
+ *  and REVERTS. Every row fails, no row says "returned no data", and the old two-way ternary
+ *  therefore called it `unreachable`: *"The chain did not answer"*, over a chain that answered
+ *  every single call. The remedy printed was "leave the address alone and retry", which is
+ *  advice that can never work, given to the one visitor whose address is definitely wrong.
+ *
+ *  `wrong` is that case. It has code and it is not this ABI, so it takes `absent`'s affordance
+ *  — offer to forget the saved address — with its own sentence, because "there is nothing at
+ *  this address" and "there is something else at this address" are different diagnoses and
+ *  only one of them survives a person insisting the address is right.
+ *
+ *  It is read off the error the same way, never off a count: viem raises
+ *  `ContractFunctionRevertedError` / `ExecutionRevertedError` for an execution that reverted, and
+ *  raises neither for a request that never arrived. See `saysReverted` for the measured chains.
+ *
  *  ── WHY PARTIAL FAILURE IS STILL "live" ─────────────────────────────────────
  *  One dropped read out of nine is a flaky public RPC, not a wrong address, and locking the
  *  entry form for it would be a worse bug than the one this file fixes. So any single
@@ -43,6 +62,7 @@
 const PENDING = "pending";
 const LIVE = "live";
 const ABSENT = "absent";
+const WRONG = "wrong";
 const UNREACHABLE = "unreachable";
 
 /**
@@ -63,6 +83,44 @@ function causes(err) {
 function saysNoCode(err) {
   return causes(err).some(
     (e) => e?.name === "ContractFunctionZeroDataError" || /returned no data/i.test(e?.message ?? ""),
+  );
+}
+
+/**
+ *  Did the call EXECUTE and revert?
+ *
+ *  A revert is proof of code: something at that address ran and rejected the selector. Checked
+ *  against viem's own error names rather than a message regex where possible, and the message is
+ *  the fallback for a node that reports the revert without a decodable payload.
+ *
+ *  `saysNoCode` is tested FIRST by the caller, because a `0x` return also arrives inside a
+ *  `ContractFunctionExecutionError` — the two are not mutually exclusive at the top of the chain,
+ *  and "no code" is the more specific diagnosis.
+ *
+ *  DO NOT ADD `CallExecutionError` HERE. It was in this list for one commit and it inverted the
+ *  distinction this whole file exists to draw. Measured against viem 2.x on 2026-09-06, a plain
+ *  transport failure produces:
+ *
+ *      ContractFunctionExecutionError <- CallExecutionError <- UnknownRpcError <- Error: fetch failed
+ *
+ *  and a genuine revert produces:
+ *
+ *      ContractFunctionExecutionError <- ContractFunctionRevertedError <- CallExecutionError
+ *          <- ExecutionRevertedError <- UnknownRpcError <- RpcRequestError: execution reverted
+ *
+ *  `CallExecutionError` is in BOTH — it means "an eth_call failed", not "an eth_call reverted" — so
+ *  matching it reported every RPC outage as a wrong contract and told the visitor to change a
+ *  perfectly good address. `ExecutionRevertedError` (EIP-1474 code -32015 / geth code 3) and
+ *  `ContractFunctionRevertedError` appear only on the revert chain. `app/test/reads.mjs` caught this
+ *  because its "RPC down" fixture is a real viem client rather than a hand-written row.
+ */
+function saysReverted(err) {
+  return causes(err).some(
+    (e) =>
+      e?.name === "ContractFunctionRevertedError" ||
+      e?.name === "ExecutionRevertedError" ||
+      e?.name === "RawContractError" ||
+      /execution reverted/i.test(e?.message ?? ""),
   );
 }
 
@@ -89,11 +147,17 @@ export function readFailure(data, i) {
  *    pending      nothing has settled yet (or the query is disabled) — say nothing
  *    live         at least one read answered; there is a Population at this address
  *    absent       every read failed, and viem says there is no code here
+ *    wrong        every read REVERTED — there is code here, and it is not this contract
  *    unreachable  every read failed, but for transport reasons — the address is not accused
  *
  *  Returns the counts too, so the UI can say "6 of 9" rather than implying all nine are
  *  current. Derived fresh on every render rather than latched, so a recovered RPC or a
  *  corrected address flips it back without a reload.
+ *
+ *  ORDER IS THE WHOLE LOGIC. `absent` before `wrong` before `unreachable`, most specific
+ *  diagnosis first, and `unreachable` LAST because it is the only one of the three that is an
+ *  absence of evidence rather than evidence. A revert reaching the final branch is how a
+ *  contract that answered every call got reported as a network outage.
  */
 export function readReport(query) {
   const rows = query?.data;
@@ -107,10 +171,12 @@ export function readReport(query) {
   const reason = sentence(failures[0]?.error);
 
   if (ok > 0) return { verdict: LIVE, ok, total, reason };
-  return {
-    verdict: failures.some((f) => saysNoCode(f.error)) ? ABSENT : UNREACHABLE,
-    ok,
-    total,
-    reason,
-  };
+
+  const verdict = failures.some((f) => saysNoCode(f.error))
+    ? ABSENT
+    : failures.some((f) => saysReverted(f.error))
+      ? WRONG
+      : UNREACHABLE;
+
+  return { verdict, ok, total, reason };
 }

@@ -132,10 +132,13 @@ contract DarwinTest is Test {
         defaultCognitionEndowment = population.cognitionEndowment();
 
         // A season with a real cognition floor, so newborns can afford to think and
-        // entrants are held to funding their own. 1 ether is ~10 windows at the mock
-        // deposit (0.093), which matches what `_fundCognition` gives a founder — a
-        // child that could only afford ONE thought would make every multi-window
-        // breeding test depend on funding order rather than on what it asserts.
+        // entrants are held to funding their own. 1 ether is ~30 windows at the mock
+        // deposit (0.033, the measured Shannon number since 2026-09-06), which matches
+        // what `_fundCognition` gives a founder — a child that could only afford ONE
+        // thought would make every multi-window breeding test depend on funding order
+        // rather than on what it asserts. The generous margin is on purpose: it is not
+        // this fixture's job to test the cognition budget, and
+        // `test_cognition_freshDeployIsNotBornBrainDead` holds the real deploy number.
         Population.SeasonParams memory s = _season();
         s.minEndowment = 10 * ONE;
         s.cognitionEndowment = 1 ether;
@@ -295,10 +298,24 @@ contract DarwinTest is Test {
         return (profit * population.rakeBps()) / 10_000;
     }
 
-    /// @dev Metabolism alone, no market variance: makes one thought unaffordable.
+    /**
+     *  Metabolism alone, no market variance: makes one thought unaffordable.
+     *
+     *  THE SURPLUS MOVES WITH IT, and not for convenience. `setEconomics` requires
+     *  `endowment * breedSurplusBps / 10_000 >= metabolicCost` (audit #29): `_hatch`
+     *  transfers exactly `endowment`, so the surplus IS what a parent keeps after a
+     *  birth, and a surplus under one metabolism charge makes every successful breed
+     *  kill the parent at the next settlement. A 9 tUSDC metabolism against a 10 tUSDC
+     *  endowment therefore needs at least 9000 bps — the harsher the climate, the bigger
+     *  the reserve reproduction has to prove. That coupling is the point of the bound,
+     *  so this helper satisfies it rather than working around it. Every caller here is a
+     *  death test; raising the breeding bar only makes breeding less likely, which is
+     *  the direction those tests already assume.
+     */
     function _makeThinkingFatal() internal {
         Econ memory e = _econ();
         e.metabolicCost = 9 * ONE;
+        e.breedSurplusBps = 9_000;
         _setEconomics(e);
     }
 
@@ -725,6 +742,17 @@ contract DarwinTest is Test {
      *  is already paired 1:1 with — that would leave the winner holding tokens
      *  against collateral that has walked out of the building.
      */
+    /**
+     *  Audit items #20 and #40. `retire` is now `inPhase(0)`, so the revert in phase 2
+     *  is `WrongPhase` rather than `PositionStillOpen`.
+     *
+     *  This test previously asserted `PositionStillOpen` here and passed, which is why
+     *  the docblock's false claim survived: in phase 2 BOTH conditions hold, so the
+     *  organism's own flag answered first and the test could not tell that the flag was
+     *  the only thing standing there. `positionOpen` is still asserted as a
+     *  precondition, so the case being covered is unchanged — only the gate that catches
+     *  it has moved outward.
+     */
     function test_retire_refusesWhileAPositionIsOpen() public {
         address alice = address(0xA11CE);
         uint256 id = _enter(alice, "momentum", 50 * ONE);
@@ -740,15 +768,67 @@ contract DarwinTest is Test {
 
         assertTrue(_p(id).positionOpen(), "the test needs an open position to be meaningful");
         vm.prank(alice);
-        vm.expectRevert(Population.PositionStillOpen.selector);
+        vm.expectRevert(abi.encodeWithSelector(Population.WrongPhase.selector, 0, 2));
         population.retire(id);
 
         // Once the window closes, the exit opens again.
         _settle();
         assertFalse(_p(id).dead(), "a 50 tUSDC organism must not have starved in one window");
+        assertEq(population.phase(), 0, "the cadence must be back at rest for the exit to open");
         vm.prank(alice);
         population.retire(id);
         assertTrue(_p(id).dead(), "retire should succeed with no position open");
+    }
+
+    /**
+     *  Audit items #20 and #40 — the hole `positionOpen` never covered.
+     *
+     *  Phase 1 is after `think()` has opened the window and paid for the inference and
+     *  before `commitAll()` has risked anything, and the belief callback lands inside
+     *  it. So an entrant could read the forecast off their own organism and leave on the
+     *  strength of it, and leaving there was FREE: metabolism is charged inside
+     *  `settleWindow`, `settleAll` skips anything whose position is not open, so the
+     *  window the organism thought in was never paid for. A free option on every window,
+     *  held by the one party the 1:1 pairing exists to bind.
+     *
+     *  The PRECONDITIONS are what make this a test of that hole rather than of the
+     *  phase number: the belief must be readable and the position must NOT be open, so
+     *  the old `positionOpen` gate would have let this through. Both are asserted.
+     */
+    function test_retire_refusesAfterTheForecastIsReadableButBeforeItIsRisked() public {
+        address alice = address(0xA11CE);
+        uint256 id = _enter(alice, "momentum", 50 * ONE);
+        _seed(1);
+
+        _think();
+        _answer(id, "UP_MOMENTUM");
+
+        // The two preconditions. Without the first there is nothing to front-run; without
+        // the second the old gate would have caught this and the test proves nothing new.
+        assertEq(uint8(_p(id).belief()), uint8(Belief.Up), "the forecast must be readable for this to be an option");
+        assertFalse(_p(id).positionOpen(), "positionOpen must be false, or the old gate covered this already");
+        assertEq(population.phase(), 1, "this is the interval between thinking and committing");
+
+        uint256 held = _p(id).treasury();
+        assertGt(held, 0, "the entrant must have something to walk away with");
+
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Population.WrongPhase.selector, 0, 1));
+        population.retire(id);
+
+        // CONTROL: the exit is not broken, only deferred. Once the window is graded and
+        // the cadence is back at rest, the same call succeeds — and by then the organism
+        // has actually paid for the window it thought in, which is the whole point.
+        _upWins();
+        _commit();
+        _settle();
+        assertEq(population.phase(), 0, "the cadence must return to rest");
+
+        uint256 before = collateral.balanceOf(alice);
+        vm.prank(alice);
+        population.retire(id);
+        assertTrue(_p(id).dead(), "the exit must still work between windows");
+        assertGt(collateral.balanceOf(alice) - before, 0, "the entrant must still get their remaining capital");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -817,6 +897,57 @@ contract DarwinTest is Test {
         requester.deliverMixed(_p(1).pendingBeliefRequestId(), answers, ResponseStatus.Success);
         assertEq(uint8(_p(1).belief()), uint8(Belief.Down));
         assertEq(uint8(_p(1).lastThesis()), uint8(Thesis.Reversion));
+    }
+
+    /**
+     *  Audit item #19. The reasoning on chain must belong to the window being read.
+     *
+     *  `handleBelief` already writes `Unknown` / `""` when consensus fails, so the
+     *  abstain path was never the gap. The gap is the request that is NEVER DELIVERED:
+     *  no callback runs, so nothing after `noteThinking` writes anything, and before the
+     *  fix the organism kept the previous window's `lastThesis` and `lastReasoning`
+     *  while `belief` correctly read `None`. Anything pairing the three — `snapshot`,
+     *  the organism card, a judge checking that the visible rationale is the one that
+     *  was acted on — reads a quoted rationale for a window in which the organism said
+     *  nothing at all.
+     *
+     *  The PRECONDITION is the load-bearing half of this test: window one must actually
+     *  leave a non-empty thesis and rationale behind, or the assertions after window two
+     *  are comparing empty to empty and would pass against no fix at all.
+     */
+    function test_belief_anUndeliveredRequestDoesNotLeaveLastWindowsReasoningOnChain() public {
+        _seed(2);
+
+        // Window one: a real answer, so there is something stale to inherit.
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        Prophet p = _p(1);
+        assertEq(uint8(p.lastThesis()), uint8(Thesis.Momentum), "window one must leave a thesis to go stale");
+        assertEq(p.lastReasoning(), "UP_MOMENTUM", "window one must leave a rationale to go stale");
+        _commit();
+        _upWins();
+        _settle();
+
+        // Window two: the request is made and NEVER answered. No callback, no
+        // `handleBelief`, so only `noteThinking` has run when these are read.
+        _think();
+        assertTrue(p.pendingBeliefRequestId() != 0, "the request must still be in flight, or this is not the case");
+
+        assertEq(uint8(p.belief()), uint8(Belief.None), "belief was already cleared before the fix");
+        assertEq(
+            uint8(p.lastThesis()),
+            uint8(Thesis.Unknown),
+            "the organism is advertising last window's thesis for a window it has not thought in"
+        );
+        assertEq(
+            p.lastReasoning(), "", "the organism is quoting last window's rationale for a window it has not thought in"
+        );
+
+        // CONTROL: clearing on the way in must not stop the answer from landing when it
+        // does arrive, so a delivered request still writes both fields.
+        _answer(1, "DOWN_REVERSION");
+        assertEq(uint8(p.lastThesis()), uint8(Thesis.Reversion), "a delivered answer must still write the thesis");
+        assertEq(p.lastReasoning(), "DOWN_REVERSION", "a delivered answer must still write the rationale");
     }
 
     /// @dev An answer outside `allowedValues` means the constraint did not hold, and
@@ -957,8 +1088,32 @@ contract DarwinTest is Test {
      */
     function test_cognition_freshDeployIsNotBornBrainDead() public view {
         assertGt(defaultCognitionEndowment, 0, "a fresh deploy would birth organisms that cannot think");
-        // Enough for more than one thought, at the deposit this deploy would pay.
-        assertGt(defaultCognitionEndowment, population.requestDeposit(), "one inference is not a lifespan");
+
+        // A LIFESPAN, NOT A THOUGHT. Audit item #31: this used to assert against ONE
+        // deposit, which is satisfied by an endowment that buys a single inference and
+        // then leaves the organism abstaining forever — the very failure the docblock
+        // above describes, one window later. So the claim has to be a number of windows.
+        //
+        // TEN, and the number is not arbitrary. A window is fifteen minutes, so ten
+        // windows is two and a half hours of unattended thinking: long enough that the
+        // arena survives the judged run without an operator standing over it, and long
+        // enough that a founder outlives the first settlement that could kill it
+        // (metabolism is charged every window, so a founder needs several windows just
+        // to demonstrate selection). Beyond that `topUpCognition` is permissionless and
+        // any sponsor can extend it — which is why this is a floor and not a target.
+        //
+        // The default clears it EXACTLY: 0.33 ether against `requestDeposit()` of
+        // 0.033 = 3 * (0.01 floor + 0.001 reward). That is not a coincidence, it is
+        // `initialize` tuned to the measured Shannon floor, and asserting on the exact
+        // boundary is deliberate — if anyone moves `cognitionEndowment`,
+        // `perAgentReward` or `subcommitteeSize` in a direction that shortens the
+        // founders' lives, this fails instead of shipping quietly.
+        uint256 windows = 10;
+        assertGe(
+            defaultCognitionEndowment,
+            windows * population.requestDeposit(),
+            "the founders cannot afford a full run of windows, so they die of an unpaid bill rather than of selection"
+        );
     }
 
     /// @dev Breeding is an inference too. If the house kept paying for it, the
@@ -1088,6 +1243,77 @@ contract DarwinTest is Test {
         assertEq(address(child).balance, cog, "the balance this test reads cannot register funding at all");
     }
 
+    /**
+     *  Audit item #34. A landed genome must survive a parent that cannot pay for it.
+     *
+     *  `consumeChildPrompt()` DELETES `pendingChildPrompt`, and `_hatch` used to call it
+     *  before finding out whether the parent held a full `endowment`. So a mutation the
+     *  parent had already paid three validators for was destroyed on the way to a refund
+     *  that only restored the collateral, with `BreedingRequested` left in the log and no
+     *  `Spawned` and no failure line to pair it with. The only recovery was to earn
+     *  another streak and buy another inference.
+     *
+     *  The shortfall is `held < endowment`, and it is reached here by RAISING the
+     *  endowment rather than by draining the parent. Both sides of that comparison move
+     *  in production — `settleAll` breeds on the streak and charges metabolism in the
+     *  same call, and `hatchAll` is a separate transaction one or more windows later, so
+     *  a parent can lose a pairing in between — but `treasury` can only be moved from
+     *  outside through `stakeOut`, which is `onlyPopulation`, and the alternative
+     *  (`retire`) kills the organism and takes the genome with it. `setEconomics` is a
+     *  legitimate owner call that moves the same comparison, needs no test-only function
+     *  on the arena, and is exact to the unit, which is what the boundary below wants.
+     *
+     *  THE ASSERTION THAT DOES THE WORK is that the genome is still there afterwards.
+     *  `prophetCount()` unchanged was already true of the old code, so a test asserting
+     *  only "no child was born" passes against the bug.
+     */
+    function test_breeding_aParentThatCannotPayKeepsTheGenomeItPaidFor() public {
+        Prophet parent = _parentReadyToHatch();
+        string memory genome = parent.pendingChildPrompt();
+        assertGt(bytes(genome).length, 0, "there must be a landed genome for this to be about losing one");
+
+        // One unit above what the parent holds, not an order of magnitude: this has to be
+        // the `held < endowment` boundary rather than a broke-parent special case.
+        uint256 held = parent.treasury();
+        Econ memory e = _econ();
+        e.endowment = held + 1;
+        _setEconomics(e);
+        uint256 endow = population.endowment();
+        assertEq(endow, held + 1, "the retune did not land, so the parent is not actually short");
+
+        uint256 countBefore = population.prophetCount();
+
+        vm.expectEmit(true, true, true, true, address(population));
+        emit Population.BirthUnaffordable(parent.prophetId(), held, endow);
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertEq(population.prophetCount(), countBefore, "a parent that cannot pay must not bear a child");
+        assertEq(
+            parent.pendingChildPrompt(),
+            genome,
+            "the mutated genome the parent paid three validators for was destroyed on a failed birth"
+        );
+        assertEq(parent.treasury(), held, "the failed birth moved collateral");
+
+        // CONTROL: the genome is not merely stuck. Fund the parent past the endowment and
+        // the same `hatchAll` bears the child from the SAME genome, with no second
+        // inference and no second mutation request.
+        collateral.mint(address(this), 100 * ONE);
+        collateral.approve(address(population), 100 * ONE);
+        population.fundProphet(parent.prophetId(), 100 * ONE);
+        vm.deal(address(parent), 1 ether);
+
+        vm.prank(owner);
+        population.hatchAll();
+
+        uint256 child = population.prophetCount();
+        assertEq(child, countBefore + 1, "the child must be born once the parent can afford it");
+        assertEq(_p(child).systemPrompt(), genome, "the child was born from a different genome");
+        assertEq(_p(child).parentId(), parent.prophetId(), "the child is not this parent's");
+        assertEq(parent.pendingChildPrompt(), "", "the genome must be consumed by a birth that succeeds");
+    }
+
     /// @dev A parent with a landed mutated genome, one `hatchAll` away from a child.
     ///      Shared by the two tests above so neither has to restate the four windows
     ///      of breeding qualification that precede the thing being asserted.
@@ -1136,6 +1362,56 @@ contract DarwinTest is Test {
         _answer(1, "UP_MOMENTUM");
         _answer(2, "DOWN_REVERSION");
         _commit();
+    }
+
+    /**
+     *  A breeding-eligible leader with a position open, a mutation armed by a STRANGER,
+     *  and settlement due — the exact state audit item #56 wedges on. Returns the
+     *  leader's id.
+     *
+     *  The first window has to run to settlement before anyone can breed at all: a
+     *  streak is earned by being graded, so `_breedingCandidate` alone leaves
+     *  `breedProphet` reverting `NotEligibleToBreed`. That first settlement breeds the
+     *  leader on its own, so the mutation it raised is DELIVERED here — otherwise the
+     *  wedge under test would be indistinguishable from the population's own pending
+     *  request, which is a separate case and has its own test.
+     *
+     *  Deep pockets on purpose, the same reason as
+     *  `test_breeding_secondRequestWhileOneIsInFlightIsRefused`: a parent too poor for
+     *  the second draw takes the `BreedingUnaffordable` branch and returns quietly, and
+     *  every test built on this would pass with no fix at all.
+     */
+    function _armTheWedge() internal returns (uint256 winnerId) {
+        winnerId = _breedingCandidate();
+        Prophet parent = _p(winnerId);
+        vm.deal(address(parent), 10 ether);
+
+        _upWins();
+        _settle();
+
+        // Clear the population's own request, so what is in flight later is the
+        // stranger's and nothing else.
+        requester.deliver(parent.pendingMutationRequestId(), "organism 0, but bolder");
+        assertEq(parent.pendingMutationRequestId(), 0, "the first mutation did not clear");
+
+        // A second window, forecast and committed, settlement not yet called.
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        // THE WEDGE, from a stranger with no role in this arena. An owner-only griefing
+        // path would be a tuning mistake rather than a vulnerability.
+        address griefer = makeAddr("griefer");
+        vm.prank(griefer);
+        population.breedProphet(winnerId);
+
+        assertGt(parent.pendingMutationRequestId(), 0, "the wedge did not arm, so this proves nothing");
+        assertGe(parent.streak(), population.breedStreak(), "breeding moved the streak, so eligibility is not intact");
+        assertGe(parent.treasury(), _breedThreshold(), "breeding moved the treasury, so eligibility is not intact");
+        assertTrue(parent.positionOpen(), "there is no settlement due, so there is nothing to wedge");
+        assertEq(population.phase(), 2, "settlement is not due");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1308,13 +1584,46 @@ contract DarwinTest is Test {
         _assertLedgerMatchesBalance(2);
     }
 
-    /// @dev A stake below `minStake` is not worth the gas of a mint, but the organism
-    ///      still thought and must still be charged.
+    /**
+     *  A stake below `minStake` is not worth the gas of a mint, but the organism still
+     *  thought and must still be charged.
+     *
+     *  REACHED THROUGH A POOR ORGANISM, not a floor above the ante. This used to set
+     *  `minStake` to 100 tUSDC against a 0.25 tUSDC ante, which audit #29 now refuses
+     *  as `StakeFloorAboveAnte` — a floor above the ante makes EVERY pairing in the
+     *  population empty forever, which is the bricked arena that bound exists to
+     *  prevent, not the dust case this test is about. The dust case survives the bound
+     *  because `_pair` clamps `want` to the poorer treasury before comparing it to the
+     *  floor: park the floor exactly on the endowment (legal, since the ante is there
+     *  too) and one window of metabolism is enough to put a solvent organism under it.
+     *  That is also the honest scenario — dust is what a long-lived organism ends up
+     *  holding, not a house parameter.
+     */
     function test_dustStakeOpensEmptyAndStillPays() public {
+        // Order matters: `setEconomics` bounds `minStake` against the LIVE `baseAnte`,
+        // so the ante has to rise before the floor can follow it up.
+        Population.SeasonParams memory s = _season();
+        s.baseAnte = 10 * ONE;
+        _setSeason(s);
+
         Econ memory e = _econ();
-        e.minStake = 100 * ONE; // far above 10% of the endowment
+        e.minStake = 10 * ONE; // exactly the endowment, and exactly the ante
         _setEconomics(e);
         _seed(2);
+
+        // One abstained window, purely to charge metabolism: no belief means no
+        // pairing, so nobody's treasury moves except by rent.
+        _think();
+        _answer(1, "ABSTAIN");
+        _answer(2, "ABSTAIN");
+        _commit();
+        _settle();
+
+        uint256 poor = _p(1).treasury();
+        assertLt(poor, population.minStake(), "the organism is not under the floor, so this proves nothing");
+        assertGt(poor, 0, "an organism with nothing would open empty for the wrong reason");
+
+        _pushWindow();
         _think();
         _answer(1, "UP_MOMENTUM");
         _answer(2, "DOWN_REVERSION");
@@ -1323,7 +1632,7 @@ contract DarwinTest is Test {
         assertEq(_p(1).currentQuantity(), 0, "no mint below minStake");
         assertTrue(_p(1).positionOpen());
         _settle();
-        assertEq(_p(1).treasury(), population.endowment() - population.metabolicCost());
+        assertEq(_p(1).treasury(), population.endowment() - 2 * population.metabolicCost());
     }
 
     /// @dev One failing mint must not roll back the rest of the window. The pool is
@@ -1345,6 +1654,14 @@ contract DarwinTest is Test {
         assertEq(population.phase(), 2, "the commit phase still completed");
         assertTrue(_p(1).positionOpen(), "a failed pair still opens empty, still pays");
         assertEq(_p(1).currentQuantity(), 0);
+        // MEASURED BEFORE `_settle()` ON PURPOSE, and audit item #3 is wrong to want it
+        // moved: metabolism is charged at settlement, so after `_settle()` the only
+        // available claim is `endowment - metabolicCost` — which is the assertion two
+        // lines below, and which holds whether or not the stake came back, since a
+        // never-returned stake changes the base the charge is subtracted from. The
+        // pre-settlement reading is the ONLY place `endowment` exactly is the right
+        // number. Verified by mutation: draining one wei in `_pair`'s catch fails this
+        // line with `9999999 != 10000000`.
         assertEq(_p(1).treasury(), population.endowment(), "the failed stake was returned");
         assertTrue(_p(3).positionOpen(), "abstainers were unaffected");
 
@@ -1442,11 +1759,25 @@ contract DarwinTest is Test {
         _answer(2, "DOWN_REVERSION");
         _commit();
 
-        assertFalse(outcomeToken.isOperator(address(_p(1)), address(venue)), "the venue must not hold operator rights");
+        assertFalse(
+            outcomeToken.isOperator(address(_p(1)), address(venue)),
+            "the venue must not hold operator rights before settlement"
+        );
         assertEq(outcomeToken.balanceOf(address(venue), YES_ID), 0, "no position parked at the venue mid-window");
 
         _upWins();
         _settle();
+
+        // Asserted again AFTER settlement, because settlement is the only path
+        // that could grant it: a `setOperator(venue, true)` inside
+        // `Prophet.settleWindow` is invisible to a pre-settlement check.
+        assertFalse(
+            outcomeToken.isOperator(address(_p(1)), address(venue)),
+            "the venue must not hold operator rights after settlement"
+        );
+        assertFalse(
+            outcomeToken.isOperator(address(_p(2)), address(venue)), "nor over the losing organism after settlement"
+        );
 
         // Custody at the venue is transient: it exists only between the push and
         // the burn, inside one call.
@@ -1496,6 +1827,135 @@ contract DarwinTest is Test {
         _settle();
 
         assertEq(_p(1).correctCount(), 2, "the organism was graded through both venues");
+        _assertLedgerMatchesBalance(1);
+        _assertLedgerMatchesBalance(2);
+    }
+
+    /**
+     *  REPOINTING THE VENUE MID-WINDOW DOES NOT STRAND THE WINDOW. Audit item #55.
+     *
+     *  The test above repoints BETWEEN windows, which is the supported operation and
+     *  was already safe. This one repoints between `commitAll` and `settleAll` — inside
+     *  a single window, with positions already issued — which `setWiring` permits
+     *  because it is `onlyOwner` with no phase guard.
+     *
+     *  Before the snapshot, `settleAll` read `venue` live and asked the REPLACEMENT to
+     *  redeem a position the ORIGINAL issued. `DreamDEXVenue.redeemFor` has no `poolOf`
+     *  entry for that id, so it reverted, `settleAll`'s catch fired `SettleFailed` for
+     *  every organism, nobody was graded, and every `Prophet` kept `positionOpen` —
+     *  which `commitAll` then skips, so the population sat out the following window as
+     *  well. One owner call, two windows lost, and on `DirectDuelVenue` the antes would
+     *  have been unrecoverable by anybody.
+     *
+     *  A PHASE GUARD ON `setWiring` IS NOT THE FIX, for the reason `windowAnte`'s
+     *  declaration gives: if the cadence dies mid-window the phase sticks at 1 or 2 and
+     *  the guard would lock the operator out of the one call that repoints a broken
+     *  venue. The snapshot fixes the grading without taking away the escape hatch, and
+     *  the last third of this test is the proof that the hatch still works.
+     */
+    function test_venue_repointedMidWindowStillSettlesThroughTheIssuingVenue() public {
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        // The window is now open ON THE ORIGINAL VENUE, with real positions.
+        assertEq(venue.poolOf(YES_ID), address(pool), "the original venue did not issue this window");
+        assertGt(_p(1).currentQuantity(), 0, "test is vacuous: no position to strand");
+
+        DreamDEXVenue replacement = new DreamDEXVenue(
+            IPriceSource(address(priceSource)), address(settlement), address(collateral), address(outcomeToken), "BTC"
+        );
+        assertEq(replacement.poolOf(YES_ID), address(0), "the replacement must not know this window's position");
+
+        // MID-WINDOW, phase 2, positions outstanding.
+        vm.prank(owner);
+        population.setWiring(address(0), address(0), address(0), address(replacement));
+        assertEq(population.venue(), address(replacement), "the repoint did not take");
+        assertEq(population.windowVenue(), address(venue), "the snapshot moved with the live field");
+
+        uint256 stake = _p(1).currentStake();
+        _upWins();
+        _settle();
+
+        // Graded, not stranded. Before the fix both of these were the failure state:
+        // `correctCount` 0 and `positionOpen` still true.
+        assertEq(
+            _p(1).correctCount(), 1, "the winner was not graded, so the window was settled against the wrong venue"
+        );
+        assertFalse(_p(1).positionOpen(), "the position was left open, so the next window skips this organism");
+        assertEq(_p(2).wrongCount(), 1, "the loser was not graded either");
+        assertEq(
+            _p(1).treasury(),
+            population.endowment() + stake - _skimOn(stake) - population.metabolicCost(),
+            "the winner was not actually paid out of the issuing venue"
+        );
+        _assertLedgerMatchesBalance(1);
+        _assertLedgerMatchesBalance(2);
+
+        // AND THE REPOINT IS NOT INERT: the very next window goes through the
+        // replacement. Without this the assertions above would also pass if
+        // `setWiring` had quietly done nothing at all.
+        _pushWindow();
+        _think();
+        assertEq(population.windowVenue(), address(replacement), "the new window did not adopt the new venue");
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        assertEq(replacement.poolOf(YES_ID), address(pool), "the replacement never issued anything");
+    }
+
+    /**
+     *  THE RAKE A WINDOW WAS OPENED UNDER IS THE RAKE IT SETTLES UNDER. Audit item #55.
+     *
+     *  `setSeason` moves `rakeBps` with no phase guard, so an owner recalibrating a
+     *  season between `commitAll` and `settleAll` taxed winnings at a rate that did not
+     *  exist when the position was opened. Smaller in consequence than the venue half
+     *  and identical in kind, and the more likely of the two to happen by accident.
+     *
+     *  40% rather than a couple of basis points: the skim has to be far enough from the
+     *  snapshot value that no rounding could make the two indistinguishable, and 40% is
+     *  also the number `setSeason`'s own docblock names as the transposition hazard.
+     */
+    function test_venue_rakeIsFrozenAtTheWindowItWasOpenedIn() public {
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        uint16 openedUnder = population.windowRakeBps();
+        assertEq(openedUnder, population.rakeBps(), "the snapshot did not record the live rake");
+        assertGt(openedUnder, 0, "test is vacuous: a zero snapshot takes the fallback path");
+
+        uint256 stake = _p(1).currentStake();
+        uint256 expectedSkim = (stake * openedUnder) / 10_000;
+        assertGt(expectedSkim, 0, "test is vacuous: the ante is too small to skim");
+
+        // MID-WINDOW, 2.5% -> 40%.
+        Population.SeasonParams memory s = _season();
+        s.rakeBps = 4_000;
+        _setSeason(s);
+        assertEq(population.rakeBps(), 4_000, "the recalibration did not take");
+        assertEq(population.windowRakeBps(), openedUnder, "the snapshot moved with the live field");
+
+        uint256 rakeBefore = population.rakeAccrued();
+        uint256 poolBefore = population.prizePool();
+        _upWins();
+        _settle();
+
+        assertEq(
+            _p(1).treasury(),
+            population.endowment() + stake - expectedSkim - population.metabolicCost(),
+            "the winner was taxed at a rate that did not exist when it opened its position"
+        );
+
+        // The books agree with the organism: income is two rents plus the ORIGINAL
+        // skim, not the new one.
+        uint256 income = 2 * population.metabolicCost() + expectedSkim;
+        uint256 booked = (population.rakeAccrued() - rakeBefore) + (population.prizePool() - poolBefore);
+        assertEq(booked, income, "the house booked a different skim than the organism paid");
         _assertLedgerMatchesBalance(1);
         _assertLedgerMatchesBalance(2);
     }
@@ -1684,6 +2144,180 @@ contract DarwinTest is Test {
         _assertLedgerMatchesBalance(3);
     }
 
+    /**
+     *  A second breed while the first inference is still out is refused.
+     *
+     *  `breedProphet` is permissionless, and `handleMutation` rejects any id that is
+     *  not the CURRENT `pendingMutationRequestId` — so overwriting that id orphans a
+     *  three-validator inference the parent has already paid for out of its own
+     *  native balance, and the genome it produces is unreachable. Anyone could have
+     *  done that to a qualifying leader as often as the leader could afford it.
+     *
+     *  The second half is the control, and it is the half that makes this a test of
+     *  a GUARD rather than of a permanent block: once the first mutation lands and
+     *  clears the id, the same call from the same caller goes through.
+     */
+    function test_breeding_secondRequestWhileOneIsInFlightIsRefused() public {
+        Prophet parent = _p(_breedingCandidate());
+        _settle();
+
+        uint256 first = parent.pendingMutationRequestId();
+        assertGt(first, 0, "the parent is not breeding, so there is nothing to race");
+
+        // READ THE ID OUT HERE, not inside the call below. `vm.expectRevert` binds to
+        // the next call and a `view` read IS a call, so `breedProphet(parent.prophetId())`
+        // spends the expectation on the getter and the real call reverts for real —
+        // reported as "next call did not revert as expected". Same footgun as `_season()`.
+        uint256 id = parent.prophetId();
+
+        // Deep pockets on purpose: `_requestMutation` draws the deposit BEFORE it
+        // reaches `noteMutating`, so a parent that could not afford the second draw
+        // would take the `BreedingUnaffordable` branch and return quietly — and this
+        // test would pass without the guard existing.
+        vm.deal(address(parent), 10 ether);
+
+        vm.expectRevert(Prophet.MutationInFlight.selector);
+        population.breedProphet(id);
+        assertEq(parent.pendingMutationRequestId(), first, "the in-flight request was overwritten");
+
+        // The first inference still lands, which is the whole point of refusing.
+        requester.deliver(first, "organism 0, but bolder");
+        assertEq(parent.pendingChildPrompt(), "organism 0, but bolder", "the orphaned genome was lost");
+        assertEq(parent.pendingMutationRequestId(), 0, "mutation id cleared");
+
+        // CONTROL: with nothing in flight, the same caller breeds it again.
+        population.breedProphet(id);
+        assertGt(parent.pendingMutationRequestId(), 0, "the guard outlived the request it was guarding");
+    }
+
+    /**
+     *  A STRANGER CANNOT WEDGE THE WINDOW BY BREEDING A LEADER FIRST. Audit item #56.
+     *
+     *  `breedProphet` is permissionless and changes neither `streak` nor `treasury`, so
+     *  it leaves the organism exactly as eligible as it found it — but it sets
+     *  `pendingMutationRequestId`. `settleAll` then reaches the breeding branch, calls
+     *  `_requestMutation`, and `Prophet.noteMutating` reverts `MutationInFlight`. That
+     *  revert is raised INSIDE the `try p.settleWindow(...)` success body, and Solidity
+     *  does not route a revert from a success block into that `try`'s `catch` — so the
+     *  whole `settleAll` reverts, `phase` stays at 2, and only `forcePhase` gets the
+     *  cadence moving again. One stranger, one call, the arena stopped.
+     *
+     *  The reproduction is deliberately from a NON-OWNER: an owner-only griefing wedge
+     *  would be a tuning mistake, not a vulnerability.
+     */
+    function test_breeding_aStrangerCannotWedgeSettlementByBreedingFirst() public {
+        uint256 winnerId = _armTheWedge();
+        Prophet parent = _p(winnerId);
+
+        // `settleAll` must still close the window. Before the fix it reverted with
+        // `MutationInFlight` raised inside its own `try`'s success body and left the
+        // phase at 2, recoverable only by `forcePhase`.
+        _settle();
+
+        assertEq(population.phase(), 0, "settleAll left the phase machine wedged");
+        assertEq(parent.windowsLived(), 2, "the organism was not graded");
+    }
+
+    /**
+     *  THE SAME WEDGE WITH NO GRIEFER AT ALL, which is the more damning half.
+     *
+     *  Nothing in `_requestMutation` cleared the streak or the surplus, so a parent
+     *  with an inference still out qualifies again at the very next settlement and
+     *  `settleAll` walks into its own revert. The population wedges itself one window
+     *  after any successful breed whose mutation has not landed yet — inference latency
+     *  is measured in seconds and a window is fifteen minutes, so this is rare rather
+     *  than impossible, and it needs no adversary to happen at all.
+     */
+    function test_breeding_settlementDoesNotWedgeItselfOnItsOwnPendingMutation() public {
+        uint256 winnerId = _breedingCandidate();
+        Prophet parent = _p(winnerId);
+        vm.deal(address(parent), 10 ether);
+
+        _upWins();
+        _settle();
+
+        uint256 armed = parent.pendingMutationRequestId();
+        assertGt(armed, 0, "settleAll did not breed it, so there is nothing in flight");
+
+        // A second window with the mutation still out. Deliberately NOT delivered.
+        _pushWindow();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        assertEq(population.phase(), 0, "the population wedged itself");
+        assertEq(parent.pendingMutationRequestId(), armed, "the in-flight request was replaced");
+        assertGe(parent.streak(), 2, "the parent was not graded through the second window");
+    }
+
+    /**
+     *  THE FIX, AND ITS CONTROL. Audit item #56.
+     *
+     *  Two halves, and both are load-bearing. `_requestMutation` now early-RETURNS on
+     *  an in-flight mutation, emitting `MutationAlreadyInFlight` before the deposit is
+     *  drawn — so the `settleAll` path neither reverts nor pays for a request it will
+     *  not make. And `breedProphet` pre-checks the same condition and reverts, so a
+     *  direct caller still gets a loud refusal rather than a silent no-op.
+     *
+     *  The control is the cognition assertion: the refused attempt must not have moved
+     *  a wei of the parent's native balance. Without the early return that number falls
+     *  by one deposit every settlement for as long as the mutation is out.
+     */
+    function test_breeding_aRefusedMutationCostsTheParentNothing() public {
+        uint256 winnerId = _armTheWedge();
+        Prophet parent = _p(winnerId);
+        uint256 armed = parent.pendingMutationRequestId();
+
+        // Read both books AFTER the wedge is armed and BEFORE the settlement, so the
+        // delta measured is the refused attempt alone and not the first request's own
+        // deposit.
+        uint256 cognitionBefore = address(parent).balance;
+        uint256 treasuryBefore = parent.treasury();
+        uint256 rentBefore = collateral.balanceOf(address(population));
+
+        vm.expectEmit(true, false, false, true, address(population));
+        emit Population.MutationAlreadyInFlight(winnerId, armed);
+        _settle();
+
+        assertEq(population.phase(), 0, "settleAll left the phase machine wedged");
+        assertEq(parent.pendingMutationRequestId(), armed, "the in-flight request was replaced");
+
+        // CONTROL: no deposit was drawn. Settlement charges metabolism in COLLATERAL,
+        // which is a different balance, so the native number must be untouched exactly.
+        assertEq(address(parent).balance, cognitionBefore, "a refused mutation drew a deposit anyway");
+        assertGt(treasuryBefore, 0, "the parent held nothing, so the collateral leg proves nothing");
+
+        // And the window really was graded rather than skipped — a `settleAll` that
+        // silently did nothing would satisfy the phase assertion just as well. The
+        // treasury is NOT the place to look for that: this organism won its pairing, so
+        // its winnings exceed the rent and its treasury goes UP. Metabolism is asserted
+        // where it lands instead — as income arriving at the population, in collateral,
+        // which is a different balance from the native one the control above pins.
+        assertFalse(parent.positionOpen(), "the position was never settled");
+        assertEq(parent.windowsLived(), 2, "the organism was not graded");
+        assertGe(
+            collateral.balanceOf(address(population)) - rentBefore,
+            population.metabolicCost(),
+            "metabolism was never charged"
+        );
+        assertGt(parent.treasury(), treasuryBefore, "a graded winner did not get paid");
+
+        // The surviving inference still lands and still breeds, which is what makes this
+        // a refusal of the DUPLICATE rather than of breeding.
+        requester.deliver(armed, "organism 0, but bolder still");
+        assertEq(parent.pendingChildPrompt(), "organism 0, but bolder still", "the surviving request was orphaned");
+        assertEq(parent.pendingMutationRequestId(), 0, "mutation id cleared");
+    }
+
+    // A DIRECT DUPLICATE STILL REVERTS, and the test for it is the one that was already
+    // here: `test_breeding_secondRequestWhileOneIsInFlightIsRefused`. It is now the
+    // control for `breedProphet`'s pre-check rather than for `noteMutating` alone —
+    // adding the early return to `_requestMutation` WITHOUT the pre-check turns that
+    // call into a silent no-op and the existing expectation fails. No new test here,
+    // deliberately: a second one asserting the same revert would be decoration.
+
     /// @dev Validators that disagree on a genome produce no child. Averaging them or
     ///      picking one arbitrarily would make heredity unattested.
     function test_breeding_failedMutationConsensusDoesNotBreed() public {
@@ -1706,15 +2340,61 @@ contract DarwinTest is Test {
         assertEq(p.pendingChildPrompt(), "", "no consensus, no child");
     }
 
+    /**
+     *  No landed genome, no child — AND `hatchAll` is the thing being exercised.
+     *
+     *  Audit item #35. The first half of this test is a negative assertion, and a
+     *  negative assertion about a function is satisfied by that function doing
+     *  NOTHING AT ALL: `if (true) return;` at the top of `hatchAll` passed it. So the
+     *  second half is a positive control on the same fixture — land a genome, call the
+     *  same function again, and require a child with the right id, parent, generation
+     *  and liveness. Now the first assertion means "refused because there was no
+     *  genome" rather than "the call is inert".
+     */
     function test_breeding_hatchIsANoOpWithoutAGenome() public {
         _seed(2);
         vm.prank(owner);
         population.hatchAll();
         assertEq(population.prophetCount(), 2, "nothing to hatch");
+
+        // CONTROL. Delivered straight to the Prophet rather than through
+        // `requester.deliver`, because the mock only knows ids its own
+        // `createAdvancedRequest` issued and 4141 was set by hand — the same idiom as
+        // `test_breeding_respectsMaxPopulation`.
+        Prophet parent = _p(1);
+        vm.prank(address(population));
+        parent.noteMutating(4141);
+
+        string[] memory answers = new string[](3);
+        answers[0] = "organism 0, but hungrier";
+        answers[1] = "organism 0, but hungrier";
+        answers[2] = "organism 0, but hungrier";
+        vm.prank(address(requester));
+        parent.handleMutation(4141, _responsesFrom(answers), ResponseStatus.Success, _emptyRequest());
+        assertEq(parent.pendingChildPrompt(), "organism 0, but hungrier", "the control never armed");
+
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertEq(population.prophetCount(), 3, "hatchAll bears no children at all, so the no-op above proved nothing");
+        Prophet child = _p(3);
+        assertEq(child.prophetId(), 3, "the child was not indexed at the id it was counted as");
+        assertEq(child.parentId(), 1, "the child is not the parent's");
+        assertEq(child.generation(), 1, "generation did not advance");
+        assertFalse(child.dead(), "the child was born dead");
+        assertEq(child.systemPrompt(), "organism 0, but hungrier", "the mutated genome was not inherited");
     }
 
-    /// @dev `maxPopulation` is a gas bound. Hitting it must stop births, not revert
-    ///      the settlement that triggered them.
+    /**
+     *  `maxPopulation` is a gas bound. Hitting it must stop births, not revert the
+     *  settlement that triggered them.
+     *
+     *  Audit item #35 again: "the cap held" is a negative assertion, so `if (true)
+     *  return;` at the top of `hatchAll` satisfied it too. The control here has to
+     *  raise the cap rather than land a second genome — the whole fixture is a
+     *  population sitting AT the cap — and it proves the refusal came from
+     *  `maxPopulation` specifically, since nothing else about the parent changed.
+     */
     function test_breeding_respectsMaxPopulation() public {
         _seed(2);
         Econ memory e = _econ();
@@ -1741,6 +2421,23 @@ contract DarwinTest is Test {
         vm.prank(owner);
         population.hatchAll(); // must not revert
         assertEq(population.prophetCount(), 2, "the cap held");
+
+        // The genome is still armed, so nothing but the cap is standing between this
+        // parent and a child.
+        assertEq(p1.pendingChildPrompt(), "a child that cannot be born", "the prompt was consumed by the refused hatch");
+
+        // CONTROL: room for one more, same parent, same genome, same call.
+        e.maxPopulation = 3;
+        _setEconomics(e);
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertEq(population.prophetCount(), 3, "hatchAll bears no children at all, so the cap proved nothing");
+        Prophet child = _p(3);
+        assertEq(child.prophetId(), 3, "the child was not indexed at the id it was counted as");
+        assertEq(child.parentId(), 1, "the child is not the capped parent's");
+        assertEq(child.generation(), 1, "generation did not advance");
+        assertFalse(child.dead(), "the child was born dead");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1979,10 +2676,11 @@ contract DarwinTest is Test {
      *  fitness signal measuring the pusher instead of the forecaster, in counters
      *  that are permanent.
      *
-     *  `scripts/lib/market.ts:151` names this exact failure and guards `undefined`,
-     *  but a REST payload carrying a literal `0` — or `OPEN_PRICE=0` in the env
-     *  override — still arrives as a well-formed zero. The updater is a hot key on a
-     *  script, so the check belongs on the contract side of that boundary.
+     *  `scripts/lib/market.ts:149` refuses a *missing* `OPEN_PRICE`, but the string
+     *  `"0"` is truthy, so `OPEN_PRICE=0` in the manual override — or an indexer
+     *  answer whose `numericValue` is zero — still arrives as a well-formed zero. The
+     *  updater is a hot key on a script, so the check belongs on the contract side of
+     *  that boundary.
      */
     function test_priceSource_refusesAZeroPriceAndAZeroMarket() public {
         vm.startPrank(owner);
@@ -2187,6 +2885,251 @@ contract DarwinTest is Test {
         population.commitAll();
     }
 
+    /**
+     *  `setEconomics` refuses a metabolism that would wipe the population.
+     *
+     *  Charged unconditionally at settlement and reaped against at `Population.sol`'s
+     *  starvation branch, a `metabolicCost >= endowment` kills every organism alive and
+     *  every organism born afterwards at its first settlement — and `Prophet.dead` has
+     *  no counterpart, so setting the number back restores nothing. Arguments 1 and 2 are
+     *  adjacent same-unit `uint256`s whose defaults differ by 200x, which is the
+     *  transposition this catches.
+     *
+     *  Three cases, and the third is the one that matters: equality is refused, because a
+     *  newborn endowed exactly its own metabolism dies at its first settlement with no
+     *  window in between — the same wipe, one wei cheaper.
+     */
+    function test_access_setEconomicsRefusesAFatalMetabolism() public {
+        Econ memory e = _econ();
+
+        // Transposed: metabolism where the endowment belongs and vice versa.
+        e.endowment = 50_000;
+        e.metabolicCost = 10_000_000;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.MetabolismAboveEndowment.selector, 10_000_000, 50_000));
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        // Equality: no window of life at all.
+        e.endowment = 10 * ONE;
+        e.metabolicCost = 10 * ONE;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.MetabolismAboveEndowment.selector, 10 * ONE, 10 * ONE));
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        // CONTROL. One wei under is allowed — this is a survivability floor, not a
+        // judgement about tuning, and a test that only ever saw reverts would pass
+        // against a `setEconomics` that rejected everything.
+        //
+        // THE SURPLUS HAS TO COME WITH IT. `BreedSurplusBelowMetabolism` (audit #29)
+        // requires `endowment * breedSurplusBps / 10_000 >= metabolicCost`, and this
+        // control asks for a metabolism one wei under the whole endowment — so the only
+        // legal surplus is the whole endowment too. That is not the bound getting in
+        // the way of this one: at this metabolism a parent that kept anything less than
+        // a second endowment would die at the settlement after the birth.
+        e.metabolicCost = 10 * ONE - 1;
+        e.breedSurplusBps = 10_000;
+        _setEconomics(e);
+        assertEq(population.metabolicCost(), 10 * ONE - 1, "the floor is exclusive on the wrong side");
+        assertEq(population.endowment(), 10 * ONE, "the endowment did not land");
+    }
+
+    /**
+     *  `setEconomics` refuses a stake floor above the ante — the arena that never trades.
+     *
+     *  `_pair` clamps to `windowAnte` and then opens two EMPTY positions when the result
+     *  is under `minStake`, so a floor above the ante does not slow trading down, it
+     *  stops it entirely: every organism forecasts, pays metabolism, and is graded on an
+     *  abstention. The population starves uniformly, which on a dashboard is
+     *  indistinguishable from a dead price feed. Audit #29.
+     *
+     *  The control is the equality case, and it is the live default: `initialize` sets
+     *  `baseAnte == minStake` deliberately, so a bound that refused equality would
+     *  reject the very configuration this contract ships with.
+     */
+    function test_access_setEconomicsRefusesAStakeFloorAboveTheAnte() public {
+        uint256 base = population.baseAnte();
+
+        Econ memory e = _econ();
+        e.minStake = base + 1;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.StakeFloorAboveAnte.selector, base + 1, base));
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        // CONTROL: exactly on the ante is the shipped default, and it must stay legal.
+        e.minStake = base;
+        _setEconomics(e);
+        assertEq(population.minStake(), base, "the floor may sit exactly on the ante");
+    }
+
+    /**
+     *  And the other half, in `setSeason` — without it the first half is decorative.
+     *
+     *  An owner refused a high `minStake` reaches the identical never-pairs state by
+     *  lowering `baseAnte` instead, and `setSeason` is a separate owner call with its own
+     *  guards. Two checks, because the invariant belongs to whichever transaction last
+     *  touched either number.
+     */
+    function test_access_setSeasonRefusesAnAnteBelowTheStakeFloor() public {
+        uint256 floor_ = population.minStake();
+
+        Population.SeasonParams memory s = _season();
+        s.baseAnte = floor_ - 1;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.StakeFloorAboveAnte.selector, floor_, floor_ - 1));
+        population.setSeason(s);
+
+        // CONTROL: equality passes here too, or the two halves would disagree about the
+        // boundary and the shipped defaults would be unreachable from `setSeason`.
+        s.baseAnte = floor_;
+        _setSeason(s);
+        assertEq(population.baseAnte(), floor_, "the ante may sit exactly on the floor");
+    }
+
+    /**
+     *  `setEconomics` refuses an endowment below the stake floor.
+     *
+     *  The same never-pairs outcome as `StakeFloorAboveAnte` arrived at from the other
+     *  side, and worse: it is permanent for the organism rather than a season parameter.
+     *  A newborn handed less than the floor cannot cover a single pairing for its whole
+     *  life, and `minEndowment` does not catch it — that bounds what an ENTRANT brings,
+     *  while this is what the house hands a founder or a parent hands a child. Audit #29.
+     */
+    function test_access_setEconomicsRefusesAnEndowmentBelowTheStakeFloor() public {
+        Econ memory e = _econ();
+        // Raise the floor to the endowment first — legal, since the ante is above it —
+        // so the perturbation below is one field rather than two.
+        Population.SeasonParams memory s = _season();
+        s.baseAnte = 10 * ONE;
+        _setSeason(s);
+        e.minStake = 10 * ONE;
+        _setEconomics(e);
+
+        e.endowment = 10 * ONE - 1;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.EndowmentBelowStakeFloor.selector, 10 * ONE - 1, 10 * ONE));
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        // CONTROL: exactly the floor is allowed. An organism endowed its entire stake can
+        // afford precisely one pairing, which is a hard life rather than an impossible one.
+        e.endowment = 10 * ONE;
+        _setEconomics(e);
+        assertEq(population.endowment(), 10 * ONE, "an endowment equal to the floor is legal");
+    }
+
+    /**
+     *  `setEconomics` refuses a population cap that stops births or forbids a pairing.
+     *
+     *  Two values break `maxPopulation` rather than tune it, and both are checked here.
+     *  Under `living.length` it freezes every birth while the incumbents are alive —
+     *  `hatchAll` breaks out of its loop — so the generation counter, which is the
+     *  headline metric of a run, stops moving with nothing on chain saying why. Under 2
+     *  it forbids a pairing outright, since `_pair` needs two organisms holding opposing
+     *  beliefs. Audit #29.
+     *
+     *  Note the check reads `living.length`, not `prophets.length`: a cap under the
+     *  number of CORPSES is a perfectly reasonable thing to set late in a run.
+     */
+    function test_access_setEconomicsRefusesAPopulationCapThatStopsTheRun() public {
+        Econ memory e = _econ();
+
+        // THE `< 2` HALF FIRST, WITH NOTHING ALIVE, so the two halves are actually
+        // distinguishable: the error reports `living` as its second argument, and an
+        // empty population makes that zero. Ordered this way rather than seeding first,
+        // where a cap of 1 would trip both branches and either one passing would look
+        // identical.
+        assertEq(population.livingCount(), 0, "the floor of 2 must be provable with nothing alive");
+        e.maxPopulation = 1;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.PopulationCapTooSmall.selector, 1, 0));
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        _seed(4);
+        uint256 alive_ = population.livingCount();
+        assertEq(alive_, 4, "the fixture did not produce four living organisms");
+
+        // Below the living population: births freeze while these four are alive. Three is
+        // above the floor of 2, so only the `living` half can be what refuses this.
+        e.maxPopulation = 3;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.PopulationCapTooSmall.selector, 3, alive_));
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        // CONTROL: exactly the living count is allowed. It is a full house, not a broken
+        // one — the incumbents keep trading and the next birth waits for a death.
+        e.maxPopulation = 4;
+        _setEconomics(e);
+        assertEq(population.maxPopulation(), 4, "a cap equal to the living population is legal");
+    }
+
+    /**
+     *  `setEconomics` refuses a zero breeding streak.
+     *
+     *  `settleAll` requests a mutation for every organism whose `streak() >= breedStreak`
+     *  and whose treasury clears the surplus, so a zero makes that true for the whole
+     *  solvent population EVERY window — each request a paid inference drawn from the
+     *  organism's own cognition — and `hatchAll` runs to `maxPopulation` in a couple of
+     *  windows. Breeding stops being a reward for being right. Audit #29.
+     */
+    function test_access_setEconomicsRefusesAZeroBreedStreak() public {
+        Econ memory e = _econ();
+        e.breedStreak = 0;
+        vm.prank(owner);
+        vm.expectRevert(Population.ZeroBreedStreak.selector);
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        // CONTROL: one is legal. The bound says breeding must be earned, not that it must
+        // be hard — a one-window streak is a tuning choice and a demo may well want it.
+        e.breedStreak = 1;
+        _setEconomics(e);
+        assertEq(population.breedStreak(), 1, "a single-window streak is a tuning choice, not a brick");
+    }
+
+    /**
+     *  `setEconomics` refuses a breeding surplus under one metabolism charge.
+     *
+     *  `_hatch` transfers exactly `endowment` out of the parent and eligibility is
+     *  `treasury >= endowment + endowment * breedSurplusBps / 10_000`, so that surplus IS
+     *  what a parent is left holding the moment its child is born. Under one metabolism
+     *  charge, every successful breed kills the parent at the very next settlement:
+     *  reproduction becomes suicide, and selection then favours the organisms that never
+     *  qualified. Audit #29.
+     */
+    function test_access_setEconomicsRefusesABreedSurplusUnderOneMetabolism() public {
+        Econ memory e = _econ();
+        // 10 tUSDC endowment, so 500 bps is 0.5 tUSDC of surplus. Ask for a metabolism of
+        // 0.5 tUSDC + 1 and the parent is one wei short of surviving its own child.
+        e.breedSurplusBps = 500;
+        uint256 surplus = (e.endowment * 500) / 10_000;
+        e.metabolicCost = surplus + 1;
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.BreedSurplusBelowMetabolism.selector, surplus, surplus + 1));
+        population.setEconomics(
+            e.endowment, e.metabolicCost, e.minStake, e.stakeBps, e.breedStreak, e.breedSurplusBps, e.maxPopulation
+        );
+
+        // CONTROL: exactly one metabolism charge of surplus is allowed. A parent that
+        // survives the settlement after the birth with nothing left is broke, not dead,
+        // and it can trade its way back — which is the intended cost of reproducing.
+        e.metabolicCost = surplus;
+        _setEconomics(e);
+        assertEq(population.metabolicCost(), surplus, "a surplus of exactly one charge is legal");
+        assertEq(population.breedSurplusBps(), 500, "the surplus did not land");
+    }
+
     /*//////////////////////////////////////////////////////////////
                               TEST UTILS
     //////////////////////////////////////////////////////////////*/
@@ -2350,6 +3293,24 @@ contract DarwinTest is Test {
         uint256 stake = _stake();
         _commit();
         _upWins();
+        /*
+         *  THE MARKET HAS TO SAY IT RESOLVED, and this line is a correction to the fixture
+         *  rather than an accommodation of the guard added on 2026-09-07.
+         *
+         *  `_upWins()` only sets the payout vector on the settlement singleton. Until this
+         *  test set the market's own flag too, the fixture described a world that cannot
+         *  happen: a settlement callback arriving for a market that had never resolved. That
+         *  is precisely the state `SelectionEngine._windowIsDecidable` now declines, and the
+         *  reason it declines is that on the shared singleton it is somebody else's
+         *  settlement. So the fixture was asserting the happy path from inside the defect's
+         *  own state, which is why the cross-talk went unseen here for as long as it did.
+         *
+         *  It cannot go in `_upWins()`: fifty-one call sites use that helper and many of them
+         *  `_think()` again for a second window, which `PushedPriceSource` refuses on a
+         *  resolved market (`MarketNotTradeable`, see `test_priceSource_refusesResolvedMarket`).
+         *  The resolution belongs to the tests that model a settlement arriving.
+         */
+        market.setState(true, false);
 
         uint64 window = population.windowCount();
 
@@ -2368,6 +3329,132 @@ contract DarwinTest is Test {
         );
         assertEq(_p(2).treasury(), endowment - stake - metabolism, "loser forfeits its stake");
         assertFalse(_p(1).positionOpen(), "position must be cleared by the reactive path too");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+              CROSS-TALK ON THE SHARED SETTLEMENT SINGLETON
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  THE DEFECT: a stranger's market settling used to close our window.
+     *
+     *  `BinarySettlement` is one contract for all of DreamDEX, so the subscription fires on
+     *  every binary market on Shannon. `settleAll()` does not ask why it was called — it is
+     *  `inPhase(2)`, it skips organisms with no open position, and it sets `phase = 0`
+     *  unconditionally. So before the guard, any foreign finalization graded this population
+     *  against a market that had not resolved, charged metabolism for the privilege, and
+     *  returned the machine to idle while our own market was still live.
+     *
+     *  What makes it worth a test rather than a comment is that the damage is INVISIBLE in
+     *  the logs: an early-closed window emits the same `WindowClosed` as a real one, and the
+     *  organisms' fitness is simply wrong. There is no error to grep for.
+     *
+     *  The assertions are therefore about state, not about the event: the window must still
+     *  be open and the treasuries must be untouched. An assertion on `ReactionFailed` alone
+     *  would pass on a guard that logged and settled anyway.
+     */
+    function test_reactivity_foreignSettlementCannotCloseAnUndecidedWindow() public {
+        SelectionEngine e = _engine();
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        // Someone else's market finalized. Ours has not resolved — `_think()` would have
+        // reverted `MarketNotTradeable` if it had.
+        assertFalse(market.isResolved(), "precondition: our own market is still live");
+        assertEq(population.phase(), 2, "precondition: our window is committed");
+
+        uint256 before1 = _p(1).treasury();
+        uint256 before2 = _p(2).treasury();
+
+        vm.prank(REACTIVITY);
+        e.onEvent(address(settlement), new bytes32[](0), "");
+
+        assertEq(population.phase(), 2, "a foreign settlement must NOT close our window");
+        assertEq(_p(1).treasury(), before1, "nobody may be graded against a market that has not resolved");
+        assertEq(_p(2).treasury(), before2, "nobody may be graded against a market that has not resolved");
+        assertTrue(_p(1).positionOpen(), "the position must survive a foreign settlement");
+        assertTrue(_p(2).positionOpen(), "the position must survive a foreign settlement");
+    }
+
+    /**
+     *  CONTROL for the test above: the guard must not be a way to never settle.
+     *
+     *  Same setup, same callback, one bit different — our market has resolved. If this did
+     *  not settle, the test above would pass on a contract that declines every callback ever,
+     *  which is the failure mode a guard like this actually has. `prove-same-block.ts` would
+     *  then never see a `Reacted` and the project's central claim would be unprovable.
+     */
+    function test_reactivity_settlementProceedsOnceOurOwnMarketResolves() public {
+        SelectionEngine e = _engine();
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _upWins();
+        market.setState(true, false);
+
+        vm.prank(REACTIVITY);
+        e.onEvent(address(settlement), new bytes32[](0), "");
+
+        assertEq(population.phase(), 0, "our own market resolving must still close the window");
+        assertFalse(_p(1).positionOpen(), "the winner's position must be redeemed");
+    }
+
+    /**
+     *  A VOID IS A DECISION, and treating it as one is what stops the guard becoming a lock.
+     *
+     *  A market that never resolves can be flipped `Voided` by anyone through
+     *  `voidExpired()`, and settlement then refunds both antes. If the guard demanded
+     *  `isResolved()` alone, the windows most likely to need closing — the ones whose oracle
+     *  never answered — would be the exact ones left wedged in phase 2 forever, waiting for
+     *  a resolution that by definition is not coming.
+     */
+    function test_reactivity_aVoidedMarketIsStillDecidable() public {
+        SelectionEngine e = _engine();
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        settlement.setVoid(YES_ID, NO_ID);
+        market.setState(false, true);
+
+        vm.prank(REACTIVITY);
+        e.onEvent(address(settlement), new bytes32[](0), "");
+
+        assertEq(population.phase(), 0, "a voided market must be allowed to close the window");
+    }
+
+    /**
+     *  The owner's hatch is deliberately NOT behind the guard, and this asserts the
+     *  asymmetry rather than leaving it to a comment.
+     *
+     *  The guard exists because `onEvent` is pulled by an unauthenticated trigger — anyone's
+     *  market finalizing — so the contract has to judge whether the pull meant anything.
+     *  `poke()` is the owner, who has already judged. Guarding it would put a second refusal
+     *  in front of the escape hatch in precisely the case the hatch is for: a window that has
+     *  to be closed out by hand because the module cannot report its market.
+     */
+    function test_reactivity_pokeSettlesAWindowTheReactivePathWouldDecline() public {
+        SelectionEngine e = _engine();
+        _seed(2);
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+        _upWins();
+
+        // The reactive path declines this exact state — asserted directly above.
+        assertFalse(market.isResolved(), "precondition: the market cannot be read as decided");
+
+        vm.prank(owner);
+        e.poke();
+
+        assertEq(population.phase(), 0, "the owner's hatch must not be gated by the guard");
     }
 
     /**
@@ -2675,12 +3762,19 @@ contract DarwinTest is Test {
         population.withdrawRake(owner, accrued + 1);
 
         uint256 held = collateral.balanceOf(address(population));
+        uint256 potBefore = population.prizePool();
+        assertGt(potBefore, 0, "test is vacuous: the players' pot is empty");
+
         vm.prank(owner);
         population.withdrawRake(owner, accrued);
         assertEq(population.rakeAccrued(), 0, "rake not drawn down");
         assertEq(collateral.balanceOf(owner), accrued, "the owner was not paid");
         assertEq(collateral.balanceOf(address(population)), held - accrued, "more than the rake left the arena");
-        assertLe(population.prizePool(), collateral.balanceOf(address(population)), "the pot was drained with it");
+        // Exactly unchanged, not merely still-backed: `assertLe` against the balance
+        // is maximally satisfied by zeroing the pot, so it cannot see a rake
+        // withdrawal that drains it.
+        assertEq(population.prizePool(), potBefore, "the pot was drained with it");
+        assertLe(population.prizePool(), collateral.balanceOf(address(population)), "the pot is no longer backed");
     }
 
     /// @dev A corpse must not be a vault. What is left when an organism can no
@@ -2708,6 +3802,81 @@ contract DarwinTest is Test {
         assertEq(collateral.balanceOf(address(_p(1))), 0, "dead organism still holds collateral");
         assertEq(_p(2).treasury(), 0, "dead organism still holds a ledger balance");
         assertEq(collateral.balanceOf(address(_p(2))), 0, "dead organism still holds collateral");
+    }
+
+    /**
+     *  Audit item #43. A residue that cannot be moved must defer one reap, not stop the
+     *  window.
+     *
+     *  Everything in the reaping branch runs in the SUCCESS BODY of `settleAll`'s `try`,
+     *  and a revert in a success body propagates rather than reaching that `try`'s
+     *  `catch` — the same Solidity fact #56 turned on. `Prophet.stakeOut` reverts
+     *  `TransferFailed` when the collateral refuses the transfer, which for a real tUSDC
+     *  means paused or the arena blacklisted, so one starving organism could take down
+     *  the settlement for the whole population and leave `phase` wedged at 2.
+     *
+     *  Only ORGANISM 1's collateral is frozen, and organism 2 starves in the same window.
+     *  That is what separates the two failure modes: a halted cadence loses both, a
+     *  deferred reap loses neither. And the deferral must be a real deferral — the
+     *  organism stays alive and in `living`, because `aliveCount` and `living.length` are
+     *  asserted equal and a corpse whose residue never left could never be emptied again
+     *  (`stakeOut` carries `alive`).
+     */
+    function test_death_aResidueThatCannotMoveDefersOneReapRatherThanTheWindow() public {
+        _seed(2);
+        _makeThinkingFatal();
+
+        _upWins();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _answer(2, "DOWN_REVERSION");
+        _commit();
+
+        // Let `settleWindow`'s own two transfers out of organism 1 through — the rake on
+        // its winnings and the metabolism charge — and refuse the third, which is the
+        // residue drain in the reaping branch. The grace counter is synthetic and the
+        // mock says so: a real pausable token cannot start refusing between two
+        // transfers inside one transaction. It is here because the handler is otherwise
+        // unwatchable, and a handler nobody has watched fail is a comment.
+        collateral.setFrozenAfter(address(_p(1)), 2);
+
+        // Topic-1 only. The residue is whatever `settleWindow` leaves after the rake and
+        // the metabolism charge, which is not knowable before the call — and asserting it
+        // is redundant anyway, since the balance assertions below measure the same number
+        // where it actually matters.
+        vm.expectEmit(true, false, false, false, address(population));
+        emit Population.ReapDeferred(1, 0);
+        _settle();
+
+        // The window completed and the phase is back at rest, which is the whole claim.
+        assertEq(population.phase(), 0, "one unmovable residue wedged the cadence for everybody");
+
+        // Organism 2 was reaped normally in the same call.
+        assertTrue(_p(2).dead(), "the settlement did not reach the other organism");
+        assertEq(_p(2).treasury(), 0, "the other organism's residue did not move");
+
+        // Organism 1's reap was deferred, not faked.
+        uint256 residue = _p(1).treasury();
+        assertFalse(_p(1).dead(), "a corpse whose residue never left can never be emptied again");
+        assertGt(residue, 0, "there must be a residue left behind, or nothing failed to move");
+        assertEq(residue, collateral.balanceOf(address(_p(1))), "the residue was booked without moving");
+        assertGt(population.livingIndex(1), 0, "a living organism was removed from the living index");
+        assertEq(population.aliveCount(), population.livingCount(), "aliveCount drifted from the living index");
+
+        // CONTROL: the reap is retried and completes once the token allows it. Without
+        // this, "deferred" is indistinguishable from "never".
+        collateral.setFrozen(address(_p(1)), false);
+        uint256 poolBefore = population.prizePool();
+        _think();
+        _answer(1, "UP_MOMENTUM");
+        _commit();
+        _settle();
+
+        assertTrue(_p(1).dead(), "the deferred reap never happened");
+        assertEq(_p(1).treasury(), 0, "the residue is still stranded in a corpse");
+        assertGt(population.prizePool(), poolBefore, "the residue never reached the players");
+        assertEq(population.livingIndex(1), 0, "the reaped organism is still in the living index");
+        assertEq(population.aliveCount(), population.livingCount(), "aliveCount drifted from the living index");
     }
 
     /// @dev A season that only the operator can close is a season the operator can
@@ -3241,7 +4410,9 @@ contract DarwinTest is Test {
 
         // The factory is `onlyOwner`, so it is not a public path to a treasury either.
         vm.prank(address(0xBAD));
-        vm.expectRevert(abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), address(0xBAD)));
+        vm.expectRevert(
+            abi.encodeWithSelector(bytes4(keccak256("OwnableUnauthorizedAccount(address)")), address(0xBAD))
+        );
         bare.deployGenesisTreasury();
 
         vm.prank(owner);
@@ -3254,6 +4425,90 @@ contract DarwinTest is Test {
         bare.spawnGenesis(genomes);
         assertEq(bare.prophetCount(), 1, "the founder was not minted once a treasury existed");
         assertEq(Prophet(payable(bare.prophetAt(1))).entrant(), t, "the founder does not belong to the new treasury");
+    }
+
+    /**
+     *  A GENESIS THE HOUSE CANNOT PAY FOR IS REFUSED, NOT DEGRADED. Audit item #32.
+     *
+     *  `_houseCognition()` returns 0 when the balance is short instead of reverting.
+     *  On the breeding path that is correct and deliberate — see its docblock. On the
+     *  genesis path it made the single most consequential transaction of the whole run
+     *  fail silently: a deploy that forgot the native value minted all eight founders
+     *  with zero STT, no revert, and no `CognitionFunded` event, and the population was
+     *  born brain-dead. `think()` would then skip every organism for want of cognition,
+     *  every window would grade eight abstentions, and the only symptom visible to the
+     *  operator is an arena that does nothing. There is no un-spawn, so the repair is
+     *  eight `topUpCognition` calls found by reading the source.
+     *
+     *  A BARE ARENA WITH A CONTROLLED BALANCE, because `setUp` deals `population`
+     *  100 ether and the shortfall is unreachable there.
+     *
+     *  The second half is the boundary control, and it does double duty: it tops the
+     *  balance up by exactly ONE WEI, delivered as `msg.value`, which proves both that
+     *  the check is not off by one AND that `msg.value` is counted — the deploy funds
+     *  the float in the same transaction that creates the founders, so a check that
+     *  read the balance before the value arrived would refuse every real genesis.
+     */
+    function test_genesis_refusesWhenTheHouseCannotEndowEveryFounder() public {
+        Population impl = new Population();
+        bytes memory init = abi.encodeCall(
+            Population.initialize,
+            (
+                owner,
+                Population.Wiring({
+                    agentRequester: address(requester),
+                    settlement: address(settlement),
+                    marketsModule: address(module),
+                    outcomeToken: address(outcomeToken),
+                    collateral: address(collateral),
+                    prophetBeacon: address(beacon),
+                    priceSource: address(priceSource),
+                    venue: address(venue),
+                    llmAgentId: 1,
+                    symbol: "BTC"
+                })
+            )
+        );
+        Population bare = Population(payable(address(new ERC1967Proxy(address(impl), init))));
+        vm.prank(owner);
+        bare.deployGenesisTreasury();
+        collateral.mint(address(bare), 10_000 * ONE);
+
+        // Eight, because eight is what the live deploy spawns.
+        string[] memory genomes = new string[](8);
+        for (uint256 i; i < 8; ++i) {
+            genomes[i] = string.concat("founder ", vm.toString(i));
+        }
+
+        // The DEFAULT endowment, not the season override: this bare arena never had
+        // `setSeason` called on it, so this is the number the live deploy pays.
+        uint256 want = 8 * bare.cognitionEndowment();
+        assertGt(want, 0, "a zero cognition endowment would make the shortfall unreachable");
+
+        // One wei short of enough for all eight. Note this is MORE than enough for
+        // seven of them, which is exactly why the check is against the total: a
+        // per-founder guard passes here and mints seven thinkers plus one husk.
+        vm.deal(address(bare), want - 1);
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(Population.HouseCannotEndowFounders.selector, want - 1, want));
+        bare.spawnGenesis(genomes);
+        assertEq(bare.prophetCount(), 0, "founders were minted by a house that could not endow them");
+        assertEq(bare.aliveCount(), 0, "a half-seeded population survived the refusal");
+
+        // CONTROL: one wei, as `msg.value`, and the same call goes through.
+        vm.deal(owner, 1);
+        vm.prank(owner);
+        bare.spawnGenesis{value: 1}(genomes);
+
+        assertEq(bare.prophetCount(), 8, "the boundary is off by one");
+        assertEq(bare.aliveCount(), 8);
+        for (uint256 id = 1; id <= 8; ++id) {
+            assertEq(
+                bare.prophetAt(id).balance, bare.cognitionEndowment(), "a founder was born brain-dead at the boundary"
+            );
+        }
+        assertEq(address(bare).balance, 0, "the house kept native it was supposed to have handed out");
     }
 
     /**
@@ -4546,8 +5801,8 @@ contract DarwinTest is Test {
      *  reverting somewhere a test would see it.
      *
      *  Value only ever moves INTO this contract as a push from the organism — the ante
-     *  via `stakeOut` (`Population.sol:1268`), metabolism via `transfer`
-     *  (`Prophet.sol:520`) — and the outcome tokens likewise (`Prophet.sol:404`),
+     *  via `stakeOut` (`Population.sol:1685`), metabolism via `transfer`
+     *  (`Prophet.sol:600`) — and the outcome tokens likewise (`Prophet.sol:484`),
      *  because the ERC-6909 surface has no `transferFrom` for anyone to pull with. So
      *  neither grant had a caller, and re-adding one now fails here.
      */
@@ -4828,6 +6083,17 @@ contract DarwinTest is Test {
      *  and then stake it at an early-season one, or the reverse.
      */
     function test_ante_isFrozenWhenTheWindowOpensNotWhenItPairs() public {
+        // THE STAKE FLOOR COMES DOWN FIRST, and that is the bound working rather than
+        // being worked around. The re-pricing below is the whole test and it needs an
+        // ante far under the frozen one; `setSeason` now refuses a `baseAnte` beneath
+        // `minStake` (audit #29), because a season priced under the floor never pairs.
+        // So an owner reaching for a cheap ante has to lower the floor to meet it, in
+        // that order. Nothing else here reads `minStake` except `_pair`, which only
+        // becomes more permissive.
+        Econ memory e = _econ();
+        e.minStake = ONE / 1000;
+        _setEconomics(e);
+
         Population.SeasonParams memory s = _season();
         s.baseAnte = 1 * ONE;
         s.levelWindows = 2;

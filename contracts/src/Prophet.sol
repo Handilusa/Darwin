@@ -154,6 +154,10 @@ contract Prophet {
     error AlreadyInitialized();
     error IsDead();
     error NoSuchRequest();
+    /// @dev A second mutation request while one is still in flight. See
+    ///      `noteMutating` — overwriting the id would orphan an inference this
+    ///      organism has already paid for.
+    error MutationInFlight();
     error NothingCommitted();
     error TransferFailed();
 
@@ -213,6 +217,30 @@ contract Prophet {
         pendingBeliefRequestId = requestId;
         currentMarketId = marketId;
         belief = Belief.None;
+        // Clear the PREVIOUS window's rationale in the same breath as its belief.
+        //
+        // `handleBelief` already writes `Unknown` / `""` when consensus fails, so the
+        // gap this closes is not the abstain path — it is the NO-CALLBACK-AT-ALL path.
+        // A request the validators never deliver leaves `pendingBeliefRequestId` set
+        // and nothing else written, so without these two lines an organism carries the
+        // last window it actually thought in: `belief` reads `None` (correctly), while
+        // `lastThesis` and `lastReasoning` still name a thesis and quote a rationale.
+        // Every reader of this contract pairs those three — `snapshot`, the dashboard's
+        // organism card, and anyone auditing "readable on-chain reasoning" — so the
+        // stale pair is read as THIS window's reasoning for a window in which the
+        // organism said nothing. That is the one failure mode this project cannot
+        // present, because the whole claim is that the reasoning on chain is the
+        // reasoning that was acted on.
+        //
+        // Clearing on the way IN rather than on the way out is deliberate: there is no
+        // "way out" on the path that matters, since the callback is what never arrives.
+        // Cost is two SSTOREs per organism per window, both to slots already being
+        // written or already warm (`lastThesis` shares slot 0 with `belief`, so it is
+        // free), and `lastReasoning` is a short-string slot going to zero, which is the
+        // cheap direction. `Believed` is not emitted here — nothing was believed — and
+        // the `Thinking` log below is already the marker a reader pairs against.
+        lastThesis = Thesis.Unknown;
+        lastReasoning = "";
         emit Thinking(prophetId, requestId, marketId);
     }
 
@@ -279,13 +307,65 @@ contract Prophet {
         if (requestId == 0 || requestId != pendingMutationRequestId) revert NoSuchRequest();
         pendingMutationRequestId = 0;
 
+        // Mirror of `handleBelief`'s guard. A parent that starved between
+        // `_requestMutation` and this callback is a corpse, and `hatchAll` does not
+        // iterate corpses — so writing the genome here would strand a real
+        // three-validator inference in unreachable storage AND leave
+        // `pendingChildPrompt` non-empty forever on an organism nothing can hatch.
+        // Dropped quietly for the same reason as the belief: a callback that reverts
+        // is an inference the platform records as failed delivery.
+        if (dead) return;
+
         if (status != ResponseStatus.Success || responses.length == 0) return;
         (bytes memory modal, uint256 agree) = _modalResult(responses);
         if (agree < 2 || modal.length == 0) return;
         pendingChildPrompt = abi.decode(modal, (string));
     }
 
+    /**
+     *  Record the in-flight mutation, and refuse to forget one.
+     *
+     *  THE GUARD IS ABOUT `breedProphet`, WHICH IS PERMISSIONLESS. Overwriting a
+     *  live `pendingMutationRequestId` orphans the first request: `handleMutation`
+     *  rejects any id that is not the stored one, so the earlier inference — three
+     *  validators, already paid for out of this organism's own native balance —
+     *  comes back and reverts with `NoSuchRequest`, and the genome it produced is
+     *  gone. Two callers racing the same qualifying leader could do that as often as
+     *  the leader could afford it.
+     *
+     *  REVERTS RATHER THAN RETURNING, unlike the `dead` guard in `handleMutation`.
+     *  The direction of the call is what makes the difference: a callback that
+     *  reverts is recorded by the platform as a failed delivery, but this is a
+     *  forward call from `Population._requestMutation`, and it must fail loudly so
+     *  the `try` around `createAdvancedRequest` is not the only thing standing
+     *  between a duplicate breed and a silently discarded deposit.
+     *
+     *  THIS IS NOT THE GUARD THAT PROTECTS `settleAll` — IT IS THE ONE THAT USED TO
+     *  BREAK IT. An earlier version of this comment claimed the population's
+     *  per-organism `try`/`catch` swallowed this revert as a `SettleFailed`, leaving
+     *  only a wasted deposit. That was FALSE, and the correction is audit item #56.
+     *
+     *  `Population.settleAll` calls `_requestMutation` from INSIDE the success body of
+     *  its `try p.settleWindow(...)`, and Solidity does not route a revert raised in a
+     *  `try`'s success block into that same `try`'s `catch` — only a revert from the
+     *  external call in the `try` header is caught. So this revert propagated out of
+     *  the whole loop: `settleAll` reverted, no organism was graded, and `phase` stayed
+     *  at 2 until the owner called `forcePhase`. Since `breedProphet` is permissionless
+     *  and moves neither `streak` nor `treasury`, any address could arm that wedge on
+     *  any eligible leader — and the population could also arm it on itself, because a
+     *  parent whose first inference is still out qualifies again at the next settlement.
+     *
+     *  WHICH IS WHY THE CALLER MUST PRE-CHECK, and both callers now do.
+     *  `_requestMutation` reads `pendingMutationRequestId` before it draws anything and
+     *  early-returns with `MutationAlreadyInFlight`, so `settleAll` never reaches this
+     *  revert and never pays a deposit for a request it will not make.
+     *  `Population.breedProphet` checks the same condition first and reverts loudly,
+     *  because a direct caller asked for one specific thing. This guard stays as the
+     *  backstop that makes the orphaning impossible rather than merely unlikely: it is
+     *  the only check that lives in the contract holding the id.
+     */
     function noteMutating(uint256 requestId) external onlyPopulation alive {
+        if (pendingMutationRequestId != 0) revert MutationInFlight();
         pendingMutationRequestId = requestId;
     }
 

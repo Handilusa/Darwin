@@ -132,16 +132,34 @@ interface IBinaryMarketsModule {
  */
 interface IBinarySettlement {
     /*
-     *  The event the reactivity subscription filters on. VERIFIED 2026-08-29
-     *  against `binarySettlementEventsAbi` in `@somnia-chain/markets-sdk@0.28.1`
-     *  (`dist/eventsAbi.js`), which states it mirrors `IBinarySettlement` exactly.
+     *  The event the reactivity subscription filters on.
      *
      *  This is the log whose topic0 goes in `SubscriptionData.eventTopics[0]`.
      *  Until it was read, that topic0 was unknown and `subscribe.ts --discover`
      *  existed to guess it from live traffic; the guess is no longer needed, and
      *  `--discover` is now a cross-check rather than the source of truth.
      *
-     *  Two properties matter for DARWIN:
+     *  THE LAST FIELD IS A PAYOUT VECTOR ON THE DEPLOYED SINGLETON, not the
+     *  `uint8 winningOutcome` declared below. The declaration below was taken
+     *  2026-08-29 from `binarySettlementEventsAbi` in
+     *  `@somnia-chain/markets-sdk@0.28.1`, and that ABI is STALE — the live
+     *  signature is
+     *
+     *    MarketFinalized(uint256,address,uint64,address,uint256,bool,uint256[])
+     *
+     *  which hashes to the topic0 measured off Shannon and recorded in
+     *  `docs/SESSION_CHECKPOINT.md` §2.8. See the note on `MARKET_FINALIZED` in
+     *  `scripts/subscribe.ts` for the two checks that establish it.
+     *
+     *  LEFT AS-IS RATHER THAN CORRECTED, deliberately. Nothing in this repo
+     *  subscribes, filters or decodes off this copy — the scripts carry their own
+     *  `parseAbiItem` fragments — and an event declaration on an `interface` this
+     *  project only ever CALLS into is dead weight either way. Editing it would
+     *  mean recompiling and re-deriving the storage layout of every contract that
+     *  imports this file, for a comment. Read the two field lists as: the shape
+     *  above is what Shannon emits, the shape below is what the SDK still says.
+     *
+     *  Two properties matter for DARWIN, and both are unaffected by that drift:
      *
      *    1. `pool` is INDEXED, so it is topic2. A subscription can therefore filter
      *       on our own pool, and `prove-same-block.ts` can correlate a settlement to
