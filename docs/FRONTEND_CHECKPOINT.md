@@ -433,7 +433,7 @@ and starts a run whose lineage graph cannot be rebuilt.
   value spans become cells of `.detail-fields`'s two-column grid.
 - `.hero-thesis em` is `--ash`, not `--bad`, because the emphasised word is *"die"* and ash is
   the palette's own mapping for dead. `--bad` means *wrong*. The landing's equivalent em is
-  "pays to think" in `--life` (`app/src/sections/Hero.jsx:168`), so the two surfaces do not
+  "pays to think" in `--life` (`app/src/sections/Hero.jsx:281`), so the two surfaces do not
   contradict each other.
 - `--ash` measures ~4.3:1 on `--ink-2`, so it is used **only** for dead organisms and for large
   display type where the 3:1 floor applies. Do not reach for it as a body-text grey; that is
@@ -549,8 +549,8 @@ Each of these was re-checked against the code before being recorded. They are sa
   screen at any depth.
 - **`"irreversib*"` never reaches a user.** Only `fixture.js:407` and `main.js:345`, both comments.
 - **`"spectator"` appears zero times in `web/`**, and there is **no link to `/` anywhere** in
-  `web/js` or `web/index.html`, while the landing sends judges to the arena from three places
-  (`Nav.jsx:33`, `Hero.jsx:217`, `Footer.jsx:24`). The arena is a one-way door.
+  `web/js` or `web/index.html`, while the landing sends judges to the arena from four places
+  (`Nav.jsx:33`, `Hero.jsx:354`, `Hero.jsx:361`, `Footer.jsx:33`). The arena is a one-way door.
 - **`metabolicCost` never appears as a price.** It is read (`chain.js:277`) and drives the vitals
   bar and runway, but as a number it surfaces only in a `title` (`render.js:1030`), a `Starved` feed
   row (`render.js:1580`) and the collapsed wiring `<details>` (`render.js:1994`). The stats rail

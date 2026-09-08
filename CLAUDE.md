@@ -164,20 +164,28 @@ The other inference parameters were measured on the same day and are **not** gue
 |---|---|---|
 | minimum `timeout` | **none** — only `0` is rejected (`InvalidTimeout()`) | swept 1 → 86,400 s by `eth_call`; `defaultTimeout() = 600` is a default, not a floor |
 | deposit floor | **exactly `0.01 STT x subcommitteeSize`**, linear | `getAdvancedRequestDeposit(n)` read for n = 0..21; 0.03 passes at n=3, 0.03 minus one wei reverts |
-| what each request sends | 0.033 STT = 3 x (0.01 + 0.001) | 3.3x the reward live traffic pays, see below |
+| what each request sends | ~~0.033 STT = 3 x (0.01 + 0.001)~~ → **0.24 STT = 3 x (0.01 + 0.07)** | the floor is not the price of a request that SUCCEEDS; see the 2026-09-07 block below |
 | observed latency | p50 0.6 s, p99 4.3 s, **max 5.3 s** | n = 6,231 completed request lifecycles |
 | completion rate | 6,232 creations → 6,232 terminal-status events | 60,000 blocks of `AgentRequester` logs |
 | **net cost per request, live traffic** | **0.0309 STT, nothing refunded** | 5 real single-request txs; payer's balance fell 0.0315 of which 0.00065 was gas |
 
 The two measurements corroborate each other exactly: `0.0309 = 3 x (0.01 + 0.0003)`, so real
-requests run a subcommittee of 3 and pay **0.0003 per validator** on top of the floor. That is
-the empirical price of an inference on this platform.
+requests run a subcommittee of 3 and pay **0.0003 per validator** on top of the floor.
 
-**The deposit is not escrow.** Nothing comes back. So a window costs
-`0.01 x subcommitteeSize x alive`, plus reward, plus cadence gas — and because the floor is
-two thirds of what we pay, **the number of requests, not the reward, is the lever that
-matters.** 8 organisms at a 15-minute cadence is 32 requests/hour, and the population grows
-toward `maxPopulation = 24` as organisms breed.
+**BUT THAT IS THE PRICE OF SOMEBODY ELSE'S REQUEST, NOT OF ONE THAT SUCCEEDS FOR US — see the
+2026-09-07 correction below before using any figure in this table as a budget.** The rows above
+are all still individually true and were all individually measured; what was wrong was the
+inference drawn from them, that 0.001 was a safe reward because it was 3.3x an observed rate.
+The observed rate came from other people's traffic, and a request funded at the floor is one
+validators are *entitled* to decline. Ours declined 104 of 104.
+
+**The deposit is not escrow when a request succeeds** — nothing comes back. On a *failure*
+~0.0292 of the 0.24 is refunded, and it goes to `msg.sender`, i.e. `Population`, never to the
+organism whose balance was drawn. So a window costs `subcommitteeSize x (0.01 + perAgentReward)
+x alive`, plus cadence gas — and at the corrected reward the floor is only **12%** of what we
+pay, which inverts the old conclusion: **the reward, not the request count, is now the lever
+that matters.** 8 organisms at a 15-minute cadence is 32 requests/hour = **7.68 STT/hour**, and
+the population grows toward `maxPopulation = 24` as organisms breed.
 
 **Since 2026-08-30 that bill is not the house's.** Each organism holds native STT of its own
 and `think()` draws the deposit out of *its* balance via `Prophet.drawCognition`, so an
@@ -192,14 +200,25 @@ get the unspent remainder back at `retire`. `_requestMutation` draws from the pa
 same reason `think` does: breeding is an inference, and a house-paid one would have put the
 recurring bill back on the growth curve.
 
-`perAgentReward` was lowered 0.01 → **0.001** on 2026-08-29 for exactly this reason: 0.01 was
-~33x the observed rate and made every window 45% more expensive than it needed to be. 0.001
-still clears the "a request funded at the floor is liable to be skipped" warning by 3.3x.
-Raise it with `setInference` (one `onlyOwner` tx, no upgrade) if `ThinkFailed` fires or
-abstain counts climb — a validator declining the work looks exactly like a silent population.
-Do not go below 0.0003, and do not drop `subcommitteeSize` to 1: `Prophet.sol` requires
-`agree >= 2` regardless of what the platform's own tally says, so a subcommittee of 1 always
-abstains and a subcommittee of 2 needs unanimity.
+**`perAgentReward` is 0.07 STT, measured 2026-09-07, and this is the most expensive mistake in
+the project's history.** It was lowered 0.01 → 0.001 on 2026-08-29 on the reasoning above, and
+that reasoning was wrong: 0.001 bought **zero** successful inferences. A census of 182 of our
+own requests with `chainOfThought` held **false** throughout separates 182/182 — **78 of 78
+Success at 0.07, 0 of 104 at 0.001**. The population had been abstaining every window with
+completely innocent genomes.
+
+**What told the two apart, and it is the reusable part:** `Believed` carried **zeroed validator
+addresses**, which is `status != Success`, so `Genome.parseAnswer` had never run at all. Without
+that field a dropped `allowedValues` constraint and an unserved request are indistinguishable
+from outside — both produce a silent population — and `allowedValues` was the suspect for a week.
+It is innocent: all 78 Successes carried the nine values, one carried 27.
+
+Raise it with `setInference` (one `onlyOwner` tx, no upgrade) if `ThinkFailed` fires or abstain
+counts climb. **Do not lower it below 0.07 without re-running that census**, and in particular do
+not reason from the deposit floor or from other people's observed rate — that is exactly the
+inference that cost 104 requests. Do not drop `subcommitteeSize` to 1 either: `Prophet.sol`
+requires `agree >= 2` regardless of what the platform's own tally says, so a subcommittee of 1
+always abstains and a subcommittee of 2 needs unanimity.
 
 **Funding reality, checked in the docs 2026-08-29:** the Google Cloud faucet is *"limited to
 1 STT per day"* and no self-serve route publishes more. A continuous run to submission is
@@ -216,8 +235,11 @@ What changes is that the bill is now **prepaid and bounded per organism** instea
 from a house balance for as long as it lasts. So the shortfall shows up as one organism
 starving — an event, an `alive` flag, a selection outcome — rather than as a whole population
 silently abstaining when the paymaster empties. It also makes the demo's cost a *parameter*:
-`cognitionEndowment` is windows-per-organism priced at 0.033 STT, so 0.33 STT buys ten
-windows each and `setSeason` sizes a season to the STT actually in hand.
+`cognitionEndowment` is windows-per-organism priced at the deposit, and **at 0.24 STT the
+shipped 0.33 buys 1.375 windows, not ten** — the "ten windows each" this paragraph used to
+claim was the 0.033 arithmetic. `npm run fund -- --windows N` is the operational remedy;
+`setSeason` with `cognitionEndowment = 1.2 STT` (prepared in `docs/HANDOVER_PRICE_FIX.md`) is
+the on-chain one, and it sizes a season to the STT actually in hand.
 
 So `requestTimeout = 300` has roughly 50x headroom and needs no change — see `SPIKE.md` row 8.
 Note the technique, because it is reusable: **`eth_call` with a `stateOverride` on `balance`
@@ -519,8 +541,10 @@ When code is uncertain about an external surface, it is marked `UNVERIFIED` at t
   that there is **no `innerHTML`** anywhere in it — `Population.enter` is permissionless, so every
   genome the page displays is untrusted input from a public write path.
 - `npm test --prefix web` runs the real renderer against the fixture under a 60-line fake DOM
-  (`web/test/smoke.mjs`) — fifty renderer call sites and one hundred and sixty-seven `assert()` call
-  sites, which execute 313 render calls and 189 checks, no network
+  (`web/test/smoke.mjs`) — **66 renderer call sites and 211 `assert()` call sites, executing 231
+  checks, re-measured 2026-09-07** (the earlier "fifty / 167 / 313 / 189" was true when written and
+  the suite has grown; the render-call runtime figure is dropped rather than guessed, because it
+  needs instrumenting render.js and the static site count is what a reader can reproduce). No network
   and no browser. Run it after touching anything under `web/js/`. It is the only executable check this repo
   has on the frontend, and it exists because everything else about `web/` had only ever been verified
   by reading. It also loads `chain.js` with no network, which is what proves viem and `abi.js` are

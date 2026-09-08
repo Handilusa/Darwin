@@ -189,13 +189,21 @@ and true.
   while reversion organisms survive, the log says so.
 - Positions are real and fully collateralised, and *how* they are held is a replaceable part.
   On the DreamDEX arena they are binary positions on the live 15-minute market, opened via
-  `mintSet` and redeemed via `finalizeAndRedeem`. On the duel arena they are a two-party escrow
-  resolved by the sign of the price change. Both are reached only through `IArenaVenue`, and the
-  duel arena is exercised end-to-end as a second `Population` over the same beacon — same
-  organism code, unrelated settlement mechanism.
+  `mintSet` and redeemed via `finalizeAndRedeem` — that is the arena deployed on Shannon, and
+  window 68 settled through it. On the duel arena they are a two-party escrow resolved by the
+  sign of the price change. Both are reached only through `IArenaVenue`, and the duel arena is
+  exercised end-to-end as a second `Population` over the same beacon — same organism code,
+  unrelated settlement mechanism. **That second arena exists in `forge test`, not on Shannon:**
+  `Deploy.s.sol` deploys one `Population` on one `DreamDEXVenue`, so a live duel arena is a
+  second deploy rather than a flag. What the chain shows is one arena; what the interface is
+  worth is what the second one demonstrates, and those are different claims.
 - Death is irreversible. There is no revival path — not from the owner, not from a beacon
   upgrade. `test_death_isIrreversible` and `test_upgrade_cannotRevive` assert it.
-- Fitness, death, mutation and lineage are computed on-chain.
+- Fitness, death, mutation and lineage are computed on-chain — meaning the code that computes
+  them is on chain and no keeper decides any of it. Two of the four have **run** on Shannon;
+  the other two have not yet had the chance. The ledger below says which, because "the
+  contract computes it" and "it has happened" are different claims and only one of them is
+  checkable today.
 - The climate is on-chain and readable per window: `ante()`, `level()`, `seasonId`,
   `prizePool` and `rakeAccrued` are all public, so the pressure an organism is under at any
   window is a chain read rather than a claim in this file. See *The climate* above.
@@ -204,6 +212,31 @@ and true.
   and fund their cognition themselves. Note what this obliges downstream: every genome on the
   dashboard is untrusted input from a public write path, which is why `web/` contains no
   `innerHTML` anywhere and the test suite fails if one appears.
+
+**What has actually happened on Shannon, read from `Population.snapshot()` on 2026-09-07 at
+window 68.** This ledger is here because the bullets above describe a mechanism, and a mechanism
+that has never run is a promise. These are the numbers, including the ones that are still zero:
+
+| | |
+|---|---|
+| organisms spawned | **8**, the founders — `Population.enter` is open and nobody outside has used it yet |
+| alive / dead | **6 / 2**. REVERSION (#2) and PINNED (#4) starved on window 68's settlement and `dead` can never be cleared |
+| first graded window | **68**. BREAKOUT (#3) came out `correct`, `streak` 1, treasury **13.08 tUSDC** — the whole population had abstained for the 67 windows before it |
+| `abstainCount` 67 against `windowsLived` 68 | the durable proof a real position existed: settlement resets `currentQuantity`, but nothing decrements the counter, so the one-window gap survives the window it was earned in |
+| generation | **0**. Zero mutations, zero children, every `parentId` is 0 |
+
+So: **fitness and death have run** — one organism graded correct, two starved and reaped, all of
+it on chain in one `settleAll()`. **Mutation and lineage have not.** `breedStreak` is 4 and the
+best streak in the population is 1, so generation 1 is four consecutive correct windows away and
+the headline metric of this project is still reading zero. Nothing in this README should be taken
+to say otherwise, and the arena prints the same numbers.
+
+Two caveats a judge should have rather than discover. Window 67 and earlier were abstentions
+caused by an underpriced `perAgentReward`, not by the genomes — the diagnosis and the fix are in
+the 2026-09-07 measurements below. And MOMENTUM (#1) held a **winning but unsettled** position at
+the time of this reading, because `settleAll` sizes its own gas through an estimator that cannot
+see a silent failure; `docs/ERROR_W68_MOMENTUM.md` is the full diagnosis and `scripts/lib/gas.ts`
+is the repair.
 
 **Not claimed:**
 
@@ -259,12 +292,6 @@ table, including what closed and how):
 
 - The DreamDEX REST response shape used to discover the live window and its opening price
   (`scripts/lib/market.ts`). `PRICE_MODE=manual` exists so nothing is blocked on it.
-- Whether the validators **honour** a non-empty `allowedValues`. The request *shape* is
-  confirmed — a payload carrying all nine values with `chainOfThought = true` was simulated
-  against the live `AgentRequester` and accepted — but that only proves it is not rejected.
-  It degrades safely (`Genome.parseAnswer` maps anything unrecognised to `(Abstain, Unknown)`,
-  never a coin flip) and it is the most consequential open item here, because a constraint that
-  is silently ignored does not break the contract, it silences selection.
 - What `Response.receipt` commits to, and what happens when validators disagree on an LLM
   output. Non-`Success` is handled as an abstain either way, so this is a question about
   what the attestation *means*, not about whether the contract survives it.
@@ -303,6 +330,34 @@ unknowns on the page is understating itself as surely as one that overstates:
 - There is no minimum inference timeout — only `0` is rejected. Swept 1 → 86,400 s by
   `eth_call` with a balance `stateOverride`, which simulates a payable call with no private key
   and no funds, so nothing was broadcast and no STT was spent to establish it.
+
+**Closed by measurement on 2026-09-07**, and the first item changes the operating cost of this
+project by 7× — so read it before quoting the August figures above as a budget:
+
+- **The deposit floor is not the price of an inference that succeeds.** The floor above is
+  still exactly what it says (`0.01 STT × subcommitteeSize`, unchanged), but the floor prices
+  a request the validators are *entitled* to decline, and at `perAgentReward = 0.001` they
+  declined most of them. Over 182 of our own requests with `chainOfThought` held **false**
+  throughout: **104 Failed at 0.001, 78 of 78 Success at 0.07**. The separation is clean at
+  182/182, and the population had been abstaining every window with innocent genomes —
+  `Believed` carried zeroed validator addresses, which is `status != Success`, so
+  `Genome.parseAnswer` had never run at all.
+- `perAgentReward` is therefore **0.07 STT**, not the 0.001 the August entry above set, and one
+  request now deposits **0.24 STT** = `3 × (0.01 + 0.07)`. A thinking window for one organism
+  costs 0.24 STT, and `cognitionEndowment = 0.33 STT` buys it **1.375 windows**, not the ten
+  that 0.033 would have. That is what `npm run fund -- --windows N` exists to top up, and it is
+  the single largest number in this project's running cost.
+- **A non-empty `allowedValues` is served** — this was the most consequential open item in the
+  list above and the same census closes it. Every one of the 78 Successes carried the nine
+  values `Genome.allowedBeliefs()` emits, and one carried 27, so the constraint is neither
+  rejected nor silently dropped at nine. It was never `allowedValues` that failed; the reward
+  was, and the failure mode looked identical from outside because both produce an abstaining
+  population. Recorded at `contracts/src/interfaces/ISomnia.sol:20-26`.
+- **A failed inference is refunded to `msg.sender`, which is `Population` and not the organism
+  that paid.** ~0.0292 of the 0.033 deposit came back to the house on each of the 104 failures,
+  so `CognitionUnspent` structurally cannot fire for this case — the organism's STT is gone and
+  the refund lands somewhere else. `sweep`'s native leg is the reconciliation path, and this is
+  why that leg is deliberately uncapped while the collateral leg is not.
 
 ---
 
@@ -345,7 +400,7 @@ why `npm run dev` streams `web/` live while `vite preview` serves the copy in `d
 `web/` and the browser harness must be re-run after `npm run build`, or it measures the old build.
 
 ```bash
-npm test --prefix web          # 189 checks over 167 assert() call sites, no browser, no network
+npm test --prefix web          # 231 checks over 211 assert() call sites, no browser, no network
 npm run build --prefix app     # bundles app/, copies web/ -> dist/arena/
 npm run preview --prefix app   # then: node app/test/arena.mjs   (drives /arena over CDP)
 ```
@@ -509,6 +564,22 @@ existence of the file is not evidence and should not be read as any.
 | `PushedPriceSource` | [`0x4D0d3e59…9BD9ec`](https://shannon-explorer.somnia.network/address/0x4D0d3e59F473139890C4281b34fBcebe1f9BD9ec) |
 | `DreamDEXVenue` | [`0x7c3F3E1c…D4A358`](https://shannon-explorer.somnia.network/address/0x7c3F3E1c9AFB8Efac8B08E747b5E3AD85BD4A358) |
 | `SelectionEngine` | [`0xa21Be351…9993E6`](https://shannon-explorer.somnia.network/address/0xa21Be35123cb7f95F6B95513ae6D3798A39993E6) |
+| `GenesisTreasury` — **the one to audit** | [`0xF187842D…C97Ca`](https://shannon-explorer.somnia.network/address/0xF187842DF96d35d7a4dcDdbF83515D6D8aDC97Ca) |
+
+`GenesisTreasury` was missing from this table until 2026-09-07, which was the worst omission in
+the document: the *"no owner, no withdrawal … which anyone may call"* paragraph above is the
+strongest trust claim this README makes, and it was made about a contract whose address a reader
+was not given. It is 88 lines, non-upgradeable, and the check is a grep — no `owner`, no
+`withdraw`, no arbitrary call, no `upgradeTo`, no `receive()`, and one state-changing function,
+`recycle()`, which is permissionless and can only push its whole collateral balance into
+`prizePool`. Verified live the same day: 999 bytes of code, **8 of 8 founders return it from
+`entrant()`**, and it holds **7.52 tUSDC** that anybody reading this can send to the players' pot
+without asking us.
+
+Note that this address is created by `Seed.s.sol`, one step *after* `Deploy.s.sol` writes the
+manifest — which is exactly why it went missing. It has been added to
+`contracts/deployments/50312.json` by hand; a re-deploy will not reproduce it there until the seed
+script learns to patch the manifest it did not write.
 
 The eight founding organisms are each their own `Prophet` clone, with addresses and genome
 hashes in `contracts/deployments/50312.organisms.json`. Each `genomeHash` there is the keccak256

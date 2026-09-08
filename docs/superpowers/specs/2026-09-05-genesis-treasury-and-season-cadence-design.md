@@ -418,7 +418,7 @@ now holds is how you lose the detector that would have caught the invariant brea
 
 ### 5.5 Copy that becomes false
 
-- `cadence.ts:944` — operator/`address(0)` copy about founders.
+- `cadence.ts:1074` — operator/`address(0)` copy about founders.
 - `cadence.ts:1336-1337` (cited here as `:552`, `:896`, `:904-922`, which is where those rows sat
   on 2026-09-05) — **Done, and the line references were refreshed 2026-09-07 by `cite:check` after
   the predicate moved out of this file.** The instruction was carried out but not the way it is
@@ -665,7 +665,7 @@ a number rather than reverting, and a synthetic 30,791-byte creation does too. B
 |---|---|
 | `GenesisTreasury.sol`, the four `Population` edits, the sweep cap | 1.5 |
 | Nine tests, each perturbed to prove it can fail | 1.5 |
-| Clean build, storage diff, `STORAGE.md`, README, `CLAUDE.md`, `cadence.ts:944` | 1.0 |
+| Clean build, storage diff, `STORAGE.md`, README, `CLAUDE.md`, `cadence.ts:1074` | 1.0 |
 | **N1** | **4.0** |
 | Two literals + the comment block | 0.5 |
 | `cadence.ts` fixture rows (`:552`, `:896`, `:904-922`) | 0.5 |

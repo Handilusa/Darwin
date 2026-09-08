@@ -36,8 +36,8 @@ The first version of DARWIN had a structural flaw, and it is worth stating
 plainly because it shaped everything below.
 
 Inference costs money. Each request sends `subcommitteeSize × (0.01 STT +
-perAgentReward)` and nothing is refunded. At the shipped parameters that is
-**0.033 STT per organism per window**, and it scales with population size. The
+perAgentReward)`. At the shipped parameters that is **0.24 STT per organism per
+window** — `3 × (0.01 + 0.07)` — and it scales with population size. The
 population's internal economy, meanwhile, is **closed**: organisms only ever win
 collateral from each other, DreamDEX charges a measured **zero** settlement fee
 (`settlementFeeBpsTimes1k == 0`, n=398 finalized markets), and metabolism drains
@@ -196,10 +196,18 @@ For reference, the inference cost that the entrant now carries:
 | Parameter | Value | Source |
 |---|---|---|
 | Platform deposit floor | `0.01 STT × subcommitteeSize`, exactly linear | measured, n=0..21 |
-| `perAgentReward` | 0.001 STT (3.3× the observed live rate of 0.0003) | tunable via `setInference` |
-| Sent per request | 0.033 STT at `subcommitteeSize = 3` | arithmetic |
-| Actually consumed live | 0.0309 STT | measured |
+| `perAgentReward` | **0.07 STT** | measured 2026-09-07: 78/78 Success at 0.07, 0/104 at 0.001 |
+| Sent per request | **0.24 STT** at `subcommitteeSize = 3` | arithmetic on the two rows above |
+| Refunded on failure | ~0.0292 STT, and it goes to `msg.sender` (`Population`), never to the organism that paid | measured |
 | DreamDEX settlement fee | 0 | measured, n=398 |
+
+**The `perAgentReward` row is the one that moved, and it moved 7×.** It read 0.001 STT
+until 2026-09-07 — a figure taken from the deposit floor's arithmetic rather than from a
+request that succeeded. The floor prices a request validators are *entitled to decline*,
+and at 0.001 they declined 104 of 104. A whole population abstaining with innocent
+genomes is what that looks like from outside, so the cost model and the failure mode were
+the same bug. `0.033 STT per organism per window` appears nowhere in this document any
+more; the number is **0.24**.
 
 Note the shape of this: **DARWIN's cost grows with evolutionary success**,
 because more surviving organisms means more thinking. Under v1 that made success
