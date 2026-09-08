@@ -55,6 +55,7 @@ import { discover, resolution } from "./lib/market.js";
 // while this binding is what `maybeEndSeason` and the test table actually call.
 import { seasonIsOver } from "./lib/season.js";
 import { commitReadiness, committedBlind, type CommitInputs, type CommitReadiness } from "./lib/commit.js";
+import { driverGas, BLOCK_GAS_CEILING, type DriverCall, type GasPlan } from "./lib/gas.js";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -273,10 +274,16 @@ async function doThink(m: Manifest, client: WalletLike): Promise<boolean> {
     );
   }
 
+  // EXPLICIT GAS, same argument as the settle. `think` wraps `createAdvancedRequest` in a
+  // per-organism `try` and advances `phase = 1` regardless (`Population.sol:1503-1529`), so
+  // an underestimate is silent here too — and it is expensive in a way the settle's is not:
+  // `drawCognition` takes the organism's deposit BEFORE the request, so an organism skipped
+  // for gas has paid its 0.24 STT and bought nothing. `scripts/lib/gas.ts` has the reasoning.
   const hash = await send(client, {
     address: m.population,
     abi: populationAbi,
     functionName: "think",
+    gas: await gasFor(m, "think"),
   });
   const window = await read(m, "windowCount");
   log(`think window #${window} · ${alive} organisms · ${explorerTx(hash)}`);
@@ -386,10 +393,15 @@ async function doCommit(m: Manifest, client: WalletLike): Promise<boolean> {
   // An organism with no consensus answer opens a zero-size position and is scored as an
   // abstain. That is the intended mechanic, not a failure: it failed to think, it acts
   // on nothing, and it still pays metabolism.
+  // EXPLICIT GAS, same argument again: `_pair` goes through `this.executePair` purely to get
+  // a revert boundary and `_openEmpty` catches too, so every per-organism failure here is a
+  // `CommitFailed` event on a successful transaction (`Population.sol:1669`, `:1738`) and the
+  // estimator cannot see it. An organism skipped here thought, answered, and is never played.
   const hash = await send(client, {
     address: m.population,
     abi: populationAbi,
     functionName: "commitAll",
+    gas: await gasFor(m, "commit"),
   });
   log(`commit · ${explorerTx(hash)}`);
   await reportStragglers(m, hash, "commit");
@@ -557,9 +569,24 @@ async function doSettle(m: Manifest, client: WalletLike): Promise<boolean> {
     functionName: "fallbackEnabled",
   });
 
+  // THE EXPLICIT GAS IS NOT A TUNING KNOB, and it is the whole repair for window 68. The
+  // estimator cannot size a call that never reverts; `scripts/lib/gas.ts` carries the
+  // measurement and the argument, and `--self-test` drives the table.
+  const settleGas = await gasFor(m, "settle");
+
   const hash = fallbackOpen
-    ? await send(client, { address: m.selectionEngine, abi: selectionEngineAbi, functionName: "poke" })
-    : await send(client, { address: m.population, abi: populationAbi, functionName: "settleAll" });
+    ? await send(client, {
+        address: m.selectionEngine,
+        abi: selectionEngineAbi,
+        functionName: "poke",
+        gas: settleGas,
+      })
+    : await send(client, {
+        address: m.population,
+        abi: populationAbi,
+        functionName: "settleAll",
+        gas: settleGas,
+      });
 
   const via = fallbackOpen ? "SelectionEngine.poke" : "settleAll";
   log(`settle${voided ? " (voided)" : ""} via ${via} · ${explorerTx(hash)}`);
@@ -730,7 +757,17 @@ async function reportReactionFailure(m: Manifest, hash: Hex): Promise<boolean> {
  */
 async function hatch(m: Manifest, client: WalletLike): Promise<void> {
   try {
-    const hash = await send(client, { address: m.population, abi: populationAbi, functionName: "hatchAll" });
+    // EXPLICIT GAS, and this is the one driver call where an underestimate DOES revert —
+    // `hatchAll` has no per-organism `try` (`Population.sol:1969-1981`), so an out-of-gas
+    // bubbles and the `catch` below swallows it as a tolerance. That makes it the quietest
+    // of the four: a birth lost to a gas limit reads as "nothing was pending". A `BeaconProxy`
+    // deployment plus an endowment transfer is the most expensive per-organism leg here.
+    const hash = await send(client, {
+      address: m.population,
+      abi: populationAbi,
+      functionName: "hatchAll",
+      gas: await gasFor(m, "hatch"),
+    });
     await reportBirths(m, hash);
   } catch (err) {
     // NothingToHatch is the normal case, not an error.
@@ -1206,6 +1243,14 @@ type Call = {
   abi: readonly unknown[];
   functionName: string;
   args?: readonly unknown[];
+  /**
+   *  An explicit gas limit, and OPTIONAL only because `pushWindow` and `endSeason` do not
+   *  need one — both are single-shot writes with no per-organism loop, so viem's estimate
+   *  is sound for them. Every call that iterates `living` MUST pass this: the estimator
+   *  cannot size a function whose per-organism failures are caught and whose phase advances
+   *  regardless. `scripts/lib/gas.ts` carries the measurement.
+   */
+  gas?: bigint;
 };
 
 /** Typed convenience over the handful of Population reads this script makes. */
@@ -1266,6 +1311,42 @@ type ReadResult<K> = K extends "snapshot"
       : bigint;
 
 /** Write, wait for the receipt, and fail loudly if it reverted. */
+/**
+ *  The gas limit for one driver call, read against the live population.
+ *
+ *  Wraps `driverGas` for one reason beyond the `aliveCount` read: the clamp has to be
+ *  AUDIBLE. `driverGas` returns `capped` when the formula wanted more than a block can
+ *  hold, and a silently clamped limit is exactly the failure this whole repair is about —
+ *  a transaction that lands `status 1` having skipped the last organisms in the loop. So
+ *  the one place that can say so says so, every time, rather than leaving the operator to
+ *  infer it from a `SettleFailed` on the highest ids.
+ *
+ *  Never throws on the read. A failed `aliveCount` falls back to sizing for a full
+ *  `maxPopulation` (24) rather than for one organism: over-sizing costs nothing because
+ *  unused gas is refunded, while under-sizing on a read failure would reintroduce the
+ *  defect through the error path.
+ */
+async function gasFor(m: Manifest, call: DriverCall): Promise<bigint> {
+  let alive = 24n;
+  try {
+    alive = await read(m, "aliveCount");
+  } catch (err) {
+    warn(`could not read aliveCount to size ${call} gas — sizing for a full population: ${describe(err)}`);
+  }
+
+  const plan: GasPlan = driverGas(call, alive);
+  if (plan.capped) {
+    warn(
+      `${call} wants ${plan.wanted} gas for ${alive} organisms but the limit is clamped to ` +
+        `${BLOCK_GAS_CEILING} (one block). Organisms at the END of the loop may run out of gas and ` +
+        `be skipped with a ${call === "settle" ? "SettleFailed" : call === "commit" ? "CommitFailed" : "ThinkFailed"} ` +
+        `event while the transaction still reports success — this call needs splitting across ` +
+        `transactions at this population size. See docs/ERROR_W68_MOMENTUM.md.`,
+    );
+  }
+  return plan.gas;
+}
+
 async function send(client: WalletLike, call: Call): Promise<Hex> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const hash = await client.writeContract(call as any);
@@ -1606,6 +1687,120 @@ function selfTestCommitReadiness(): void {
     return;
   }
   log(`commit readiness: ${total} checks pass, 5 of them controls (an empty pending set inside the floor can never commit)`);
+
+  selfTestDriverGas();
+}
+
+/**
+ *  The gas table — the arithmetic of the window-68 fix, checked without a chain.
+ *
+ *  WHY THIS IS TESTED AT ALL, given `driverGas` is four lines. Because the defect it repairs
+ *  was not a wrong number, it was a MISSING NUMBER: `send` passed no `gas` and viem estimated,
+ *  and the estimate was structurally guaranteed to be too small on a call that cannot revert.
+ *  A regression here is therefore not "the limit drifted"; it is someone deleting a `gas:`
+ *  field, or a formula that quietly returns something a block cannot hold. Neither is visible
+ *  in a log until an organism is skipped — which is exactly the class of fault the other three
+ *  tables in this file exist for.
+ *
+ *  THE CONTROLS ARE THE POINT, in the idiom the rest of this file already uses. Two stubs
+ *  represent the two ways to get this wrong, and each must fail the table:
+ *
+ *    - `estimatorShaped` — the bug itself, as a number: window 68's actual 2,592,003 limit,
+ *      returned regardless of population. If the table passes it, the table cannot detect
+ *      the defect and is decoration.
+ *    - `noClamp` — the careless fix: scale per organism and never clamp. It agrees with
+ *      `driverGas` on every small population and returns an unmineable 23.1M at
+ *      `maxPopulation`, so only a row at 24 organisms can tell them apart. That row is the
+ *      reason the clamp is testable at all.
+ */
+function selfTestDriverGas(): void {
+  type Case = { call: DriverCall; alive: bigint; want: bigint; capped: boolean; why: string };
+
+  const cases: Case[] = [
+    // THE MEASURED CASE. Window 68 settled four organisms and was charged 2,465,478 on a
+    // 2,592,003 limit while skipping one of them. The replay needed 774,291 for all four.
+    // Whatever this formula returns for four organisms must exceed the limit that FAILED,
+    // or the fix is not a fix — that is the assertion, and 5.1M does.
+    { call: "settle", alive: 4n, want: 5_100_000n, capped: false, why: "the window-68 population: must exceed 2,592,003" },
+
+    // The live population right after window 68's two deaths.
+    { call: "settle", alive: 6n, want: 6_900_000n, capped: false, why: "six alive: floor 1.5M + 6 x 900k" },
+    { call: "think", alive: 6n, want: 3_600_000n, capped: false, why: "think floor 600k + 6 x 500k" },
+    { call: "commit", alive: 6n, want: 3_600_000n, capped: false, why: "commit floor 600k + 6 x 500k" },
+    { call: "hatch", alive: 6n, want: 7_600_000n, capped: false, why: "hatch floor 400k + 6 x 1.2M" },
+
+    // Generation 0 at full strength, which is what Seed produces.
+    { call: "settle", alive: 8n, want: 8_700_000n, capped: false, why: "the eight founders" },
+
+    // A ZERO-ORGANISM READ MUST STILL FUND THE FIXED WORK. An extinct population still has a
+    // phase to advance, and a limit of exactly the floor is the one place the formula could
+    // undercut the work it has to pay for. Clamped to 1, not to 0.
+    { call: "settle", alive: 0n, want: 2_400_000n, capped: false, why: "extinct: sized for one, never for zero" },
+    { call: "settle", alive: 1n, want: 2_400_000n, capped: false, why: "one organism — same as zero, the control for the row above" },
+
+    // THE CLAMP, and the row that makes it testable. At `maxPopulation = 24` the settle
+    // formula wants 23.1M, which is under a 30M block; at 33 it wants 31.2M, which is not.
+    { call: "settle", alive: 24n, want: 23_100_000n, capped: false, why: "maxPopulation: 23.1M fits in a block uncapped" },
+    { call: "hatch", alive: 24n, want: 29_200_000n, capped: false, why: "hatch at maxPopulation: 29.2M, one block short of the clamp" },
+    { call: "hatch", alive: 25n, want: BLOCK_GAS_CEILING, capped: true, why: "30.4M wanted — clamped, and the operator must be told" },
+    { call: "settle", alive: 33n, want: BLOCK_GAS_CEILING, capped: true, why: "31.2M wanted — clamped" },
+  ];
+
+  let failed = 0;
+  for (const c of cases) {
+    const got = driverGas(c.call, c.alive);
+    if (got.gas === c.want && got.capped === c.capped) continue;
+    failed++;
+    console.error(
+      `FAIL  ${c.call} at ${c.alive} alive → ${got.gas} capped=${got.capped}, ` +
+        `want ${c.want} capped=${c.capped}: ${c.why}`,
+    );
+  }
+
+  // THE INVARIANT BEHIND EVERY ROW, asserted separately because it is the property that
+  // matters rather than any one number: no call may ever be sized below what window 68 was
+  // charged while failing. A future edit that halves a floor would still pass every equality
+  // row it was edited alongside; it cannot pass this.
+  const W68_CHARGED = 2_465_478n;
+  for (const call of ["think", "commit", "settle", "hatch"] as DriverCall[]) {
+    const got = driverGas(call, 4n).gas;
+    if (got > W68_CHARGED) continue;
+    failed++;
+    console.error(`FAIL  ${call} at 4 alive is ${got}, which does not exceed the ${W68_CHARGED} that silently skipped an organism`);
+  }
+
+  // AND THE CEILING IS NEVER EXCEEDED, at any population the contract can reach. A limit
+  // above a block is not conservative, it is a transaction the chain will not accept.
+  for (const call of ["think", "commit", "settle", "hatch"] as DriverCall[]) {
+    for (const alive of [0n, 1n, 24n, 100n, 10_000n]) {
+      if (driverGas(call, alive).gas <= BLOCK_GAS_CEILING) continue;
+      failed++;
+      console.error(`FAIL  ${call} at ${alive} alive returns a limit above the ${BLOCK_GAS_CEILING} block ceiling`);
+    }
+  }
+
+  // CONTROL 1 — the defect as a number. Window 68's own limit, ignoring the population.
+  const estimatorShaped = (_c: DriverCall, _a: bigint): bigint => 2_592_003n;
+  if (cases.every((c) => estimatorShaped(c.call, c.alive) === c.want)) {
+    failed++;
+    console.error("FAIL  the table does not catch a flat estimator-sized limit — it cannot detect the window-68 defect");
+  }
+
+  // CONTROL 2 — the careless fix: right formula, no clamp. Indistinguishable from the real
+  // thing on every small population, so the 25- and 33-organism rows are what catch it.
+  const noClamp = (call: DriverCall, alive: bigint): bigint => driverGas(call, alive).wanted;
+  if (cases.every((c) => noClamp(c.call, c.alive) === c.want)) {
+    failed++;
+    console.error("FAIL  the table does not catch an unclamped formula — it would emit a limit no block can hold");
+  }
+
+  const total = cases.length + 2;
+  if (failed > 0) {
+    console.error(`${failed} of ${total} driver-gas checks failed`);
+    process.exitCode = 1;
+    return;
+  }
+  log(`driver gas: ${total} checks pass, 2 of them controls (no limit may fall to the estimate that skipped MOMENTUM)`);
 }
 
 // ONE ENTRY POINT, and the `--self-test` branch is inside `main()` rather than here, so

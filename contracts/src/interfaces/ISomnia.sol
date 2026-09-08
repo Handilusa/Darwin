@@ -17,8 +17,13 @@ pragma solidity ^0.8.24;
 // "/no_think\n[SYSTEM POLICY]…", so it is a SYSTEM PROMPT, not a model name —
 // which is what Population.think passes (p.systemPrompt()).
 //
-// Not yet observed live: a request with a non-empty `allowedValues`. The one
-// decoded sample passed `false` and `[]`. See docs/SESSION_CHECKPOINT.md §3.
+// A non-empty `allowedValues` IS served, measured 2026-09-07 and no longer an open
+// question: across 182 of our own requests, Successes carried 9 allowed values (the
+// nine `Genome.allowedBeliefs()` emits) and one carried 27. What separated Success
+// from Failed in that census was `perAgentReward` alone — 78/78 served at 0.07 STT
+// per agent, 0/104 at 0.001 — with `chainOfThought` held false throughout. So the
+// escrow floor from `getRequestDeposit` is NOT a sufficient price; see the note on
+// that function below. See docs/SESSION_CHECKPOINT.md §3.
 
 /// @dev Consensus rule the subcommittee applies to validator responses.
 enum ConsensusType {

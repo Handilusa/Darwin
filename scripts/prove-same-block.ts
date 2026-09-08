@@ -19,7 +19,7 @@
  */
 import { manifest, publicClient, log, warn, shannon, type Manifest } from "./lib/darwin.js";
 import { scanRange } from "./lib/logscan.js";
-import { decodeEventLog, parseAbiItem, toEventSelector, type Address, type Hex } from "viem";
+import { decodeEventLog, encodeAbiParameters, parseAbiItem, toEventSelector, type Address, type Hex } from "viem";
 
 const REACTED = parseAbiItem(
   "event Reacted(address indexed emitter, uint64 indexed window, uint256 blockNumber, bytes32 parentHash, bool viaReactivity)",
@@ -111,8 +111,7 @@ async function main(): Promise<void> {
   const manual = reactions.length - reactive.length;
   log(`found ${reactions.length} reaction(s): ${reactive.length} via reactivity, ${manual} via poke()`);
 
-  const latestReactive = reactive.at(-1);
-  if (!latestReactive) {
+  if (reactive.length === 0) {
     fail(
       `every settlement so far came through SelectionEngine.poke().\n` +
         `  That is a working system, but the honest claim is the weaker one:\n` +
@@ -123,14 +122,82 @@ async function main(): Promise<void> {
     return;
   }
 
-  await verify(m, latestReactive);
+  /*
+   *  EVERY reactive reaction is a candidate, newest first — not just the last one.
+   *
+   *  This used to be `reactive.at(-1)`, and that single line was enough to make the script
+   *  unable to pass on a working system. The correlation depends on `WindowOpened` for the
+   *  reacted window still being *findable*, and `windowIdentity` searches backwards from the
+   *  reaction over a bounded range; on a 15-minute cadence over Somnia's sub-second blocks
+   *  the newest reaction is frequently the one whose window is hardest to pin down, and a
+   *  `--lookback` that comfortably covers ten older reactions can miss the newest one's
+   *  `WindowOpened` by a few thousand blocks. Judging only the newest therefore reported
+   *  "the correlation is unchecked" while nine provable blocks sat in range, unexamined.
+   *
+   *  So: iterate, keep the strongest verdict, and stop early on an exact decode because
+   *  nothing older can beat it. Bounded by `--max-candidates` since each candidate costs a
+   *  `getLogs`, a `getBlock` and a paged backward scan.
+   */
+  const budget = Number(arg("--max-candidates") ?? "25");
+  const newestFirst = [...reactive].reverse();
+  const considered = newestFirst.slice(0, budget);
+  if (considered.length < newestFirst.length) {
+    log(`judging the newest ${considered.length} of ${newestFirst.length} reactive reaction(s) (--max-candidates)`);
+  }
+
+  let best: { evidence: Evidence; verdict: Verdict } | undefined;
+  for (const r of considered) {
+    const evidence = await gather(m, r);
+    const verdict = judge(evidence);
+    if (!best || verdict.rank > best.verdict.rank) best = { evidence, verdict };
+    if (verdict.rank === RANK.decoded) break;
+    log(`window #${r.window} in block ${r.blockNumber}: ${verdict.headline} — looking further back`);
+  }
+
+  // `considered` is non-empty (reactive.length > 0 and budget >= 1), so `best` is set. The
+  // guard is here because a `--max-candidates 0` would otherwise report a pass on nothing.
+  if (!best) {
+    fail(`--max-candidates ${budget} judged no reaction at all. Pass a positive number.`);
+    return;
+  }
+
+  report(best.evidence, best.verdict);
 }
 
 /*//////////////////////////////////////////////////////////////
                            THE ASSERTION
 //////////////////////////////////////////////////////////////*/
 
-async function verify(m: Manifest, r: Reaction): Promise<void> {
+/*
+ *  Reading, judging and printing are three functions rather than one, and the split is what
+ *  makes iterating over candidates possible at all.
+ *
+ *  The single `verify()` this replaced printed the "=== SAME-BLOCK PROOF ===" banner and
+ *  called `fail()` itself, so calling it in a loop would have printed one failed proof per
+ *  candidate and set a non-zero exit code on the first weak one — the opposite of picking the
+ *  best. `judge` is now pure over `Evidence`: no RPC, no printing, no `process.exitCode`,
+ *  which is also what lets `--self-test` exercise every verdict with no chain.
+ */
+type Evidence = {
+  reaction: Reaction;
+  settlementLogs: readonly { topics: readonly Hex[]; data: Hex; transactionHash: Hex | null }[];
+  timestamp: bigint;
+  opened: WindowIdentity | undefined;
+};
+
+/** Ordered weakest to strongest; `main` keeps the highest and stops early on `decoded`. */
+const RANK = { broken: 0, unchecked: 1, raw: 2, decoded: 3 } as const;
+
+type Verdict = {
+  rank: number;
+  headline: string;
+  /** Non-empty means FAIL. Each entry is already indented for `join("\n  ")`. */
+  problems: string[];
+  /** Printed as `log()`/`warn()` lines above the verdict. */
+  notes: { level: "log" | "warn"; text: string }[];
+};
+
+async function gather(m: Manifest, r: Reaction): Promise<Evidence> {
   // Every log the settlement contract emitted in the very same block.
   const settlementLogs = await publicClient.getLogs({
     address: m.settlement,
@@ -141,9 +208,24 @@ async function verify(m: Manifest, r: Reaction): Promise<void> {
   const block = await publicClient.getBlock({ blockNumber: r.blockNumber });
   const opened = await windowIdentity(m, r);
 
+  return {
+    reaction: r,
+    settlementLogs: settlementLogs.map((l) => ({
+      topics: l.topics,
+      data: l.data,
+      transactionHash: l.transactionHash,
+    })),
+    timestamp: block.timestamp,
+    opened,
+  };
+}
+
+function report(e: Evidence, v: Verdict): void {
+  const { reaction: r, settlementLogs, opened } = e;
+
   console.log("");
   console.log("=== SAME-BLOCK PROOF ========================================");
-  console.log(`block            ${r.blockNumber}  (${new Date(Number(block.timestamp) * 1000).toISOString()})`);
+  console.log(`block            ${r.blockNumber}  (${new Date(Number(e.timestamp) * 1000).toISOString()})`);
   console.log(`window           #${r.window}`);
   if (opened) {
     console.log(`market           ${opened.marketId}`);
@@ -157,11 +239,30 @@ async function verify(m: Manifest, r: Reaction): Promise<void> {
   }
   console.log("=============================================================");
 
+  for (const n of v.notes) (n.level === "warn" ? warn : log)(n.text);
+
+  if (v.problems.length > 0) {
+    fail(v.problems.join("\n  "));
+    return;
+  }
+
+  console.log("");
+  console.log("PASS — a market settled and an organism was judged in the same block,");
+  console.log("       with no keeper in between. The strong claim is licensed.");
+}
+
+/**
+ *  The verdict. Pure: no RPC, no printing, no exit code — see the note above `Evidence`.
+ */
+function judge(e: Evidence): Verdict {
+  const { reaction: r, settlementLogs, opened } = e;
   const problems: string[] = [];
+  const notes: Verdict["notes"] = [];
+  let rank: number = RANK.broken;
 
   if (settlementLogs.length === 0) {
     problems.push(
-      `BinarySettlement (${m.settlement}) emitted nothing in block ${r.blockNumber}.\n` +
+      `BinarySettlement emitted nothing in block ${r.blockNumber}.\n` +
         `    The reaction fired, but not alongside a settlement — so this block does not\n` +
         `    demonstrate the claim. Either the subscription is filtered on the wrong\n` +
         `    emitter, or this reaction was triggered by an unrelated log.`,
@@ -183,28 +284,47 @@ async function verify(m: Manifest, r: Reaction): Promise<void> {
           `    ran on-chain, but it did not run in the block our window resolved in.`,
       );
     } else if (decoded > 0) {
-      log(
-        `correlated EXACTLY: ${decoded} of ${settlementLogs.length} log(s) are MarketFinalized with ` +
+      rank = RANK.decoded;
+      notes.push({
+        level: "log",
+        text:
+          `correlated EXACTLY: ${decoded} of ${settlementLogs.length} log(s) are MarketFinalized with ` +
           `pool == ${opened.pool}`,
-      );
+      });
     } else {
       // Every match came from the hex scan. Worth saying out loud: it is a real
       // correlation, but a weaker one, and the reason is that no log in this block carried
       // the MarketFinalized topic0 this script knows about.
-      warn(
-        `correlated only by RAW HEX: ${raw} of ${settlementLogs.length} log(s) contain our pool or\n` +
+      rank = RANK.raw;
+      notes.push({
+        level: "warn",
+        text:
+          `correlated only by RAW HEX: ${raw} of ${settlementLogs.length} log(s) contain our pool or\n` +
           `  marketId somewhere in their topics/data, but none of them is the MarketFinalized\n` +
           `  signature this script expects (${MARKET_FINALIZED_TOPIC0}).\n` +
           `  Either BinarySettlement's ABI has changed since 2026-08-29, or the matching log is a\n` +
           `  different settlement event. The block-sharing is real; treat the correlation as\n` +
           `  suggestive and re-derive the event before leaning on it in the pitch.`,
-      );
+      });
     }
   } else if (!opened && settlementLogs.length > 0) {
-    warn(
-      `could not locate WindowOpened for window #${r.window}, so the settlement in this block\n` +
-        `  could not be tied to this population's own market. The block-sharing below is real;\n` +
-        `  the correlation is unchecked. Widen --lookback, or use an archive RPC.`,
+    /*
+     *  B3, and it used to be a `warn` that let the run print PASS.
+     *
+     *  Without `WindowOpened` there is no way to tell this population's own market settling
+     *  from the shared singleton finalizing somebody else's in the same block — which is
+     *  precisely the coincidence `windowIdentity` exists to rule out. A `warn` here meant the
+     *  script's strongest output was reachable with its central check skipped, so the honesty
+     *  gate could be satisfied by an unprovable block. It is a problem now: the run FAILS and
+     *  says what to widen.
+     */
+    rank = RANK.unchecked;
+    problems.push(
+      `could not locate WindowOpened for window #${r.window}, so the settlement in block\n` +
+        `    ${r.blockNumber} cannot be tied to this population's own market. The block-sharing is\n` +
+        `    real, but BinarySettlement is a shared singleton: without the marketId and pool this\n` +
+        `    population committed to, a coincidence is indistinguishable from the claim.\n` +
+        `    Widen --lookback, raise --max-candidates, or use an archive RPC.`,
     );
   }
 
@@ -214,23 +334,28 @@ async function verify(m: Manifest, r: Reaction): Promise<void> {
     problems.push(`Reacted recorded block ${r.recordedBlock} but was mined in ${r.blockNumber}`);
   }
 
-  const sameTx = settlementLogs.some((l) => l.transactionHash === r.txHash);
   if (settlementLogs.length > 0) {
-    log(
-      sameTx
+    const sameTx = settlementLogs.some((l) => l.transactionHash === r.txHash);
+    notes.push({
+      level: "log",
+      text: sameTx
         ? "reaction shares the settlement TRANSACTION (stronger than required)"
         : "reaction is a separate transaction in the same BLOCK — exactly the documented behaviour",
-    );
+    });
   }
 
-  if (problems.length > 0) {
-    fail(problems.join("\n  "));
-    return;
-  }
+  const headline =
+    problems.length === 0
+      ? rank === RANK.decoded
+        ? "correlated exactly"
+        : "correlated by raw hex only"
+      : rank === RANK.unchecked
+        ? "WindowOpened not found, correlation unchecked"
+        : settlementLogs.length === 0
+          ? "no settlement in the block"
+          : "settlement in the block belongs to another market";
 
-  console.log("");
-  console.log("PASS — a market settled and an organism was judged in the same block,");
-  console.log("       with no keeper in between. The strong claim is licensed.");
+  return { rank, headline, problems, notes };
 }
 
 type WindowIdentity = { marketId: Hex; pool: Address };
@@ -364,7 +489,158 @@ function fail(message: string): void {
   process.exitCode = 1;
 }
 
-main().catch((err) => {
-  console.error("FATAL", err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+/*//////////////////////////////////////////////////////////////
+                            SELF-TEST
+//////////////////////////////////////////////////////////////*/
+
+/**
+ *  `npm run prove:selftest` — exercises `judge` with no RPC, no key and no deploy.
+ *
+ *  It exists because both bugs this file was carrying were bugs in the VERDICT, not in the
+ *  reading: `reactive.at(-1)` judged one candidate out of many, and the missing-`WindowOpened`
+ *  branch was a `warn` that still printed PASS. Neither is visible in a passing run, and
+ *  neither could have been caught by any check that needed a live reaction to exist.
+ *
+ *  Two of the twelve are CONTROLS — cases where a weaker `judge` passes and the real one must
+ *  not. Delete them and the suite goes back to being unable to fail. All four perturbations
+ *  below were RUN, not reasoned about, and each hit exactly one row:
+ *
+ *    | perturbation                                     | row that failed                    |
+ *    |--------------------------------------------------|------------------------------------|
+ *    | B3 branch back to a `warn` (notes, not problems)  | "a missing WindowOpened FAILS"      |
+ *    | `RANK.raw` -> `RANK.decoded`                      | "raw ranks below decoded"          |
+ *    | drop the `recordedBlock` check                    | "a lying recordedBlock FAILS"      |
+ *    | `RANK.unchecked` -> `RANK.broken`                 | "...and still ranks above a broken" |
+ *
+ *  The last two are the controls earning their place: perturbation 3 leaves the correlation
+ *  exact and only a `problems`-blind `main` would ship it, and perturbation 4 is invisible to
+ *  every row except the one that compares the two weak ranks against each other.
+ */
+function selfTest(): void {
+  let pass = 0;
+  const failures: string[] = [];
+
+  const check = (name: string, ok: boolean): void => {
+    if (ok) pass++;
+    else failures.push(name);
+  };
+
+  const POOL = "0x1111111111111111111111111111111111111111" as Address;
+  const MARKET = `0x${"22".repeat(32)}` as Hex;
+  const OTHER_POOL = "0x3333333333333333333333333333333333333333" as Address;
+  const TXH = `0x${"44".repeat(32)}` as Hex;
+
+  const reaction = (over: Partial<Reaction> = {}): Reaction => ({
+    blockNumber: 1000n,
+    txHash: TXH,
+    window: 68n,
+    recordedBlock: 1000n,
+    viaReactivity: true,
+    ...over,
+  });
+
+  const word = (a: string): string => a.slice(2).toLowerCase().padStart(64, "0");
+
+  /*
+   *  A real `MarketFinalized`: topic0, indexed marketKey, indexed pool, and the FIVE
+   *  non-indexed fields ABI-encoded in `data`.
+   *
+   *  The data has to be encoded properly, and the first draft of this helper is the reason
+   *  the note above says every case was confirmed by perturbation. It passed 32 zero bytes,
+   *  `decodeEventLog` threw on the short payload, `references` fell through to the raw hex
+   *  tier exactly as it is designed to — and tests 1 and 2 both silently measured the RAW
+   *  path while claiming to compare it against the decoded one. A self-test whose fixture is
+   *  malformed reports on a branch it never reached.
+   */
+  const finalized = (pool: Address) => ({
+    topics: [MARKET_FINALIZED_TOPIC0, `0x${word("0x09")}`, `0x${word(pool)}`] as readonly Hex[],
+    data: encodeAbiParameters(
+      [
+        { type: "uint64" },
+        { type: "address" },
+        { type: "uint256" },
+        { type: "bool" },
+        { type: "uint256[]" },
+      ],
+      [7n, "0x6666666666666666666666666666666666666666", 1_000_000n, false, [1n, 0n]],
+    ),
+    transactionHash: `0x${"55".repeat(32)}` as Hex,
+  });
+
+  /** Some other event that merely happens to carry our pool in its data. The raw tier. */
+  const mentionsPool = (pool: Address) => ({
+    topics: [`0x${"99".repeat(32)}`] as readonly Hex[],
+    data: `0x${word(pool)}` as Hex,
+    transactionHash: `0x${"55".repeat(32)}` as Hex,
+  });
+
+  const ev = (over: Partial<Evidence> = {}): Evidence => ({
+    reaction: reaction(),
+    settlementLogs: [finalized(POOL)],
+    timestamp: 1_780_000_000n,
+    opened: { marketId: MARKET, pool: POOL },
+    ...over,
+  });
+
+  // 1. The happy path: an exact decode is a pass and the top rank.
+  const exact = judge(ev());
+  check("an exact MarketFinalized decode PASSES", exact.problems.length === 0);
+  check("an exact decode ranks `decoded`", exact.rank === RANK.decoded);
+
+  // 2. Raw-hex correlation passes but must rank BELOW an exact decode, or `main`'s early
+  //    exit would stop on it and never look for the provable block behind it.
+  const rawOnly = judge(ev({ settlementLogs: [mentionsPool(POOL)] }));
+  check("a raw-hex correlation still PASSES", rawOnly.problems.length === 0);
+  check("raw ranks below decoded", rawOnly.rank < exact.rank);
+
+  // 3. B3. The bug: this was a `warn`, so it printed PASS with the correlation skipped.
+  const unchecked = judge(ev({ opened: undefined }));
+  check("a missing WindowOpened FAILS", unchecked.problems.length > 0);
+
+  // 3b. CONTROL for B3. A `warn`-shaped judge passes both 3 and this; only the pair
+  //     separates them, because this case must go on ranking above an outright break.
+  check("...and still ranks above a broken block", unchecked.rank > judge(ev({ settlementLogs: [] })).rank);
+
+  // 4. Somebody else's market finalizing in our block is the coincidence, not the claim.
+  check("another market's settlement FAILS", judge(ev({ settlementLogs: [finalized(OTHER_POOL)] })).problems.length > 0);
+
+  // 5. No settlement at all in the block.
+  check("an empty block FAILS", judge(ev({ settlementLogs: [] })).problems.length > 0);
+
+  // 6. A lying `recordedBlock` fails even though the correlation is exact — which is the
+  //    point: it is a reader/contract disagreement, not a weak correlation.
+  const lying = judge(ev({ reaction: reaction({ recordedBlock: 999n }) }));
+  check("a lying recordedBlock FAILS", lying.problems.length > 0);
+
+  // 6b. CONTROL for 6. Its rank is still `decoded`, so a `main` that ranked without reading
+  //     `problems` would pick this over a genuinely provable block and exit 0 on it.
+  check("...while still ranking `decoded`", lying.rank === RANK.decoded);
+
+  // 7. Same transaction is stronger than same block, and both pass.
+  const sameTx = judge(
+    ev({ settlementLogs: [{ ...finalized(POOL), transactionHash: TXH }] }),
+  );
+  check("a same-TRANSACTION settlement PASSES", sameTx.problems.length === 0);
+  check(
+    "...and says so",
+    sameTx.notes.some((n) => n.text.includes("TRANSACTION")),
+  );
+
+  console.log("");
+  if (failures.length === 0) {
+    console.log(`prove self-test: ${pass}/${pass} PASS (no chain, no key)`);
+    return;
+  }
+  console.error(`prove self-test: ${failures.length} FAILED of ${pass + failures.length}`);
+  for (const f of failures) console.error(`  FAIL  ${f}`);
+  process.exitCode = 1;
+}
+
+if (process.argv.includes("--self-test")) {
+  selfTest();
+} else {
+  main().catch((err) => {
+    console.error("FATAL", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

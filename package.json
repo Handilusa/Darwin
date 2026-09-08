@@ -16,6 +16,7 @@
     "subscribe": "tsx scripts/subscribe.ts",
     "fee": "tsx scripts/measure-fee.ts",
     "prove": "tsx scripts/prove-same-block.ts",
+    "prove:selftest": "tsx scripts/prove-same-block.ts --self-test",
     "typecheck": "tsc --noEmit",
     "fmt:check": "forge fmt --check --root contracts",
     "abi:check": "tsx scripts/abi-drift.ts",
