@@ -15,7 +15,30 @@
  *  ── WHAT IS ILLUSTRATION HERE, AND WHAT IS A CLAIM ──────────────────────────
  *  The field, the typing genome and the three vitals are illustration: figures derived
  *  from `Population.sol`'s defaults, animated to show the mechanism. They claim to be an
- *  example and nothing else.
+ *  example and nothing else — and since 2026-09-07 the page SAYS SO, in `.vitals-source`
+ *  under the rail, because "it is only an example" was true of the code and invisible on
+ *  the screen.
+ *
+ *  ── THE TWO FIGURES THAT WERE NOT DERIVED (fixed 2026-09-07) ────────────────
+ *  The paragraph above has claimed since it was written that every figure here comes out
+ *  of `Population.sol`'s defaults. Two of them did not, and both sat one button above
+ *  `Watch the arena`, where a judge could check them in one click:
+ *
+ *    - `Treasury · #3 · 41.20 tUSDC`. `endowment()` is 10 tUSDC and rake is skimmed off
+ *      profit, so 41.20 is not a default, not a live reading, and not reachable from
+ *      either. The highest treasury any organism has ever held is 13.08 (organism #3
+ *      after winning window 68). It is now `endowment()` itself — 10.00, draining by
+ *      `metabolicCost()` — which is both derivable and durable: it is what EVERY organism
+ *      opens at, so no later window can contradict it. The vital is labelled `at birth`
+ *      rather than `#3` for the same reason: naming a live organism is what invited the
+ *      comparison, and the mechanism does not need a specimen id to be legible.
+ *    - The genome was a plausible paraphrase of a momentum thesis attributed to `#3`,
+ *      which on chain is BREAKOUT. It is now a VERBATIM contiguous excerpt of organism
+ *      #1's genome from `genomes/genesis.json`, and #1 is MOMENTUM, so the label is true
+ *      too. See the constant below for the hash that makes it checkable.
+ *
+ *  `Metabolism −0.05 per window` was already correct (`metabolicCost()` is 50000 at 6
+ *  decimals) and is untouched.
  *
  *  The chain pill is different, because a pulsing `.dot-live` is the one mark on either
  *  surface that asserts "this reading is current" with no number beside it
@@ -35,9 +58,34 @@ import { mountField } from "../motion/field.js";
 import { reducedMotion } from "../motion/hooks.js";
 import { CHAIN_ID } from "../lib/wagmi.js";
 
-/** A real genome: the shape `Genome.beliefPrompt` wraps and an entrant actually writes. */
+/**
+ *  Organism #1's genome, VERBATIM — a contiguous prefix of the string in
+ *  `genomes/genesis.json`, cut at a sentence boundary and marked with an ellipsis.
+ *
+ *  It used to be a paraphrase: a momentum thesis nobody wrote, attributed on screen to
+ *  organism #3, which is BREAKOUT. Both halves of that were wrong, and a genome is the one
+ *  thing on this page a judge can verify to the byte — so it is now quoted rather than
+ *  imitated, from the organism that actually holds it.
+ *
+ *  Checkable, and checked on 2026-09-07:
+ *
+ *      keccak256(<the full 645-char entry in genomes/genesis.json>)
+ *        == 0x8ae06d7c2f4c4f11fc9ec12f89b8675a6ccea3fdaf3ecc8de41a10e6aeb1cad2
+ *        == Prophet#1.genomeHash() at 0x22fC3Ab08F20391300fC1Fe194FdB5577a6DD4f8
+ *
+ *  The hash is of the WHOLE genome, not of this excerpt, which is exactly why the
+ *  ellipsis and the word "excerpt" in the label are load-bearing rather than decorative:
+ *  without them the page would be quoting a string that hashes to nothing on chain.
+ *
+ *  Kept to two sentences on purpose. The full genome is 645 characters and types for ~20
+ *  seconds; that is a different animation, not a longer one. Extending this string is
+ *  therefore a pacing decision as well as an editorial one — and any extension must stay a
+ *  CONTIGUOUS prefix, because a stitched quote that skips a sentence would read as verbatim
+ *  while being assembled.
+ */
 const GENOME =
-  "You are a momentum forecaster. When the last window closed hard in one direction, you believe it keeps going.";
+  "You believe short-horizon price moves persist. Order flow is autocorrelated over minutes: " +
+  "whoever is pushing price is usually still pushing at the close of a 15-minute window. …";
 
 const mmss = (s) => {
   const v = Math.max(0, Math.round(s));
@@ -110,9 +158,13 @@ export function Hero({ onField }) {
     const metab = metabRef.current;
     if (!clock || !treasury || !metab) return undefined;
 
-    // One 15-minute window, entered with 6:12 left on it.
+    // One 15-minute window, entered with 6:12 left on it. The treasury is `endowment()` —
+    // what every organism is minted with — and NOT any organism's current balance. It was
+    // 41.20, a figure `Population.sol` cannot produce: `endowment()` is 10 tUSDC and rake
+    // is skimmed off profit, so nothing compounds a newborn to 41.20 in the four windows a
+    // season runs. The highest balance ever held on chain is 13.08. See the header.
     const WINDOW_S = 15 * 60;
-    const inst = { left: 6 * 60 + 12, treasury: 41.2 };
+    const inst = { left: 6 * 60 + 12, treasury: 10.0 };
 
     if (reducedMotion()) {
       clock.textContent = mmss(inst.left);
@@ -147,10 +199,11 @@ export function Hero({ onField }) {
 
     // The treasury drains across the whole window rather than dropping at its end.
     // Metabolism is continuous pressure, and 0.05 tUSDC over fifteen minutes is what
-    // that looks like at this scale.
+    // that looks like at this scale. 10.00 -> 9.95 is `endowment()` minus one
+    // `metabolicCost()`, so the two ends of this tween are both contract readings.
     tweens.push(
       gsap.to(inst, {
-        treasury: 41.15,
+        treasury: 9.95,
         duration: WINDOW_S,
         ease: "none",
         onUpdate: () => {
@@ -236,7 +289,14 @@ export function Hero({ onField }) {
         </p>
 
         <div className="genome-frame">
-          <span className="label">Organism #3 · genome</span>
+          {/*
+            `#1`, not `#3`. The genome typed here is organism #1's, verbatim — see the
+            `GENOME` constant for the hash that ties it to `Prophet#1.genomeHash()`. The
+            word "excerpt" is not modesty: the hash is of the whole 645-character string,
+            so a page that quoted a cut of it without saying so would be showing something
+            that hashes to nothing on chain.
+          */}
+          <span className="label">Organism #1 · genome (excerpt)</span>
           <p className="genome" ref={genomeRef}>
             <span className="caret" aria-hidden="true" />
           </p>
@@ -251,9 +311,16 @@ export function Hero({ onField }) {
             <span className="vital-note">Window closes; every living organism is graded.</span>
           </div>
           <div className="vital">
-            <span className="vital-label">Treasury · #3</span>
+            {/*
+              `at birth`, not `· #3`. Naming a live organism made this a claim about a
+              balance a judge could read one button below and find to be different; the
+              endowment is the same number for every organism that has ever existed, so no
+              window can age it. Both figures here are `Population.sol` readings: 10.00 is
+              `endowment()` and the 0.05 it sheds is `metabolicCost()`.
+            */}
+            <span className="vital-label">Treasury · at birth</span>
             <span className="vital-value mono">
-              <span ref={treasuryRef}>41.20</span>
+              <span ref={treasuryRef}>10.00</span>
               <span className="vital-unit">tUSDC</span>
             </span>
             <span className="vital-note">What it can still wager. At zero it stops existing.</span>
@@ -269,6 +336,23 @@ export function Hero({ onField }) {
             </span>
           </div>
         </div>
+
+        {/*
+          The rail's figures are contract parameters, animated to show the mechanism — they
+          are not a reading of any organism's current state, and the page has to say which
+          it is. Everything above pulses or counts, and a number that moves next to a live
+          chain pill reads as telemetry unless something tells you otherwise.
+
+          It points at the arena rather than merely disclaiming, because the honest version
+          of "this is an example" is "the real thing is here". The arena reads every one of
+          these values off the chain.
+        */}
+        <p className="vitals-source">
+          Illustrative — these are <code>Population</code>&apos;s own parameters (
+          <code>endowment</code>, <code>metabolicCost</code>, the 15-minute window), animated to
+          show how a window is graded. For live organisms, treasuries and deaths,{" "}
+          <a href="/arena/">watch the arena</a>.
+        </p>
 
         <div className="hero-cta">
           <a className="btn btn-primary" href="#enter">

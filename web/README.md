@@ -8,9 +8,12 @@ tree, the per-generation census, and the event feed that ends in a death.
 the directory and open it.
 
 ```bash
-npx serve web          # or: python -m http.server 8080 -d web
-# then http://localhost:3000/?population=0x…
+npx serve web                        # http://localhost:3000/
+python -m http.server 8080 -d web    # http://localhost:8080/  (8080, not 3000)
 ```
+
+Either one opens on the Season 0 arena with no arguments — `POPULATION` in `web/config.js` carries
+the deployed proxy. Append `?population=0x…` to point the same page at a different one.
 
 You **cannot** open `index.html` from the filesystem. ES modules are fetched, and browsers refuse
 `import` over `file://` with a CORS error that names the module, not the protocol — so a `file://`
@@ -123,8 +126,13 @@ dependencies. There is still nothing to install and nothing to build.
 #organism/7          deep-link a selected organism
 ```
 
-Resolution order: query string → `localStorage` → `contracts/deployments/50312.json` (when the page
-is served from the repo root) → a setup card that asks.
+Resolution order: query string → `localStorage` → `POPULATION` in `config.js` → the deploy manifest
+at `contracts/deployments/50312.json` (which resolves only when the page is served from the repo
+root, not under `serve web`) → a setup card that asks.
+
+`config.js` sits ahead of the manifest, not behind it, and `web/js/main.js` calls the manifest its
+last resort. The cost of that order is that the constant is hand-edited: **a redeploy that rewrites
+the manifest and not `config.js` points this page at the dead population.**
 
 **Only the `Population` address is ever configured.** `collateral`, `priceSource`, `venue`,
 `selectionEngine`, `marketsModule` and `symbol` are all discovered on-chain from it. That is not

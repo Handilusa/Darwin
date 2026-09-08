@@ -1,22 +1,29 @@
 /**
  *  Which Population is this page talking to?
  *
- *  The honest answer today is "none" — `POPULATION` in `web/config.js` is `""` until the
- *  Season 0 deploy, and the deployment manifest does not exist yet. That is not a bug to
- *  paper over: an entry form that renders a Connect button and a genome box while there
- *  is no contract behind it would take a judge's signature and hand back a revert. So the
- *  address is resolved first and the entry surface is gated on it.
+ *  Since 2026-09-08 the answer is normally Season 0's proxy: `POPULATION` in `web/config.js`
+ *  carries it and the deployment manifest agrees. The gating below is kept anyway, because
+ *  the address is still resolved at runtime from four sources and every one of them can come
+ *  up empty — a judge on a fork with no manifest, a cleared `localStorage`, a `?population=`
+ *  typo. An entry form that rendered a Connect button and a genome box with no contract
+ *  behind it would take a signature and hand back a revert, so the entry surface stays gated
+ *  on a resolved address rather than on the constant being non-empty.
  *
  *  Precedence, most specific first — the same order `web/config.js:settings()` uses, so
  *  the landing and the arena can never disagree about which arena they are showing:
  *
  *      1. ?population=0x…      an explicit override in the URL
  *      2. localStorage         whatever the visitor last pointed the arena at
- *      3. the manifest         contracts/deployments/50312.json, written by Deploy.s.sol
- *      4. config.js            the compiled-in constant
+ *      3. config.js            the constant this repo ships, resolved synchronously
+ *      4. the manifest         contracts/deployments/50312.json, written by Deploy.s.sol
  *
- *  The manifest sits at 3 rather than 1 deliberately: it is the source of truth for a
- *  normal visit, but a judge debugging a second arena needs the URL to win.
+ *  THIS LIST USED TO SAY THE MANIFEST WAS 3 AND config.js 4, AND THAT WAS BACKWARDS — read
+ *  the code below: `settings()` already consults `POPULATION`, and the fetch only runs when
+ *  it returned nothing. `web/js/main.js:479` calls the manifest its "last resort" for the
+ *  same reason. The order is deliberate — the fetch is async and 404s under `npx serve web`,
+ *  where the manifest is outside the served root — but it puts the burden on a hand-edited
+ *  constant: **a redeploy that rewrites the manifest and not `web/config.js` leaves both
+ *  surfaces pointing at the dead population.** Change them in the same commit.
  */
 
 import { useEffect, useState } from "react";

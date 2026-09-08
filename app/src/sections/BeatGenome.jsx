@@ -6,6 +6,23 @@
  *  a person with no tooling. Everything on the right is a real value — the nine
  *  `allowedValues` are `Genome.sol`'s cross product, and the parse rule is quoted from
  *  `Genome.parseAnswer`.
+ *
+ *  ── THE CARD USED TO CONTRADICT THE CHAIN (fixed 2026-09-08) ────────────────
+ *  That paragraph was true of the left column and false of the card beside it. The header
+ *  read `Organism #7 · generation 2`, the body was an invented paraphrase, and `Parent` was
+ *  `#3` — on a deploy where `generation()` is **0** in all eight organisms and there has
+ *  never been a child, so a judge one click away in `/arena/` found a generation-2 organism
+ *  that does not and cannot yet exist. Same defect class as Hero's `41.20 tUSDC`, and the
+ *  same remedy: use something real, or label it.
+ *
+ *  It is now REVERSION, prophet id 2 (`50312.organisms.json`), genome quoted verbatim as a
+ *  contiguous prefix from `genomes/genesis.json` — not paraphrased, because a paraphrase is
+ *  what let the old text drift. `Dead` and the window-68 outcome are the measured ones from
+ *  `docs/ERROR_W68_MOMENTUM.md` §4: REVERSION answered Down, was wrong, starved. `Parent` is
+ *  `founder` rather than an id because founders have none.
+ *
+ *  IF A CHILD IS EVER BORN, this card may be swapped for it and the caption's last sentence
+ *  drops. Until then, do NOT invent a generation — the arena is one click away and it counts.
  */
 
 import { useReveal } from "../motion/hooks.js";
@@ -54,16 +71,19 @@ export function BeatGenome() {
         <div className="fig" data-rise>
           <article className="genome-card">
             <div className="genome-card-top">
-              <span className="label">Organism #7 · generation 2</span>
-              <span className="pill pill-ok">
+              <span className="label">REVERSION · #2 · generation 0</span>
+              <span className="pill pill-dead">
                 <span className="dot" />
-                Alive
+                Dead
               </span>
             </div>
 
             <p className="genome-card-body">
-              &ldquo;Fade the first move after a quiet stretch. When the last window barely
-              moved and this one gaps, the gap is noise and it comes back.&rdquo;
+              &ldquo;You believe short-horizon moves overshoot. Within a 15-minute window most
+              displacement from the opening level is liquidity being consumed, not information
+              arriving, and thin books overshoot before settling back. So you fade. If price is
+              above the window&rsquo;s open, answer <code>DOWN_REVERSION</code>, expecting the
+              move to exhaust.&rdquo;
             </p>
 
             <div className="genome-card-foot">
@@ -81,12 +101,21 @@ export function BeatGenome() {
               </div>
               <div>
                 <span className="label">Parent</span>
-                <div className="mono hl" style={{ marginTop: "var(--s-1)" }}>
-                  #3
+                <div className="mono" style={{ marginTop: "var(--s-1)", color: "var(--text-3)" }}>
+                  founder
                 </div>
               </div>
             </div>
           </article>
+
+          <p className="vitals-source">
+            A real organism: <code>REVERSION</code>, prophet id 2, a generation-0 founder whose
+            genome is quoted verbatim from <code>genomes/genesis.json</code>. It answered
+            Down&nbsp;·&nbsp;Reversion in window 68, was wrong, and starved — the first
+            generation of deaths on this deploy. Every founder is generation 0 and has no
+            parent; the first child will have both.{" "}
+            <a href="/arena/">Watch the arena</a>.
+          </p>
 
           <p className="fig-cap">
             The nine answers a genome is allowed to give — the cross product of{" "}

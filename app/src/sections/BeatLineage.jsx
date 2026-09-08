@@ -9,6 +9,21 @@
  *
  *  One node is ash and its child is alive. That is the whole argument for why lineage, not
  *  the leaderboard, is the thing being tracked.
+ *
+ *  ── THE TREE IS A DIAGRAM AND NOW SAYS SO (fixed 2026-09-08) ────────────────
+ *  It used to be drawn with prophet ids — `#1`, `#17`, `#26` — a census rail reading
+ *  `1/3/4/2` across four generations, a `deepest` counter tweening to 3, and a caption
+ *  asserting "#17 is ash and #26, its child, is alive". None of it was true on chain:
+ *  `generation()` is 0 in all eight organisms, `breedProphet` has never been called, and ids
+ *  above 8 do not exist. The ids were the specific problem — a numbered node is a claim about
+ *  a particular organism a judge can look up, and `/arena/` is one click away.
+ *
+ *  So the nodes are LETTERED (`A`…`K`), the caption calls itself a diagram, `.vitals-source`
+ *  says outright that nothing has bred, and the rail carries the real census instead:
+ *  8 born / 6 alive / 2 dead / 0 at generation 1. Keep the letters. Renumbering them to look
+ *  like organisms is exactly the regression this note exists to prevent — and if a child is
+ *  ever actually born, the honest version of that change reads the ids off chain rather than
+ *  hard-coding a second set.
  */
 
 import { useCounter, useDrawPaths, useReveal } from "../motion/hooks.js";
@@ -17,16 +32,16 @@ const int = (v) => String(Math.round(v));
 
 /* x by generation, y hand-placed so the line reads as a pedigree rather than a graph. */
 const NODES = [
-  { id: "#1", x: 58, y: 140, r: 11, k: "life" },
-  { id: "#4", x: 222, y: 68, r: 9, k: "life" },
-  { id: "#5", x: 222, y: 148, r: 9, k: "life" },
-  { id: "#9", x: 222, y: 222, r: 8, k: "life" },
-  { id: "#12", x: 388, y: 42, r: 8, k: "life" },
-  { id: "#14", x: 388, y: 106, r: 8, k: "life" },
-  { id: "#17", x: 388, y: 184, r: 8, k: "ash" },
-  { id: "#19", x: 388, y: 246, r: 7, k: "life" },
-  { id: "#23", x: 552, y: 84, r: 7, k: "life" },
-  { id: "#26", x: 552, y: 210, r: 7, k: "life" },
+  { id: "A", x: 58, y: 140, r: 11, k: "life" },
+  { id: "B", x: 222, y: 68, r: 9, k: "life" },
+  { id: "C", x: 222, y: 148, r: 9, k: "life" },
+  { id: "D", x: 222, y: 222, r: 8, k: "life" },
+  { id: "E", x: 388, y: 42, r: 8, k: "life" },
+  { id: "F", x: 388, y: 106, r: 8, k: "life" },
+  { id: "G", x: 388, y: 184, r: 8, k: "ash" },
+  { id: "H", x: 388, y: 246, r: 7, k: "life" },
+  { id: "J", x: 552, y: 84, r: 7, k: "life" },
+  { id: "K", x: 552, y: 210, r: 7, k: "life" },
 ];
 
 /** Parent index → child index. Order is the draw order: outward from the founder. */
@@ -42,11 +57,25 @@ const LINKS = [
   [6, 9], // the dead organism's child, still alive
 ];
 
+/*
+ *  THE LIVE CENSUS, and it is deliberately unflattering.
+ *
+ *  This rail used to read `1 gen 0 / 3 gen 1 / 4 gen 2 / 2 gen 3`, with `3 deepest` counting
+ *  up beside it — a four-generation pedigree on a deploy where `generation()` is 0 in all
+ *  eight organisms and `breedProphet` has never been called. A judge one click away in
+ *  `/arena/` found a population entirely at generation 0.
+ *
+ *  So it is the real census now: eight founders, all generation 0, deepest 0, two of them
+ *  already dead. A zero here is not a weak demo — it is the metric behaving as designed,
+ *  because depth has to be EARNED (four consecutive correct calls plus 1.5x endowment) and
+ *  nothing has earned it yet. Faking it would have thrown away the one number the README
+ *  calls the headline.
+ */
 const GENS = [
-  { n: "1", l: "gen 0" },
-  { n: "3", l: "gen 1" },
-  { n: "4", l: "gen 2" },
-  { n: "2", l: "gen 3" },
+  { n: "8", l: "born" },
+  { n: "6", l: "alive" },
+  { n: "2", l: "dead" },
+  { n: "0", l: "gen 1" },
 ];
 
 function edge(a, b) {
@@ -57,7 +86,9 @@ function edge(a, b) {
 export function BeatLineage() {
   const ref = useReveal();
   const treeRef = useDrawPaths(0.13);
-  const deepest = useCounter({ from: 0, to: 3, duration: 1.1, format: int });
+  // Counts to 0, i.e. does not move. `generation()` is 0 in all eight — see the note on
+  // GENS. A tween to 3 here was the animated half of the same overclaim.
+  const deepest = useCounter({ from: 0, to: 0, duration: 1.1, format: int });
 
   return (
     <section className="beat" id="lineage" ref={ref}>
@@ -108,7 +139,7 @@ export function BeatLineage() {
             ))}
             <div className="gen">
               <span className="gen-n" ref={deepest}>
-                3
+                0
               </span>
               <span className="gen-l">deepest</span>
             </div>
@@ -118,7 +149,10 @@ export function BeatLineage() {
         <div className="fig" data-rise>
           <div className="tree" ref={treeRef}>
             <svg viewBox="0 0 620 288" xmlns="http://www.w3.org/2000/svg" role="img">
-              <title>One founder&rsquo;s line, four generations deep</title>
+              <title>
+                Diagram: how a founder&rsquo;s line accumulates depth, and how a dead
+                organism&rsquo;s edge stays in the graph
+              </title>
 
               {LINKS.map(([a, b]) => {
                 // An edge into an ash node is drained, not deleted. Death removes an
@@ -168,10 +202,20 @@ export function BeatLineage() {
           </div>
 
           <p className="fig-cap">
-            Organism <code>#17</code> is ash and <code>#26</code>, its child, is alive and
-            two generations deep. The parent&rsquo;s edge stays drawn and drained: the graph
-            is the one asset in this system that cannot be rebuilt, which is why{" "}
-            <code>Prophet</code> is beacon-backed and its storage layout is append-only.
+            A diagram of the rule, not a photograph of the population. Node <code>G</code> is
+            ash and <code>K</code>, its child, is alive: the parent&rsquo;s edge stays drawn
+            and drained, because death removes an organism from the population and never from
+            the ancestry graph. That graph is the one asset here that cannot be rebuilt, which
+            is why <code>Prophet</code> is beacon-backed and its storage layout is
+            append-only.
+          </p>
+
+          <p className="vitals-source">
+            Illustrative — the nodes are lettered, not numbered, because{" "}
+            <strong>no organism has bred yet</strong>. All eight founders are generation 0 and{" "}
+            <code>breedProphet</code> has never been called, so the live tree is eight
+            unconnected roots with two of them ash. The rail on the left is the real census.{" "}
+            <a href="/arena/">Watch the arena</a>.
           </p>
         </div>
       </div>

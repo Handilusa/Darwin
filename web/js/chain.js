@@ -551,7 +551,7 @@ function eventsOf(abi) {
  *  Scan backwards in chunks for the population's log stream and the organisms' own.
  *
  *  Backwards because the feed shows newest first and a bounded scan should spend its budget
- *  on the recent past. Chunked at `LOG_CHUNK` (`web/config.js:71`) because dream-rpc refuses a span above 1,000
+ *  on the recent past. Chunked at `LOG_CHUNK` (`web/config.js:84`) because dream-rpc refuses a span above 1,000
  *  blocks — see the measurement in `config.js`, and note the number there used to be nine
  *  times too large, so every request this function made was rejected.
  *

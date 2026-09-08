@@ -12,8 +12,17 @@
  *  landing page that overstated that would be the one thing this project cannot afford.
  */
 
+import { addressUrl } from "../../../web/config.js";
 import { CHAIN_ID, EXPLORER } from "../lib/wagmi.js";
+import { usePopulation } from "../lib/population.js";
 import { useReveal } from "../motion/hooks.js";
+
+/**
+ *  The repository. It is the only external link on this page that is not the chain, and it
+ *  was missing from both UIs until 2026-09-08 — a landing whose entire argument is "check
+ *  this yourself" with no path to the source it is asking you to check.
+ */
+const REPO = "https://github.com/Handilusa/Darwin";
 
 const READ = [
   { href: "#genome", label: "A genome is a sentence" },
@@ -35,6 +44,15 @@ const VERIFY = [
 
 export function Footer() {
   const ref = useReveal();
+  const pop = usePopulation();
+
+  /*
+    The explorer link used to be the explorer's HOME PAGE — the one outbound link on a
+    landing that spends five sections telling a judge to verify things, and it landed them
+    on a search box. When the address has resolved, send them to the contract; the label
+    changes with it, so the link never promises a population it is not carrying.
+  */
+  const contract = pop.status === "found" ? pop.address : "";
 
   return (
     <footer className="foot" ref={ref}>
@@ -79,8 +97,17 @@ export function Footer() {
               </li>
             ))}
             <li>
-              <a href={EXPLORER} target="_blank" rel="noreferrer noopener">
-                Shannon explorer ↗
+              <a
+                href={contract ? addressUrl(contract) : EXPLORER}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                {contract ? "This Population on the explorer ↗" : "Shannon explorer ↗"}
+              </a>
+            </li>
+            <li>
+              <a href={REPO} target="_blank" rel="noreferrer noopener">
+                Source on GitHub ↗
               </a>
             </li>
           </ul>

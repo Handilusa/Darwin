@@ -24,10 +24,23 @@
 export const CHAIN_ID = 50312;
 
 /**
- *  Filled in at the Season 0 deploy. Empty on purpose: an address invented here would be a
- *  lie the UI would then render with total confidence.
+ *  The Season 0 Population proxy, deployed to Shannon at block 481441054 and identical to
+ *  `population` in `contracts/deployments/50312.json`.
+ *
+ *  It was `""` until 2026-09-08, and the reason it could not stay empty is the resolution
+ *  order above: step 4 fetches the manifest at `../contracts/deployments/50312.json`, which
+ *  is OUTSIDE the served root under `npx serve web` — the path documented in `web/README.md`.
+ *  So with this constant empty, every source failed and the one no-install route into the
+ *  arena landed on the setup card asking a judge to paste an address. Only `app/`'s vite
+ *  middleware, which serves `/contracts/deployments/` off disk, rescued the manifest.
+ *
+ *  It is still not a source of truth for anything else. Only the Population is named here;
+ *  `collateral`, `priceSource`, `venue`, `selectionEngine`, `marketsModule` and `symbol` are
+ *  read off it on chain, because `venue` is repointable and a stale copy here would aim the
+ *  page at an abandoned arena while still rendering plausible numbers. And it is step 3, not
+ *  step 1: `?population=0x…` and `localStorage` both still win, so a second arena is a URL.
  */
-export const POPULATION = "";
+export const POPULATION = "0xe0F46e61Cb3c87c01c4f79b6E9727772388838Cb";
 
 export const DEFAULT_RPC = "https://dream-rpc.somnia.network";
 export const EXPLORER = "https://shannon-explorer.somnia.network";

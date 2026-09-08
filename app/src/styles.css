@@ -591,6 +591,36 @@ code {
   color: var(--heat);
 }
 
+/* The rail's own footnote: what those three figures are, and where the live ones live.
+   Deliberately quiet — it is a label, not a disclaimer banner — but `--text-3` on
+   `--ink-2` is the same contrast the notes inside the rail carry, so it is not hidden
+   either. `max-width` matches `.vitals` so it reads as that block's caption. */
+.vitals-source {
+  margin-top: var(--s-3);
+  max-width: 760px;
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  color: var(--text-3);
+}
+
+.vitals-source code {
+  font-family: var(--f-mono);
+  font-size: 0.94em;
+  color: var(--text-2);
+}
+
+.vitals-source a {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-decoration-color: var(--line-2);
+  text-underline-offset: 0.18em;
+}
+
+.vitals-source a:hover {
+  color: var(--life);
+  text-decoration-color: currentColor;
+}
+
 .vital-value.is-life {
   color: var(--life);
 }
