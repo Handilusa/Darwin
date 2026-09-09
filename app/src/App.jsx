@@ -1,11 +1,19 @@
 /**
- *  The page.
+ *  The landing.
  *
  *  Six beats in the order an argument has to be made in: what an organism *is*, what a
  *  window *does*, what thinking *costs*, what death *means*, what accumulates, and then —
- *  only then — the form. A visitor who never reaches the form should still leave knowing
- *  what was built; a judge who scrolls straight to it should find live numbers rather than a
+ *  only then — the invitation. A visitor who never reaches the end should still leave knowing
+ *  what was built; a judge who scrolls straight down should find live numbers rather than a
  *  brochure.
+ *
+ *  ── THIS PAGE TAKES NO SIGNATURES ───────────────────────────────────────────
+ *  Beat 6 used to be `<Enter />` itself — `faucet`, `approve`, `enter` and a wallet prompt,
+ *  inline under five explanatory sections. Since 2026-09-08 it is `<EnterInvite />`, the same
+ *  three steps as text, and the form is a page of its own at `/enter/` (`Console.jsx`). The
+ *  landing is information and instructions; nothing on it can spend anything. `Nav` renders a
+ *  link to the console in the slot where its `ConnectButton` used to be, and
+ *  `test/landing.mjs` check 7 fails if a write affordance reappears here.
  *
  *  ── THE ONE PIECE OF WIRING THAT MATTERS ────────────────────────────────────
  *  `Hero` mounts the specimen field and hands its `die` handle up here. When `#death`
@@ -35,7 +43,7 @@ import { BeatWindow } from "./sections/BeatWindow.jsx";
 import { BeatCognition } from "./sections/BeatCognition.jsx";
 import { BeatDeath } from "./sections/BeatDeath.jsx";
 import { BeatLineage } from "./sections/BeatLineage.jsx";
-import { Enter } from "./sections/Enter.jsx";
+import { EnterInvite } from "./sections/EnterInvite.jsx";
 import { Footer } from "./sections/Footer.jsx";
 
 import { DOOMED } from "./motion/field.js";
@@ -67,7 +75,7 @@ export default function App() {
         <BeatCognition />
         <BeatDeath />
         <BeatLineage />
-        <Enter />
+        <EnterInvite />
       </main>
 
       <Footer />

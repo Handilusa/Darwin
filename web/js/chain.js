@@ -632,7 +632,67 @@ export async function readFeed(client, cfg, { organisms = [], lookback = FEED_LO
     return Number(b.logIndex ?? 0) - Number(a.logIndex ?? 0);
   });
 
+  await annotateReactions(found);
+
   return { logs: found, from: head - scanned + 1n, to: head, scanned, errors };
+}
+
+/**
+ *  Decode `ReactionFailed.reason` HERE, at ingest, and never in the renderer.
+ *
+ *  `reason` is ABI-encoded revert data, so reading it needs viem and an error ABI — and the
+ *  first version of this feature put both in `render.js`, which is a static import of
+ *  `main.js`. That one edge made `https://esm.sh/viem@2.56.0` a dependency of *loading the
+ *  page*: 370 off-origin requests on `?demo=1`, which is documented three times as working
+ *  with the network unplugged, and `npm test --prefix web` unable to even load (Node's ESM
+ *  loader refuses an `https:` specifier), so all 231 renderer checks stopped running while
+ *  reporting nothing. Neither failure is visible from the browser with a network attached,
+ *  which is why the seam is now spelled out at both ends: `abi.js`'s closing comment claims
+ *  everything in it is unreachable unless the page is talking to a real chain, and this
+ *  function is what keeps that claim true.
+ *
+ *  So the renderer receives a plain object — `{name, declined, args:[{type,value}]}` — and
+ *  formats it. Types ride along instead of formatted strings because shortening an address is
+ *  a display decision and `format.js` is the renderer's, not this module's.
+ *
+ *  `args` is mutated onto a COPY (`{...l.args}`) rather than in place: viem hands back its own
+ *  decoded object and a second `readFeed` over an overlapping range would otherwise see rows
+ *  it has already annotated.
+ */
+async function annotateReactions(logs) {
+  const rows = logs.filter((l) => l.eventName === "ReactionFailed");
+  if (!rows.length) return;
+
+  const { decodeErrorResult } = await lib();
+  const { reactionErrorsAbi, DECLINE_ERRORS } = await abis();
+
+  for (const l of rows) {
+    const reason = l.args?.reason;
+    // Shorter than a selector is not revert data at all. `null` reaches the renderer's
+    // undecodable branch, which prints what it actually has rather than inventing a name.
+    if (typeof reason !== "string" || reason.length < 10) {
+      l.args = { ...l.args, decoded: null };
+      continue;
+    }
+    try {
+      const { errorName, args, abiItem } = decodeErrorResult({ abi: reactionErrorsAbi, data: reason });
+      l.args = {
+        ...l.args,
+        decoded: {
+          name: errorName,
+          declined: DECLINE_ERRORS.has(errorName),
+          args: (args ?? []).map((v, i) => ({
+            type: abiItem?.inputs?.[i]?.type ?? null,
+            value: typeof v === "bigint" ? v.toString() : String(v),
+          })),
+        },
+      };
+    } catch {
+      // Not decodable against the list. The selector is still four real bytes off the chain,
+      // and four bytes send a reader to `cast 4byte`; "reaction failed" sends them nowhere.
+      l.args = { ...l.args, decoded: { name: null, selector: reason.slice(0, 10), declined: false, args: [] } };
+    }
+  }
 }
 
 const blockTimes = new Map();

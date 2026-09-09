@@ -355,7 +355,7 @@ export function Hero({ onField }) {
         </p>
 
         <div className="hero-cta">
-          <a className="btn btn-primary" href="#enter">
+          <a className="btn btn-primary" href="/enter/">
             Enter an organism
           </a>
           <a className="btn" href="/arena/">

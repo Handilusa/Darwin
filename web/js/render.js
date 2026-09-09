@@ -1477,6 +1477,56 @@ export function censusPanel(rows, depth) {
  *  anything not listed falls through to `generic`, which prints the args by name — so an event
  *  added to a contract later shows up as a readable row instead of vanishing from the feed.
  */
+/**
+ *  `ReactionFailed.reason` → something a reader can act on.
+ *
+ *  The row used to be `[span.bad "reaction failed"]` and nothing else: both arguments the event
+ *  carries were thrown away, and the most diagnostic log this system emits rendered as the least
+ *  informative line on the page. On a SHARED settlement singleton it fires once per stranger's
+ *  market — so the published feed was seven identical red rows deep and a user read the whole
+ *  dashboard as "puro error".
+ *
+ *  Two verdicts, and they are opposites:
+ *
+ *   · A DECLINE (`NoCommittedWindow`, `MarketUnreadable`, `MarketNotDecided`) is the cross-talk
+ *     guard working. The trigger is unauthenticated — anyone's finalization pulls that lever — so
+ *     the engine deciding for itself that the pull meant nothing is the correct outcome, not a
+ *     failure. It gets the muted tone the fact deserves.
+ *
+ *   · Anything else came back from `try population.settleAll()` and therefore proves the engine
+ *     did NOT decline: it called in and was refused. That is a real finding and stays amber.
+ *
+ *  An unrecognised selector still renders — its four bytes, verbatim. A row that says
+ *  `0x1234abcd` sends a reader to `cast 4byte`; a row that says "reaction failed" sends them
+ *  nowhere, which is how a missing guard sat unnoticed on chain for a whole deploy.
+ *
+ *  THE DECODE IS NOT HERE, and that is load-bearing rather than tidy. Reading revert data needs
+ *  viem plus an error ABI, and importing either into this file makes esm.sh a dependency of
+ *  loading the page — it broke `?demo=1` offline and stopped `npm test --prefix web` from
+ *  loading at all. `chain.js:annotateReactions` decodes at ingest and hands down
+ *  `args.decoded`; this function only formats it, so the whole renderer stays reachable with no
+ *  network. A row with no `decoded` is not an error: it takes the undecodable branch, which is
+ *  the honest reading of "nobody decoded this".
+ */
+function reactionCall(d) {
+  // Tolerates a bare string per argument as well as `{type, value}` — the fixture writes
+  // display values directly and has no ABI to carry types with.
+  const args = (d.args ?? []).map((a) => {
+    if (a && typeof a === "object") {
+      if (a.type === "address") return addr(a.value);
+      if (typeof a.type === "string" && a.type.startsWith("bytes")) return hash(a.value);
+      return String(a.value);
+    }
+    return String(a);
+  });
+  return args.length ? `${d.name}(${args.join(", ")})` : d.name;
+}
+
+/** The first four bytes of revert data, or `0x` when there are not four bytes to show. */
+function selectorOf(reason) {
+  return typeof reason === "string" && reason.length >= 10 ? reason.slice(0, 10) : "0x";
+}
+
 const SUMMARY = {
   // `openPrice` here is scaled by the PRICE source's decimals, not the collateral's, and the
   // discovered config only knows the latter. `ctx.priceDecimals` is threaded in from the live
@@ -1594,7 +1644,34 @@ const SUMMARY = {
       : el("span", { class: "warn", text: "via the fallback keeper" }),
     ` at window ${a.window}`,
   ],
-  ReactionFailed: () => [el("span", { class: "bad", text: "reaction failed" })],
+  ReactionFailed: (a) => {
+    const why = a?.decoded ?? null;
+    const call = why?.name ? reactionCall(why) : null;
+
+    if (why?.declined) {
+      return [
+        el("span", { class: "muted", text: "selection declined" }),
+        " — not this population's window · ",
+        el("span", { class: "mono", text: call }),
+      ];
+    }
+    if (why?.name) {
+      return [
+        el("span", { class: "warn", text: "selection was refused" }),
+        " by Population · ",
+        el("span", { class: "mono", text: call }),
+      ];
+    }
+    return [
+      el("span", { class: "warn", text: "reaction failed" }),
+      " · undecodable reason ",
+      // `why.selector` when the decoder looked and failed; the raw `reason`'s own first four bytes
+      // when nothing decoded it at all. Those two cases print the same thing because the reader
+      // wants the same thing from both — the selector to paste into `cast 4byte`. Falling back to
+      // a bare "0x" here threw away bytes the event had actually carried.
+      el("span", { class: "mono", text: why?.selector ?? selectorOf(a?.reason) }),
+    ];
+  },
 };
 
 function generic(args) {
@@ -1611,12 +1688,61 @@ const SEVERITY = {
   ThinkFailed: "warn",
   CommitFailed: "warn",
   SettleFailed: "warn",
-  ReactionFailed: "bad",
+  /*
+   *  A FUNCTION, because this one event means two opposite things and a constant had to pick the
+   *  wrong one. It was `"bad"`, which painted the cross-talk guard declining a stranger's market —
+   *  the mechanism working exactly as designed, once a minute, forever — in the same red as an
+   *  organism dying. `null` is not "unknown": it is the deliberate absence of a severity class, so
+   *  a decline gets the feed's ordinary row and nothing louder.
+   */
+  ReactionFailed: (a) => (a?.decoded?.declined ? null : "warn"),
   BreedingUnaffordable: "warn",
   Spawned: "good",
   Born: "good",
   SeasonPrizePaid: "good",
 };
+
+/** `SEVERITY` holds constants and predicates; callers must not care which. */
+function severityOf(eventName, args) {
+  const s = SEVERITY[eventName];
+  return typeof s === "function" ? s(args) : s;
+}
+
+/**
+ *  Consecutive identical reactions become one row with a count.
+ *
+ *  Only `ReactionFailed`, and only runs that are byte-identical in both `emitter` and `reason`.
+ *  Nothing else in this feed may ever be collapsed: two `Settled` rows that look alike are two
+ *  organisms being graded, and folding them would hide the population. But a shared settlement
+ *  singleton produces the SAME decline over and over — 61 of them across 12,000 blocks on the
+ *  published site, seven deep on first paint — and sixty-one copies of one fact is not sixty-one
+ *  facts. It is one fact and a frequency.
+ *
+ *  `firstIndex` is the group's position in the ORIGINAL array, and it is what gets handed to
+ *  `feedRow`, so `ctx.fx.newRows` keeps meaning exactly what it meant before grouping existed:
+ *  the first N rows of a newest-first append-only list. Grouping must not be able to move the
+ *  entrance animation onto a row that was already on screen.
+ */
+function reactionKey(l) {
+  if (l.eventName !== "ReactionFailed") return null;
+  const a = l.args || {};
+  return `${String(a.emitter).toLowerCase()}|${String(a.reason)}`;
+}
+
+function collapse(rows) {
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    const key = reactionKey(rows[i]);
+    const last = out[out.length - 1];
+    if (key && last && last.key === key) {
+      last.count += 1;
+      last.oldest = rows[i];
+      continue;
+    }
+    out.push({ log: rows[i], key, count: 1, firstIndex: i, oldest: rows[i] });
+  }
+  return out;
+}
 
 export function feed(logs, cfg, ctx = {}) {
   const rows = logs || [];
@@ -1631,7 +1757,13 @@ export function feed(logs, cfg, ctx = {}) {
 
   // Bounded by the same constant that bounds timestamp fetching in main.js, so every row shown
   // is a row whose block time was actually read. See FEED_ROWS in config.js.
-  const shown = rows.slice(0, ctx.limit ?? FEED_ROWS);
+  //
+  // The bound is applied to the ORIGINAL index, not to the group count: collapsing must not pull a
+  // row in from beyond the stamped window and print `#483224186` where every neighbour says "2s
+  // ago". The set of logs on screen is the same [0, bound) it always was — grouped, not extended.
+  const bound = ctx.limit ?? FEED_ROWS;
+  const groups = collapse(rows).filter((g) => g.firstIndex < bound);
+  const covered = groups.reduce((n, g) => n + g.count, 0);
 
   return el(
     "section",
@@ -1645,22 +1777,23 @@ export function feed(logs, cfg, ctx = {}) {
         text: ctx.range ? `${rows.length} events over ${ctx.range} blocks` : `${rows.length} events`,
       }),
     ),
-    el("ol", { class: "feed" }, shown.map((l, i) => feedRow(l, cfg, ctx, i))),
-    rows.length > shown.length
-      ? el("p", { class: "muted", text: `${rows.length - shown.length} older events not shown` })
+    el("ol", { class: "feed" }, groups.map((g) => feedRow(g.log, cfg, ctx, g.firstIndex, g.count))),
+    rows.length > covered
+      ? el("p", { class: "muted", text: `${rows.length - covered} older events not shown` })
       : null,
   );
 }
 
-function feedRow(l, cfg, ctx, i = -1) {
+function feedRow(l, cfg, ctx, i = -1, repeat = 1) {
   const make = SUMMARY[l.eventName];
   const body = make ? make(l.args || {}, cfg, ctx) : generic(l.args);
   const ts = ctx.stamps?.get(String(l.blockNumber));
+  const sev = severityOf(l.eventName, l.args || {});
 
   return el(
     "li",
     {
-      class: ["feed-row", SEVERITY[l.eventName] && `sev-${SEVERITY[l.eventName]}`],
+      class: ["feed-row", sev && `sev-${sev}`],
       // The feed is newest-first and append-only, so "the rows added since the last paint" is
       // exactly its first N — which means `main.js` can report a count and never has to key logs.
       dataset: i >= 0 && i < (ctx.fx?.newRows ?? 0) ? { fx: "new" } : undefined,
@@ -1675,6 +1808,15 @@ function feedRow(l, cfg, ctx, i = -1) {
       { class: "feed-what" },
       el("span", { class: ["feed-name", `origin-${l.origin || "population"}`], text: l.eventName }),
       el("span", { class: "feed-body" }, body),
+      // The frequency, only when there is one. `title` names the oldest block in the run so the
+      // count stays checkable against the chain rather than being a number the page asserts.
+      repeat > 1
+        ? el("span", {
+            class: "muted",
+            text: ` ×${repeat}`,
+            title: `${repeat} consecutive identical events in the scanned range, newest at block ${l.blockNumber}`,
+          })
+        : null,
     ),
     el(
       "div",
@@ -1777,6 +1919,49 @@ function specimen(name, text) {
       el("b", { class: "specimen-name", text: name }),
       " · founder genome, quoted from ",
       el("code", { text: "genomes/genesis.json" }),
+    ),
+  );
+}
+
+/**
+ *  The frame between "we have an address" and "we have read it".
+ *
+ *  `boot()` resolves a population address synchronously and then awaits two round trips —
+ *  `chain.connect` and `chain.discoverWithRetry` — before `app.cfg` exists. It paints once in
+ *  between so the page is never blank, and until 2026-09-08 that paint fell through to
+ *  `primer()` + `setupCard()`, which was wrong in two different ways at once:
+ *
+ *   1. It offered an address form to a visitor whose address was already correct, and then took
+ *      it away mid-sentence when the reads landed. The user reported it as the arena "jumping".
+ *   2. `primer()` states "Season 0 is not deployed yet" as a flat fact. With a live deploy
+ *      configured that sentence is FALSE, and it was the first thing the published site said —
+ *      a page denying its own 68 windows while it loaded them.
+ *
+ *  So a configured-but-unread page gets its own frame, and it says only what is true at that
+ *  instant: which address, where the address came from, and that it is being read right now.
+ *
+ *  The setup card still rides underneath, collapsed. An RPC that never answers must not leave a
+ *  visitor with no way to change the endpoint — but a *closed* disclosure is an affordance, not
+ *  an invitation, and it does not move when discovery resolves.
+ */
+export function connectingCard(ctx) {
+  return el(
+    "section",
+    { class: "panel" },
+    el("div", { class: "panel-head" }, el("h2", { text: "Reading the chain" })),
+    el(
+      "p",
+      { class: "empty" },
+      "Connecting to chain ",
+      el("code", { text: String(ctx.chainId) }),
+      " and discovering the modules this population is wired to. Two round trips, no wallet.",
+    ),
+    el(
+      "p",
+      { class: "sub" },
+      el("span", { class: "mono", text: addr(ctx.population) }),
+      ctx.sourceLabel ? el("span", { class: "dot" }) : null,
+      ctx.sourceLabel ? el("span", { text: ` ${ctx.sourceLabel}` }) : null,
     ),
   );
 }

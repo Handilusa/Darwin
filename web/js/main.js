@@ -40,6 +40,11 @@ const app = {
   // is not transient — it lasts as long as the config it came from.
   unverified: false,
   sourceLabel: "",
+  // An address is in hand and the two discovery round trips have not landed yet. NOT derivable from
+  // `!cfg && population`: `boot()` leaves the previous `cfg` in place across a retry on purpose, so
+  // the only state that can distinguish "still reading" from "nothing configured" is a flag set at
+  // the one moment it becomes true. See `paint()`'s first branch.
+  connecting: false,
   lastFeedAt: 0,
   lastWindow: null,
   poll: 10_000,
@@ -209,6 +214,35 @@ function paint() {
   if (!app.cfg) {
     const s = settings();
     mount($("#header"), ui.masthead());
+
+    /*
+     *  CONFIGURED BUT UNREAD IS NOT UNCONFIGURED. These two states used to share this branch, and
+     *  the day `web/config.js` got a real POPULATION that stopped being harmless: a visitor with a
+     *  perfectly good address was shown the primer and the address form for the length of two round
+     *  trips and then had them replaced by the arena. Worse than the flicker, `primer()` asserts
+     *  "Season 0 is not deployed yet" — so the published site opened by denying its own deploy.
+     *
+     *  `connecting` is only ever true with an address in hand, so the form is not withheld from
+     *  anyone who needs it: it stays mounted underneath, closed. Both error paths in `boot()` clear
+     *  the flag before they paint, which is what keeps a failed discovery from getting this frame
+     *  instead of its banner and its open field.
+     */
+    if (app.connecting) {
+      mount(
+        $("#body"),
+        ui.connectingCard({
+          population: s.population,
+          chainId: CHAIN_ID,
+          sourceLabel: app.sourceLabel,
+        }),
+        ui.setupCard(
+          { population: s.population, rpc: s.rpc, defaultRpc: DEFAULT_RPC, chainId: CHAIN_ID, badQuery: s.badQuery, noContract: null },
+          { onConnect },
+        ),
+      );
+      return;
+    }
+
     // MECHANISM FIRST, FORM SECOND. This branch used to mount the setup panel alone, so the whole
     // page before Season 0 was an address field — asking for something that does not exist yet, from
     // a visitor who has no way to know that. The primer is the page's actual content; the form is the
@@ -463,6 +497,9 @@ async function boot() {
   app.seenPhase = null;
   app.seenHead = null;
   app.painted = false;
+  // Reset with the rest of the per-boot state so `?demo=1` and the no-address path can never
+  // inherit a stale `true` from a boot that came before them.
+  app.connecting = false;
 
   const s = settings();
   app.poll = s.poll;
@@ -485,13 +522,17 @@ async function boot() {
 
   if (!population) {
     app.cfg = null;
+    app.connecting = false;
     app.sourceLabel = "";
     paint();
     return;
   }
 
   app.sourceLabel = `via ${sourceLabel}`;
-  paint(); // show the setup card / previous frame while connecting rather than a blank page
+  // Not a blank page and not a form either: `paint()` renders the arena's previous frame if this
+  // boot is a retry (`app.cfg` survives one on purpose), and otherwise the connecting frame.
+  app.connecting = true;
+  paint();
 
   try {
     const { client } = await chain.connect(s.rpc);
@@ -501,6 +542,7 @@ async function boot() {
     // unwired behind a Retry button. `absent` is not retried — see `discoverWithRetry`.
     app.cfg = await chain.discoverWithRetry(client, population);
     app.error = null;
+    app.connecting = false;
     /*
      *  A collateral whose `decimals()` never answered is not a missing field — it is the SCALE of
      *  every money figure the page is about to print. `chain.js` falls back to 6 rather than
@@ -515,6 +557,10 @@ async function boot() {
     app.unverified = app.cfg.decimalsUnverified === true;
   } catch (e) {
     app.cfg = null;
+    // Cleared BEFORE the paint, or a discovery that failed would render the connecting frame — a
+    // page reporting that it is reading a chain that has already refused it — and would swallow the
+    // open address field that `absent` and `wrong` exist to offer.
+    app.connecting = false;
     app.error = e?.shortMessage || e?.message || String(e);
     // `absent` and `unreachable` come from `discover`'s read verdict (`chain.js`); anything else
     // is a client-level failure and carries no kind. The banner needs it to pick its headline, and

@@ -136,6 +136,64 @@ const IDLE = num("CADENCE_IDLE", 15) * 1000;
 const USE_REACTIVITY = flag("CADENCE_USE_REACTIVITY", false);
 
 /*//////////////////////////////////////////////////////////////
+                          THE WINDOW CAP
+//////////////////////////////////////////////////////////////*/
+
+/**
+ *  How many COMPLETE windows one run may drive, or `undefined` for the unbounded loop.
+ *
+ *  WHY THIS EXISTS, and it is one fix for two failures that look unrelated.
+ *
+ *  Failure one, the drain. `npm run cadence` a secas has no bound: it drives windows until
+ *  something stops it. Left unattended once it ran 29 of them and took all eight organisms
+ *  to zero STT — and because every organism starved at the same rate, the population looked
+ *  uniformly dead rather than selected, which masked the very fix that run was testing.
+ *  There is no cheap undo: cognition is spent, and metabolism is charged per settled window.
+ *
+ *  Failure two, the staleness gap. `--once` is the existing remedy for failure one, and it
+ *  causes this: it exits after ONE phase transition, so the push and the commit land in
+ *  separate invocations with an operator's turnaround between them. `maxStaleness` is 180 s.
+ *  On 2026-09-09 that gap reached 513 s and `commitAll` would have reverted `StalePrice`
+ *  inside `_pair`, leaving seven organisms with beliefs formed, unplayed, and still paying
+ *  metabolism. `scripts/repush.ts` exists to repair that state; a bounded run avoids it.
+ *
+ *  So the cap is not a smaller `--once`. It is the shape `--once` should have had: the loop
+ *  keeps its continuity — push and commit inside one process, seconds apart — and gains a
+ *  bound, which is the only property `--once` was ever really being used for.
+ */
+function windowCap(): number | undefined {
+  const i = process.argv.indexOf("--windows");
+  const raw = i === -1 ? num("CADENCE_MAX_WINDOWS", 0) : Number(process.argv[i + 1]);
+  if (!Number.isFinite(raw) || raw <= 0) return undefined;
+  return Math.floor(raw);
+}
+
+/**
+ *  Has a bounded run finished? Pure, so the table below can exercise it with no chain.
+ *
+ *  TWO CONDITIONS, AND THE PHASE ONE IS THE LOAD-BEARING HALF. Counting alone would stop
+ *  the loop wherever the Nth window happened to be reached — which for `think()` is phase 1,
+ *  the exact mid-window state that produced the staleness failure this cap exists to
+ *  prevent. A bound that strands the machine between a push and a commit has reproduced the
+ *  bug it was added to fix. So a bounded run may only end at phase 0: every position
+ *  redeemed, every metabolism charge paid, nothing staked.
+ *
+ *  `windowCount` increments in `think()` (`Population.sol:1443`), not at settlement, so the
+ *  count and the phase measure different things and that is deliberate: the count says how
+ *  many windows were OPENED since the run began, the phase says whether the last one was
+ *  CLOSED. Neither alone is "N complete windows"; the conjunction is.
+ *
+ *  A run that starts mid-window therefore finishes that window first without counting it —
+ *  `window - start` is still 0 while the open window settles. That is the honest reading:
+ *  the run did not drive it from the beginning, so it does not own it.
+ */
+export function runIsComplete(window: bigint, start: bigint, cap: number | undefined, phase: number): boolean {
+  if (cap === undefined) return false;
+  if (window < start) return false; // monotonic on chain; a reorg read must not end the run early
+  return phase === 0 && window - start >= BigInt(cap);
+}
+
+/*//////////////////////////////////////////////////////////////
                                MAIN
 //////////////////////////////////////////////////////////////*/
 
@@ -148,15 +206,34 @@ async function main(): Promise<void> {
   const m = manifest();
   const { account, client } = wallet();
   const once = process.argv.includes("--once");
+  const cap = windowCap();
 
   await preflight(m, account.address);
 
   log(`cadence up as ${account.address}; population ${m.population}; symbol ${m.symbol}`);
 
+  // READ BEFORE THE FIRST STEP, or the baseline includes the window this run opens and the
+  // cap is off by one in the expensive direction. Only read when bounded: an unbounded run
+  // has no use for it and should not pay an RPC round trip to compute a number it ignores.
+  const startWindow = cap === undefined ? 0n : await read(m, "windowCount");
+  if (cap !== undefined) {
+    log(`BOUNDED RUN: ${cap} complete window(s) from #${startWindow}, then exit at phase 0.`);
+  } else if (!once) {
+    warn(`UNBOUNDED RUN — this drives windows until killed. 29 of them once drained the population to zero.`);
+    warn(`  use --windows N (or CADENCE_MAX_WINDOWS) unless you mean it.`);
+  }
+
   for (;;) {
     try {
       const advanced = await step(m, client);
       if (once) break;
+      if (cap !== undefined) {
+        const [w, ph] = await Promise.all([read(m, "windowCount"), read(m, "phase")]);
+        if (runIsComplete(w, startWindow, cap, Number(ph))) {
+          log(`bounded run complete: ${w - startWindow} window(s) driven, population idle at #${w}. Exiting.`);
+          break;
+        }
+      }
       if (!advanced) await sleep(IDLE);
     } catch (err) {
       // A cadence that dies on a transient RPC error is a population that dies with it.
@@ -175,7 +252,7 @@ async function main(): Promise<void> {
  *
  *  THE SEASON CHECK RUNS BEFORE THE PHASE SWITCH, NOT AFTER SETTLEMENT.
  *
- *  `windowCount` is incremented in `think()` (`Population.sol:1283`), not in
+ *  `windowCount` is incremented in `think()` (`Population.sol:1443`), not in
  *  `settleAll()` — so the window that satisfies `endSeason`'s
  *  `windowCount - seasonStartWindow >= seasonWindows` becomes the FINAL window the
  *  moment it opens, and it is then traded and graded under the next level's ante. A
@@ -1725,9 +1802,16 @@ function selfTestDriverGas(): void {
 
     // The live population right after window 68's two deaths.
     { call: "settle", alive: 6n, want: 6_900_000n, capped: false, why: "six alive: floor 1.5M + 6 x 900k" },
-    { call: "think", alive: 6n, want: 3_600_000n, capped: false, why: "think floor 600k + 6 x 500k" },
+    { call: "think", alive: 6n, want: 5_400_000n, capped: false, why: "think floor 600k + 6 x 800k" },
     { call: "commit", alive: 6n, want: 3_600_000n, capped: false, why: "commit floor 600k + 6 x 500k" },
     { call: "hatch", alive: 6n, want: 7_600_000n, capped: false, why: "hatch floor 400k + 6 x 1.2M" },
+
+    // THE SECOND MEASURED CASE, and the reason the row above changed on 2026-09-09. Window
+    // 69's `think()` reverted at 7 living organisms on a 4,100,000 limit built from a
+    // 500k-per-organism guess. Bisection on the log profile put the real need at 4,218,497
+    // — the guess was 97% of it. `PER_ORGANISM.think` is now 800k and this row is what the
+    // formula must produce at the population that measured it.
+    { call: "think", alive: 7n, want: 6_200_000n, capped: false, why: "the window-69 population: must exceed 4,218,497" },
 
     // Generation 0 at full strength, which is what Seed produces.
     { call: "settle", alive: 8n, want: 8_700_000n, capped: false, why: "the eight founders" },
@@ -1769,6 +1853,28 @@ function selfTestDriverGas(): void {
     console.error(`FAIL  ${call} at 4 alive is ${got}, which does not exceed the ${W68_CHARGED} that silently skipped an organism`);
   }
 
+  /**
+   *  THE SECOND MEASUREMENT, pinned the same way and for the same reason.
+   *
+   *  `think` at 7 organisms was measured at 4,218,497 by bisecting the log profile
+   *  (`scripts/gas-bisect.ts`), and the table it replaced sent 4,100,000 — a 2.8% miss that
+   *  read on chain as a plain `status 0` revert with no decodable reason. An equality row
+   *  cannot protect that number, because anyone lowering `PER_ORGANISM.think` would edit
+   *  the row alongside it and both would agree. This is the assertion that does not move
+   *  when the formula does: whatever `think` is sized at, it must clear what a 7-organism
+   *  window was measured to need.
+   *
+   *  It is deliberately stated at 7 rather than scaled per-organism. 7 is the population
+   *  that produced the measurement; a per-organism restatement would be re-deriving the
+   *  very constant under test from the formula under test.
+   */
+  const THINK_MEASURED_AT_7 = 4_218_497n;
+  const think7 = driverGas("think", 7n).gas;
+  if (think7 <= THINK_MEASURED_AT_7) {
+    failed++;
+    console.error(`FAIL  think at 7 alive is ${think7}, at or below the ${THINK_MEASURED_AT_7} measured need — window 69's revert, again`);
+  }
+
   // AND THE CEILING IS NEVER EXCEEDED, at any population the contract can reach. A limit
   // above a block is not conservative, it is a transaction the chain will not accept.
   for (const call of ["think", "commit", "settle", "hatch"] as DriverCall[]) {
@@ -1801,6 +1907,89 @@ function selfTestDriverGas(): void {
     return;
   }
   log(`driver gas: ${total} checks pass, 2 of them controls (no limit may fall to the estimate that skipped MOMENTUM)`);
+
+  selfTestWindowCap();
+}
+
+/**
+ *  The bounded-run table. Same idiom, and the controls are again the whole point.
+ *
+ *  This predicate has a failure mode with no symptom at the call site: a cap that stops the
+ *  loop at the right COUNT but the wrong PHASE exits cleanly, logs a completed run, and
+ *  leaves the population mid-window with a price going stale behind it. Nothing in the run's
+ *  own output distinguishes that from a correct exit. So `ignoresPhase` is written out below
+ *  and the table must catch it, or the table is decoration and the cap is a new way to
+ *  reproduce the failure it was added to prevent.
+ */
+function selfTestWindowCap(): void {
+  type Case = { w: bigint; start: bigint; cap: number | undefined; phase: number; want: boolean; why: string };
+
+  const cases: Case[] = [
+    // UNBOUNDED. The default, and it must never end a run no matter what the chain reads.
+    { w: 500n, start: 0n, cap: undefined, phase: 0, want: false, why: "no cap: the continuous loop runs until killed" },
+    { w: 500n, start: 0n, cap: undefined, phase: 1, want: false, why: "no cap, mid-window: still never" },
+
+    // THE BOUNDARY, and the row one short of it as its control.
+    { w: 74n, start: 69n, cap: 5, phase: 0, want: true, why: "5 windows driven and the last one closed" },
+    { w: 73n, start: 69n, cap: 5, phase: 0, want: false, why: "4 of 5 — one short, the control for the row above" },
+    { w: 75n, start: 69n, cap: 5, phase: 0, want: true, why: "an overshoot still ends the run" },
+
+    // THE LOAD-BEARING ROWS. The count is satisfied; the window is open. Stopping here is
+    // the staleness failure with a tidy exit message on top.
+    { w: 74n, start: 69n, cap: 5, phase: 1, want: false, why: "committed to think but not yet paired — must not exit here" },
+    { w: 74n, start: 69n, cap: 5, phase: 2, want: false, why: "positions open and unredeemed — must not exit here" },
+
+    // A RUN THAT STARTS MID-WINDOW finishes the open window without counting it. It did not
+    // drive that window from the start, so claiming it would overstate the run by one.
+    { w: 69n, start: 69n, cap: 1, phase: 0, want: false, why: "settled a window this run did not open — not its own" },
+    { w: 70n, start: 69n, cap: 1, phase: 0, want: true, why: "and then drove one of its own" },
+
+    // The smallest useful bound, which is what an operator reaches for first.
+    { w: 70n, start: 69n, cap: 1, phase: 1, want: false, why: "--windows 1 must still finish its window" },
+
+    // A DEGENERATE READ. `windowCount` is monotonic on chain, so this cannot happen — but if
+    // an RPC ever serves a stale count, ending the run early is the wrong direction to fail.
+    { w: 68n, start: 69n, cap: 1, phase: 0, want: false, why: "a count behind the baseline must not end the run" },
+  ];
+
+  type Pred = (w: bigint, s: bigint, cap: number | undefined, phase: number) => boolean;
+  const run = (p: Pred, report: boolean): number => {
+    let bad = 0;
+    for (const c of cases) {
+      const got = p(c.w, c.start, c.cap, c.phase);
+      if (got === c.want) continue;
+      bad++;
+      if (report) console.error(`FAIL  window ${c.w}, start ${c.start}, cap ${c.cap}, phase ${c.phase} → ${got}, want ${c.want} — ${c.why}`);
+    }
+    return bad;
+  };
+
+  let failed = run(runIsComplete, true);
+
+  // CONTROL 1 — the defect this predicate exists to prevent: a cap that counts and does not
+  // look at the phase. It agrees with the correct answer on every row except the two
+  // mid-window ones, which is exactly why those rows are in the table.
+  const ignoresPhase: Pred = (w, s, cap) => cap !== undefined && w >= s && w - s >= BigInt(cap);
+  if (run(ignoresPhase, false) === 0) {
+    failed++;
+    console.error("FAIL  the table does not catch a cap that ignores the phase — it would exit mid-window and go stale");
+  }
+
+  // CONTROL 2 — the off-by-one, which drives one more window than asked. Cheap in a demo,
+  // not cheap in cognition: one extra window is `subcommitteeSize x (0.01 + 0.07) x alive`.
+  const offByOne: Pred = (w, s, cap, phase) => cap !== undefined && w >= s && phase === 0 && w - s > BigInt(cap);
+  if (run(offByOne, false) === 0) {
+    failed++;
+    console.error("FAIL  the table does not catch a `>` where `>=` belongs — it cannot detect an off-by-one");
+  }
+
+  const total = cases.length + 2;
+  if (failed > 0) {
+    console.error(`${failed} of ${total} window-cap checks failed`);
+    process.exitCode = 1;
+    return;
+  }
+  log(`window cap: ${total} checks pass, 2 of them controls (a bounded run can only ever end at phase 0)`);
 }
 
 // ONE ENTRY POINT, and the `--self-test` branch is inside `main()` rather than here, so

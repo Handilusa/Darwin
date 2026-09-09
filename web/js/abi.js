@@ -179,6 +179,48 @@ export const selectionEngineAbi = parseAbi([
   "event ReactionFailed(address indexed emitter, uint256 blockNumber, bytes reason)",
 ]);
 
+/**
+ *  Every error `ReactionFailed.reason` can carry — the point of decoding it rather than
+ *  printing "reaction failed".
+ *
+ *  `reason` is ABI-encoded revert data and it comes from two structurally different places, which
+ *  is exactly what makes it worth reading:
+ *
+ *   · The engine's OWN three, built by `_windowIsDecidable` (`SelectionEngine.sol:250-262`). These
+ *     mean the reactive trigger fired for a market that is not ours and the engine declined without
+ *     touching `Population`. On a shared `BinarySettlement` singleton that is the normal, correct,
+ *     constant case — the cross-talk guard doing its job, once per stranger's market.
+ *
+ *   · Anything POPULATION reverts with, caught by `_handle`'s `try population.settleAll()`
+ *     (`SelectionEngine.sol:220`). A row like this proves the engine did NOT decline — it called
+ *     in. Measured live on 2026-09-08: `WrongPhase(2, 0)`, which is how the deployed engine was
+ *     shown to be missing the guard the repo already has. See `docs/ERROR_PUBLISHED_SITE.md`.
+ *
+ *  The distinction is the whole diagnostic value of the row, so the decoder classifies by WHICH
+ *  contract owns the error rather than treating all revert data alike.
+ *
+ *  `Panic(uint256)` and the `Error(string)` of a plain `require(false, "…")` are NOT listed: viem's
+ *  `decodeErrorResult` prepends both to whatever ABI it is handed, so listing them again would only
+ *  shadow its own built-ins with identical entries.
+ */
+export const reactionErrorsAbi = parseAbi([
+  // SelectionEngine — a decline. Nothing was called.
+  "error NoCommittedWindow(uint8 phase)",
+  "error MarketUnreadable(bytes32 marketId, address market)",
+  "error MarketNotDecided(bytes32 marketId, address market)",
+  // Population, on the `settleAll` path — the call happened and was refused. Only errors that
+  // path can actually raise are listed; an unlisted one still renders, as its raw selector,
+  // because the decoder falls through rather than giving up.
+  "error WrongPhase(uint8 expected, uint8 actual)",
+  "error NotDriver()",
+  "error MarketNotTradeable()",
+  "error TransferFailed()",
+  "error RakeExceeded()",
+]);
+
+/** The three the engine raises itself, by name. A row whose error is here declined cleanly. */
+export const DECLINE_ERRORS = new Set(["NoCommittedWindow", "MarketUnreadable", "MarketNotDecided"]);
+
 /** Enough of `IArenaVenue` to name the settlement mechanism in the UI. */
 export const venueAbi = parseAbi([
   "function positionToken() view returns (address)",

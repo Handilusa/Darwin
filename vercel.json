@@ -17,5 +17,8 @@
       "headers": [{ "key": "Cache-Control", "value": "public, max-age=0, must-revalidate" }]
     }
   ],
-  "redirects": [{ "source": "/arena", "destination": "/arena/", "permanent": false }]
+  "redirects": [
+    { "source": "/arena", "destination": "/arena/", "permanent": false },
+    { "source": "/enter", "destination": "/enter/", "permanent": false }
+  ]
 }

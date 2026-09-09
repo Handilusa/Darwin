@@ -1087,6 +1087,51 @@ code {
   }
 }
 
+/* ── beat 6 on the landing: the same three steps, nothing to sign ──────────── */
+/*
+   Deliberately NOT `.enter-grid`. That class is how both browser suites detect "the entry
+   form rendered" (`test/landing.mjs`, `test/console.mjs`), so wearing it here would make the
+   assertion that the landing carries no form incapable of failing.
+*/
+
+.enter-invite {
+  max-width: 74ch;
+}
+
+/* The landing's header has no wallet: this is what sits in that slot. Smaller than a
+   body `.btn` because a 60px header is not a call-to-action band. */
+.nav-cta {
+  flex: none;
+  padding: 0.42rem 0.9rem;
+  font-size: var(--t-xs);
+}
+
+/* ── /enter/ only: the crumb above the console ─────────────────────────────── */
+/*
+   Someone can arrive at `/enter/` from a shared link with no idea what this arena is, and
+   the console's own head starts at "06 · Enter" — a number with no series. One line of
+   orientation and two ways out.
+*/
+
+.console-crumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-3);
+  padding-block: var(--s-6) var(--s-2);
+}
+
+.console-crumb-sep {
+  color: var(--text-4);
+}
+
+.console-crumb-text {
+  max-width: 72ch;
+  font-size: var(--t-sm);
+  line-height: 1.65;
+  color: var(--text-3);
+}
+
 /* ── the three transactions, always visible ──────────────────────────────── */
 
 .steps {

@@ -7,7 +7,12 @@ Working directory: `C:\Users\Handi\Desktop\somnia_predict\darwin`.
 
 > **WHERE THE CURRENT STATE IS — read this before anything below it.** This file is an
 > **append-only dated log**, and its title date is its *first* segment, not its last. The newest
-> state is the **`## 2026-09-05`** section at the very end; everything above that is a dated record
+> state is the **`## 2026-09-08 (noche)`** section at the very end — the engine redeploy verified
+> byte-identical and its guard proven firing in production, `cognitionEndowment` raised to 1.2 STT,
+> the deadline extended to **Thursday 2026-09-10**, and one open decision (§H) the user takes on
+> 2026-09-09. The `## 2026-09-08` section immediately before it is submission day itself — the
+> window-68 settle, the push, and the four steps that were then remaining; **its §F step 3 is now
+> done and its §E parameters are superseded.** Everything above those two is a dated record
 > of what was true on the day it was written, kept deliberately un-rewritten so that it stays
 > evidence. Live descriptions get re-stamped in place with a date; dated run records get a forward
 > pointer instead, never a silent edit.
@@ -21,6 +26,12 @@ Working directory: `C:\Users\Handi\Desktop\somnia_predict\darwin`.
 > `assert()` call sites, typecheck clean, `reads.mjs` 21 checks, cadence 13 checks / 2 controls, ABI
 > 256/257 guarded, both CDP harnesses PASS — and **nothing is deployed**. `contracts/deployments/` is
 > empty. Deploying and broadcasting are the user's call.
+>
+> **That last sentence is stale, and the counts with it — see `## 2026-09-08`.** A deploy is live at
+> `0xe0F46e61Cb3c87c01c4f79b6E9727772388838Cb`, `contracts/deployments/50312.json` is populated and
+> tracked, 68 windows have run, and two organisms are dead. The suite is 231 PASS over 211 `assert()`
+> sites. The paragraph above is kept as the dated record it is; the one thing in it that never
+> expires is that **deploying and broadcasting remain the user's call.**
 
 This segment produced **no new architecture**, by instruction. It closed empirical gaps
 using installed ABIs, primary docs and live Shannon reads, and recorded the results.
@@ -1857,3 +1868,731 @@ and `_spawn` must be made to spend `drawCognition`'s returned `sent` rather than
 subscribe → `npm run prove` → `npm run fee` → `disableFallback()` chain. STT and faucet provisioning
 is the user's, deliberately last, by their own instruction. **Deploying and broadcasting are the
 user's call, not a session's.**
+
+---
+
+## 2026-09-08 — submission day: window 68 settled, the repo pushed, and the four steps that remain
+
+**This is the newest section. Read it before anything above it.** Written on the day the
+hackathon closes, after the first real selection event on this deploy and after `origin/master`
+finally caught up with the working tree.
+
+Two figures in the older sections of this file are now WRONG and are left standing as dated
+record, per this file's own format rule: **`0.033 STT per organism per window` (§2.14, §6 step 5,
+and the `perAgentReward` row of the audit table) is superseded by 0.24.** The live number is
+`3 × (0.01 + 0.07)`, and the reasoning is below. `darwin/CLAUDE.md` and `docs/BUSINESS_PLAN.md`
+carry the corrected figure; this section is the pointer that stops the old one being trusted.
+
+### A. What the price error actually was
+
+`perAgentReward` was `0.001 ether`, taken from `getRequestDeposit`'s arithmetic rather than from a
+request that succeeded. **The escrow floor prices a request validators are ENTITLED TO DECLINE**,
+and at 0.001 they declined 104 of 104. From outside, a whole population abstaining with innocent
+genomes looks exactly like a parser bug — so the cost model and the abstention bug were one error,
+not two.
+
+Measured census, n=182 of our own requests, `chainOfThought` held false throughout:
+
+| `perAgentReward` | Success | Failed |
+|---|---|---|
+| 0.07 STT | 78 | 0 |
+| 0.001 STT | 0 | 104 |
+
+That separates 182/182 on one variable. Two conclusions follow, and one earlier belief dies:
+`allowedValues` is **absolved** (a request carrying 27 values was served fine), and the deposit
+floor is **not** a sufficient price. Do not reason from `getRequestDeposit` again.
+`contracts/src/interfaces/ISomnia.sol` records the census at the function that misled us.
+
+### B. Window 68 — the first real selection event on this deploy
+
+Executed by the user (Claude cannot sign): `forcePhase(uint8) 2` at block 483075526, then
+`settleAll()` at block 483075647 — 394,027 gas of a 3,000,000 limit, 9 logs. Decoded against the
+compiled ABIs, not against the explorer:
+
+```
+Redeemed      13,300,000 burned -> 13,300,000 tUSDC   (outcomeIdx 0)
+Raked         prophetId 1   profit 6,650,000   rake 166,250   (2.5%)
+Settled       prophetId 1   correct=true   treasury 13,083,750
+WindowClosed  window 68   aliveCount 6
+```
+
+Post-settle state, read from chain across all eight organisms:
+
+```
+aliveCount 6   prizePool 3,453,000   rakeAccrued 16,459,500
+
+#1 MOMENTUM   alive  13.08 tUSDC  ok=1  streak=1
+#3 BREAKOUT   alive  13.08 tUSDC  ok=1  streak=1
+#2 REVERSION  DEAD        0       bad=1
+#4 PINNED     DEAD        0       bad=1
+#5-8 SKEPTIC/GAMBLER/PATIENT/SCALPER  alive  6.60 tUSDC  abstain=68
+```
+
+**`abstainCount` stayed at 67 while `windowsLived` went to 68** in the four that took a position.
+That gap is the DURABLE proof a real position existed: `settle` resets `currentQuantity` but never
+the counter, so it survives the window and is the thing to show a judge. `positionOpen=false` and
+`currentQuantity=0` in all eight — nothing is orphaned, and `cadence:once` is safe again.
+
+Why the phase reads 0 now: `forcePhase` writes the slot with no event (`Population.sol:773`) and
+`settleAll` returned the phase to 0 on closing the window. The whole 0→2→0 sequence happened
+between two reads 121 blocks apart, which is also why a 30-second poll monitor never saw the 2.
+Not a defect — a real limitation of polling, worth knowing before someone hunts for a lost tx.
+
+The danger that made this urgent is now gone, but the mechanism is not: `Prophet.noteCommitted`
+(`contracts/src/Prophet.sol:409`) has **no guard on `positionOpen`**, so a `commitAll` before a
+settle overwrites `currentOutcomeId`/`currentStake`/`currentQuantity` and orphans the winning
+tokens with their stake already spent. Never run `cadence:once` with a position open.
+
+### C. Keyless work closed today
+
+- **`cite:check` FAIL → PASS.** Five broken citations, not the two previously recorded: two in
+  `FRONTEND_CHECKPOINT.md` from an earlier `Hero.jsx` reordering, three pointing at stale
+  `web/config.js` lines. 0 BROKEN now.
+- **`prove-same-block.ts` B1 and B3.** It could print its strongest verdict with its central
+  check skipped. It now walks candidates newest-first instead of judging only the last reaction,
+  and a missing `WindowOpened` is a `problems.push` rather than a warning — without it, a
+  shared-singleton coincidence is indistinguishable from the claim. Split into gather / judge /
+  report so the judgement is pure: `npm run prove:selftest`, 12 checks, 2 controls, and all four
+  new assertions were confirmed capable of failing **by perturbation**, not by inspection.
+- **`scripts/lib/gas.ts`.** `eth_estimateGas` is structurally incapable of sizing `settleAll`,
+  which never reverts — per-organism failures are caught and the phase advances anyway — so the
+  estimate covers a path the real call does not take. Explicit gas in all four drivers, shared
+  rather than mirrored. The defect it prevents is cited at `scripts/lib/gas.ts:11`.
+- **The landing stopped contradicting the chain.** `BeatGenome.jsx` read `Organism #7 ·
+  generation 2` with an invented body and `Parent #3`, on a deploy where `generation()` is 0 in
+  all eight and `breedProphet` has never been called; it is now REVERSION, prophet id 2, genome
+  quoted verbatim from `genomes/genesis.json`, marked dead — which it is, as of §B.
+  `BeatLineage.jsx` drew a four-generation pedigree; nothing has bred, so nodes are now LETTERED
+  (a numbered node is a claim a judge can look up in `/arena/`), the caption calls itself a
+  diagram, and the rail carries the live census — 8 born / 6 alive / 2 dead / 0 at generation 1,
+  which §B confirms exactly. Hero's `41.20 tUSDC` became `10.00`, which IS `endowment()`.
+- **`web/config.js` POPULATION set**, so `npx serve web` lands a judge on the live arena rather
+  than the setup card.
+- `scripts/tmp-watch-fix.sh` deleted; the §5 nitpicks resolved or consciously declined. **viem
+  stays on the CDN** — vendorizing it would change both surfaces' load path on submission day.
+
+Deliberately NOT restamped: the dated `189 checks / 167 assert()` figures in
+`FRONTEND_CHECKPOINT.md`. They are dated records, `darwin/CLAUDE.md` is the one file kept current
+and already carries the live 231/211, and `count:check` passes. Rewriting a dated measurement
+would assert one that never happened — the same convention as the `56/56` EVM row.
+
+### D. The repo is pushed; the app is not yet published
+
+`origin/master` is at `b85274a`, 0 ahead, tree clean. Four commits, split by subject because a
+single 29-file commit mixes contracts with layout and cannot be reviewed:
+
+| | |
+|---|---|
+| `bac3732` | inference price, driver gas, prove made able to fail |
+| `2c1aa7a` | landing stops claiming what the chain contradicts |
+| `2529ca3` | `vercel.json` |
+| `b85274a` | the 7× cost error and the citations it broke |
+
+Gates re-run **on the committed tree**, all green: typecheck clean, `cite:check` 0 BROKEN,
+`count:check` PASS, `prove:selftest` 12/12, `npm test --prefix web` ALL GREEN, `abi:check` 257/258,
+`npm run build --prefix app` 9.25s.
+
+**`vercel.json` is verified against a real build, not guessed**, because three of its four lines
+are wrong under Vercel's defaults. The root `package.json` is Foundry and ops scripts; the
+buildable surface is `app/`. So `installCommand` and `buildCommand` are both `--prefix app`
+(`vercel.json:4-5`), `outputDirectory` is `app/dist` (`:6`), and **`framework` is `null`** —
+autodetecting Vite makes Vercel look for a `vite.config` in the repo root, where there is none.
+`/arena` redirects to `/arena/`: without the trailing slash the dashboard's relative assets
+(`app.css`, `js/main.js`) resolve against the domain root and 404, the same defect
+`app/vite.config.js` already fixes for preview. Manifests get `must-revalidate` so a redeployed
+contract address is not hidden behind a cached JSON.
+
+Confirmed by running it: `npm ci --prefix app` resolves (lockfile v3, tracked), the build emits
+`dist/arena/` and `dist/contracts/deployments/`, and serving `app/dist` at a **domain root**
+answers 200 on `/`, `/arena/` and both manifests. There is no client-side router in `app/src`, so
+no SPA rewrite is needed — those are real files.
+
+**Root Directory must stay `./`.** The commands already carry `--prefix app` and
+`outputDirectory` is relative to the repo root, so setting it to `app` makes Vercel look for
+`app/app/dist`. Vercel works where GitHub Pages would not, incidentally: `dist/` is ignored
+(`.gitignore:41`) so nothing is committed to serve, and 15 `href="/arena/"` links in `app/src`
+plus `app/index.html` require the site to sit at a **domain root** — a project Pages URL
+(`/Darwin/`) would 404 every one of them unless `base` and all 15 hrefs changed.
+
+### E. Live parameters, read from chain 2026-09-08
+
+```
+season window 68 of 48+24 -> season closes at 72 (4 windows left)
+cognitionEndowment  0.33 STT      <-- against a 0.24 deposit: a newborn thinks 1.4 windows
+baseAnte            0.25 tUSDC    levelWindows 4    metabolicCost 0.05    endowment 10.00
+collateral          39.9125 tUSDC
+cognition held      15.84 STT across 6 organisms -> worst runway 11 windows (~2.8 h)
+birth float         12.2297 STT in Population = 37 more children
+```
+
+`npm run fund` with no flags is report-only and is the fastest way to see whether the population
+is about to go quiet. It currently WARNs: under a day of runway.
+
+### F. What remains, in order, and who owns each step
+
+The order is not preference. Step 1 is the only one with a clock of its own; step 2 gates nothing
+else but is what the organizers actually check; steps 3 and 4 are the expensive ones and degrade
+gracefully if time runs out.
+
+**Corrección al párrafo de arriba, escrita el mismo día y por eso no se borra: el paso 3 no
+"degrada bien". Es precondición del paso 4.** El motor desplegado no lleva la guarda, así que salta
+`_windowIsDecidable` y llama de verdad a `settleAll()` en cada finalización ajena. Hoy es inofensivo
+solo porque la fase es 0. Con una posición abierta, la finalización del mercado de cualquier
+desconocido cerraría nuestra ventana contra el resultado de otro. Y el paso 4 es el que produce
+generación 1. La evidencia está en `docs/ERROR_PUBLISHED_SITE.md` §2a; el bloque de comandos, en
+`docs/HANDOVER_ENGINE_REDEPLOY.md`.
+
+**Step 1 — publish to Vercel, and verify the links. THE USER, then Claude.**
+**Ya publicado: `https://darwin-protocol.vercel.app/`** (confirmado por el usuario 2026-09-08; es la
+primera vez que el dominio de producción aparece en estos documentos). Lo que queda de este paso es
+la mitad de Claude: verificar cada enlace contra el dominio real — los 15 de `/arena/`, los del
+explorador de Somnia y los de GitHub. Ninguno se ha comprobado nunca contra otra cosa que localhost,
+y `landing.mjs` y `console.mjs` aceptan una URL como argumento precisamente para eso.
+
+**Y el sitio publicado trajo tres defectos graves, dos ya cerrados.** El usuario los reportó
+mirándolo: `/arena/` solapaba el primer con la arena, el feed era "puro error", y la landing llevaba
+las tres transacciones encima. Diagnóstico, arreglos y tests en **`docs/ERROR_PUBLISHED_SITE.md`**.
+El único que sigue vivo es el del feed y es el paso 3 de esta lista.
+
+
+**Step 2 — `cognitionEndowment`, one owner transaction. THE USER (key).**
+0.33 STT against a 0.24 deposit means a newborn thinks 1.4 windows, so the first child of the run
+would be born nearly brain-dead. `setSeason` with `cognitionEndowment = 1200000000000000000`,
+seven fields unchanged, is prepared verbatim in `docs/HANDOVER_PRICE_FIX.md:118-129`. It does not
+move `seasonStartWindow` or `seasonId` by design. Do this BEFORE breeding, not after.
+
+**Step 3 — redeploy `SelectionEngine`, then `npm run prove`. THE USER (key).**
+**Re-medido en cadena 2026-09-08, no asumido:** el motor desplegado en
+`0xa21Be35123cb7f95F6B95513ae6D3798A39993E6` mide **2171 bytes** (`cast code`); el artefacto que
+compila el fuente de hoy, **3324** (`forge build --sizes`), y con `bytecode_hash = "none"` dos builds
+del mismo fuente son byte-idénticos, así que la diferencia no es metadatos: es otro contrato.
+`_windowIsDecidable` está en el fuente. O sea que el arreglo está en el repo y no en la cadena.
+Necesita redeploy → `setWiring` → resuscribir → `npm run prove`, y hasta que eso pase **la única
+afirmación con licencia es la débil: "selection is on-chain and atomic with redemption"**, no la de
+mismo bloque. `SelectionEngine.fallbackEnabled` no se cierra antes de que `prove` pase — la suite
+local no puede ejercitar esta ruta en absoluto, porque el precompile de reactividad no existe en los
+chain ids locales. **Bloque de comandos listo, con direcciones, dry-run y el paso que falla en
+silencio señalado: `docs/HANDOVER_ENGINE_REDEPLOY.md`.**
+
+**Step 4 — fund, then run the remaining windows and breed. THE USER (key).**
+0.24 STT per organism per window, 6 alive, worst runway 11 windows. `npm run fund -- --windows N`
+tops up and is safe to repeat. Season 3 closes at window 72, so four windows remain; MOMENTUM and
+BREAKOUT are both at `streak=1` and need four consecutive correct calls plus 1.5× endowment to
+breed, so generation 1 inside four windows is possible but tight. **Never `npm run cadence` bare
+— it has no window cap**; unattended it once burned 29 windows and drained all eight organisms to
+0 STT. Use `cadence:once`.
+
+Unchanged from every prior section, and still true: **deploying and broadcasting are the user's
+call, not a session's.**
+
+---
+
+## 2026-09-08 (noche) — el motor nuevo verificado EN PRODUCCIÓN, Fase B cerrada, y el ante bloqueando la Fase C
+
+**Esta es ahora la sección viva. Léela antes que cualquier cosa por encima, incluida la sección
+`## 2026-09-08` que la precede.** Todo número de aquí está leído de Shannon hoy, alrededor del
+bloque 483305113, no recordado.
+
+### A. El plazo se movió: jueves 2026-09-10
+
+El usuario lo reportó esta noche: **los organizadores extendieron la entrega hasta el jueves
+2026-09-10**, dos días más. No es una nota de calendario, cambia dos decisiones concretas:
+
+1. **La Ruta A del §H deja de ser cara.** Quemar cuatro ventanas para llegar al fin de temporada
+   natural ya no compite contra un reloj de horas.
+2. **La generación 1 pasa de "posible pero muy justa" a plausible.** `breedStreak` es 4 y la mejor
+   racha viva es 1, así que hacen falta al menos tres ventanas acertadas consecutivas más de un
+   supervivente. En cuatro ventanas eso era suerte; en dos días es una muestra.
+
+Lo que **no** cambia: el ritmo de gasto. La cognición se consume por ventana liquidada, no por
+tiempo de pared (§2.14), así que dos días extra no cuestan STT si la cadencia está parada.
+
+### B. Fase A — el redeploy del motor, verificado a la norma más fuerte que había
+
+**El motor ya estaba redesplegado cuando fui a documentarlo.** `population.selectionEngine()` no
+devolvía el `0xa21Be351…93E6` que documentan `ERROR_PUBLISHED_SITE.md` §2a y
+`HANDOVER_ENGINE_REDEPLOY.md`, sino **`0xb85afb90Ee36C757EFe5202434c7a20f9E097eeD`**. Medir en vez
+de asumir es lo que produjo el resto de esta sección.
+
+**Identidad del código, que es la afirmación fuerte y no "hay bytecode".** El runtime en cadena de
+`0xb85afb90…` es **byte-idéntico** al build local de `contracts/src/SelectionEngine.sol` **excepto en
+exactamente 8 posiciones**, y las ocho reconstruyen los dos `immutable` del contrato
+(`SelectionEngine.sol:46-53`):
+
+| campo | offsets en el runtime | valor |
+|---|---|---|
+| `population` | 951, 1729, 3119, 4369 | `0xe0F46e61…38Cb` |
+| `settlementEmitter` | 1439, 2085, 2279, 2971 | `0xbF4a49e0…Ed23` |
+
+Un `immutable` se graba en el código, así que ocho diferencias en ocho posiciones que decodifican a
+las dos direcciones correctas **es** la firma de "mismo fuente, constructor correcto". **Control
+negativo, sin el cual la afirmación no vale nada:** el motor viejo diverge en **2692 bytes** contra
+el mismo build.
+
+**La suscripción, con su control emparejado.** `contracts/deployments/50312.reactivity.json` registra
+la nueva: id **17060528**, handler `0xb85afb90…`, topic0 `0xb1884334…` (finalize, no redeem),
+selector `0x53edf33d`, gasLimit 10000000, `isCoalesced` true, creada en el bloque 483298706, tx
+`0xa987b0b4d148dd42c46dc1f900d39582c24ad7c01fafd3c5f2a4e23d65ebec15`. Y la vieja está muerta:
+`getSubscriptionInfo(16520350)` **revierte con data vacía** mientras la misma llamada sobre 17060528
+devuelve el struct completo. O sea que el motor viejo sigue desplegado pero **el precompile no lo
+volverá a llamar nunca**. La superficie de ataque del §2a está cerrada, no solo tapada.
+
+También verificado: `subscribe.ts --status` informa de `rec.subscriptionId` **del manifiesto**
+(`subscribe.ts:519` toma también el handler de ahí), así que ya no puede hablar de 16520350. Ese era
+el paso que `HANDOVER_ENGINE_REDEPLOY.md` §4 marca como "el que falla en silencio", y está bien.
+
+### C. El defecto 2a está arreglado EN PRODUCCIÓN, no solo desplegado
+
+Esto es lo que sube el listón por encima de "el contrato correcto está en la dirección correcta".
+Los `ReactionFailed` del motor nuevo llevan un `reason` distinto, y el cambio es exactamente el que
+la guarda predice:
+
+| | `reason` en bruto | decodificado | quién revirtió |
+|---|---|---|---|
+| motor viejo | `length 0x44 · 05fb5e1b · 02 · 00` | `WrongPhase(2,0)` | **Population** — o sea que `settleAll()` SÍ se llamó |
+| motor nuevo, 18 logs | `length 0x24 · 8e0ebc6c · 00` | **`NoCommittedWindow(0)`** | SelectionEngine, antes de llamar a nada |
+
+`WrongPhase` es el error de *Population* (`Population.sol:392`, revertido en `:493`), así que solo
+podía llegar al feed por el `catch` que envuelve `try population.settleAll()`. Que ahora salga
+`NoCommittedWindow(0)` prueba que **la guarda `_windowIsDecidable` corre y rechaza la liquidación
+ajena sin tocar `settleAll()`**. Ese era el peligro que `SelectionEngine.sol:108-128` llama por su
+nombre: *"not a wasted callback; it is a corrupted generation."*
+
+Consecuencia para el §F de la sección anterior: **el paso 3 está hecho y su precondición sobre el
+paso 4 está satisfecha.** Correr ventanas ya no corre con la apertura abierta.
+
+Y para el feed del juez: esas 18 filas ya no son suciedad. Con el arreglo 2b desplegado se pintan
+decodificadas, y lo que enseñan es **la guarda de cross-talk funcionando en directo**.
+
+### D. Dos instrumentos míos dieron ceros falsos. Los dos se cazaron con el control, no con la vista
+
+Se anotan porque los dos habrían "demostrado" lo contrario de la verdad, y el mecanismo que los cazó
+es reutilizable.
+
+1. **Grep del selector en el bytecode.** Buscar `8e0ebc6c` en el hex del runtime devolvió **0 en los
+   dos motores**, y el control `1507f5ce` también 0. Bajo `via_ir` los selectores no viven como hex
+   contiguo, así que el instrumento no medía nada. Un 0/0 leído sin control se habría interpretado
+   como "la guarda no está". Superado por el diff de identidad del §B y, después, por un log en vivo
+   que **contiene literalmente** `8e0ebc6c` (§C).
+2. **`grep -c "^blockNumber"` sobre `cast logs`.** `cast logs` indenta los campos con dos espacios,
+   así que el ancla `^` no podía coincidir nunca. Tres escaneos devolvieron cero. **Lo delató que el
+   control positivo también devolvió cero.** Con `"blockNumber:"` salieron 67 y 18.
+
+La regla de CLAUDE.md — *un check cuyo sujeto es "X no puede pasar" va emparejado con uno que hace
+pasar X a propósito* — es lo único que separó estos dos ceros de una conclusión falsa. En los dos
+casos el fallo fue del instrumento, no del sujeto.
+
+Menores, del mismo tipo: `prophetAt(0)` revierte `0xb7dd4bea` = `NoSuchProphet()` (los ids son
+**1-based**, no falta un organismo); `generation()` y `currentWindow()` **no existen** en Population
+— son `windowCount` en Population y `generation()` en cada Prophet.
+
+### E. Fase B — `cognitionEndowment` = 1.2 STT, y el reloj intacto
+
+Ejecutada por el usuario. Tx `0x74ab73e21469759711517c49e89372889b2e3f6fef67d70e76e63b3b79870f77`,
+bloque 483305113, status 1. `cognitionEndowment()` = `1200000000000000000`.
+
+Verificados **los ocho campos** de `SeasonParams`, no solo el que cambiaba, y el reloj **no se
+movió**: `seasonId` 3, `seasonStartWindow` 48, `phase` 0. Que `setSeason` no toque el reloj es de
+diseño (`Population.sol:1050-1052`) y es lo que hace segura la Ruta B del §H.
+
+Consecuencia colateral que conviene tener escrita: los 12.2297 STT de float de nacimiento en
+Population eran ~37 hijos a 0.33 y ahora son **~10 hijos a 1.2**. Sigue sobrando para lo que la
+población puede parir en dos días, pero el número de la sección anterior (§E, "37 more children") ya
+no vale.
+
+### F. Censo en vivo, y la ventana 68 sigue siendo el único evento de selección real
+
+```
+phase 0   windowCount 68   seasonId 3   seasonStartWindow 48   prizePool 3.453 tUSDC
+requestDeposit 0.24 STT   perAgentReward 0.07   subcommitteeSize 3   chainOfThought false
+breedStreak 4   maxPopulation 24   metabolicCost 0.05
+Population: 39.9125 tUSDC + 12.2297625756 STT      pagador 204.969 STT      gas 6 gwei
+```
+
+Ids **1..9**, `livingCount()` = **7**. **Todos generación 0.**
+
+| # | estado | ok/bad/ventanas | racha | tUSDC | cognición |
+|---|---|---|---|---|---|
+| 1 MOMENTUM | vivo | 1/0/67 | **1** | 13.0837 | 2.64 STT (11 ventanas) |
+| 3 BREAKOUT | vivo | 1/0/67 | **1** | 13.0837 | 2.64 STT |
+| 2 REVERSION | **muerto** | 0/1/67 | — | 0 | — |
+| 4 PINNED | **muerto** | 0/1/67 | — | 0 | — |
+| 5–8 | vivos | 0/0/68 | 0 | 6.60 | 2.64 STT |
+| **9** | vivo | 0/0/**0** | 0 | **32.00** | **0.33 STT (1 ventana)** |
+
+**El #9 es nuevo desde la sección anterior** (que censaba 8) y no vino de `spawnGenesis`: los ocho
+fundadores llevan `endowment` 10.00 y este lleva 32.0. Su cognición es 0.33 STT — exactamente el
+`cognitionEndowment` que estaba en vigor **antes** de la Fase B —, así que entró bajo el suelo viejo
+y **está a una ventana de morir de hambre**. Es el único organismo con urgencia propia.
+
+Lo que esto dice del rendimiento real, y hay que decirlo sin adornos: **la ventana 68 es la única
+que produjo respuestas de verdad en 68 ventanas**, y de 8 organismos respondieron 4 — #1 y #3
+acertaron, #2 y #4 fallaron y murieron. Todo lo anterior son abstenciones por el error de precio
+(§A de la sección previa), no por genomas rotos. La tasa de éxito empírica de la inferencia es de
+una sola muestra y sale ~50%, así que una racha de 4 es suerte más al menos tres ventanas
+emparejadas más.
+
+### G. El bloqueo real de la Fase C: el ante está en el nivel 5 y cuatro organismos no pueden pagarlo
+
+Esto no estaba en el plan y es lo que impide correr ventanas ahora mismo con provecho. El ante es
+**derivado, no almacenado** (`Population.sol:188`):
+
+```
+level = (windowCount - seasonStartWindow) / levelWindows = (68 - 48) / 4 = 5
+ante  = baseAnte * anteMultBps^level = 0.25 * 2^5 = 8 tUSDC
+```
+
+`windowAnte` leído en cadena: **8000000**. Contra los saldos del §F:
+
+| | tUSDC | ¿paga 8? | ¿paga 16 (ventana 72)? |
+|---|---|---|---|
+| #1, #3 | 13.08 | sí | **no** |
+| #5, #6, #7, #8 | 6.60 | **no** | no |
+| #9 | 32.00 | sí | sí |
+
+O sea que **correr ventanas ahora es correrlas en el peor punto del ciclo**: cuatro de siete no
+pueden emparejarse, y en la ventana 72 el ante dobla a 16 y quedan fuera también #1 y #3.
+
+**El desbloqueo es el fin de temporada, y está en el código:** `endSeason` hace
+`seasonStartWindow = windowCount` (`Population.sol:1201-1244`), el nivel vuelve a **0** y el ante
+baja a `baseAnte` = **0.25 tUSDC**. Requiere `windowCount - seasonStartWindow >= seasonWindows`, o
+sea 24, o sea la ventana 72. `cadence.ts` lo llama él mismo en fase 0, no hace falta una tx a mano.
+
+Aritmética de después del reset, porque el alivio no es indefinido: un organismo con 6.60 tUSDC
+cubre hasta el **nivel 4** (4 tUSDC), o sea **unas 20 ventanas** antes de volver a quedar fuera. Con
+dos días de plazo eso es holgura suficiente, pero no es infinito y conviene no descubrirlo corriendo.
+
+### H. Las dos rutas. PENDIENTE DE DECISIÓN DEL USUARIO — la toma el 2026-09-09
+
+Se le presentaron las dos esta noche y **eligió dormir y decidir mañana**. Ninguna se ha ejecutado.
+Las dos llegan al mismo sitio: ante a 0.25 y los siete vivos capaces de emparejarse.
+
+**Ruta A — natural.** Correr las ventanas 69→72 sabiendo que casi no habrá posiciones (ante 8 y
+luego 16), y dejar que `endSeason` dispare solo en la 72. Cuesta ~6.7 STT de cognición y unas cuatro
+ventanas de reloj. **Con el plazo extendido esto ya es asequible**, y tiene una ventaja que la Ruta B
+no tiene: no toca ningún parámetro, así que la narrativa de la demo es "la temporada cerró cuando
+tocaba".
+
+**Ruta B — la palanca.** `seasonWindows` es uno de los ocho campos de `setSeason`. Puesto a **20**,
+`68 − 48 = 20 >= 20` se cumple **ya**, y el siguiente `cadence:once` en fase 0 cierra la temporada:
+reparte los 3.453 tUSDC del pote (6000/3000/1000 bps a los tres primeros por
+`correctCount − wrongCount`, o sea #1 y #3 arriba), pone `seasonStartWindow = 68` y el ante a 0.25 —
+sin quemar cuatro ventanas ni ~6.7 STT. Después hay que **devolver `seasonWindows` a 24** para la
+temporada nueva. `BadSeason` solo rechaza el 0, así que 20 es un valor válido, y es un parámetro de
+owner pensado para recalibrar.
+
+Recomendación dada al usuario: B mientras el plazo era hoy. **Con el jueves de plazo la
+recomendación se debilita a favor de A**, porque A no gasta ninguna credibilidad narrativa y el
+único coste que tenía era tiempo. La decisión es suya.
+
+**Fondeo, idéntico en las dos rutas y necesario antes de cualquiera:**
+
+```
+npm run fund -- --windows 20
+```
+
+Rellena **HASTA** 20 ventanas (una `topUpCognition` por organismo vivo, `requestDeposit()` de
+divisor): ~2.16 STT a cada veterano y ~4.47 al #9, unos **17.4 STT** en total contra los 204.969 del
+pagador. Sin flags es informe y no gasta nada. El #9 lo necesita sí o sí (§F).
+
+### I. Corrección al orden del §F de la sección anterior
+
+**`npm run prove` va DESPUÉS de que una ventana real se liquide, no antes.** Estaba colocado como
+paso A7 de la verificación de la Fase A y **estructuralmente no puede pasar** ahí: exige un
+`Reacted(viaReactivity == true)` compartiendo bloque con un `MarketFinalized` cuyo `pool` case con
+un `WindowOpened` **nuestro** (`scripts/prove-same-block.ts:1-70`), y el motor acababa de nacer sin
+haber liquidado ninguna ventana. La IA local del usuario paró en ese paso y **hizo bien**.
+
+Orden correcto de lo que queda: fondear → resolver el ante (A o B) → correr ventanas → `npm run
+prove` → y **solo si pasa**, considerar `disableFallback()`. `fallbackEnabled` sigue `true` y se
+queda así. Es de una sola dirección.
+
+### J. Lo que esta sección deja obsoleto, y no se ha reescrito
+
+- **`docs/ERROR_PUBLISHED_SITE.md` §2a** y **`docs/HANDOVER_ENGINE_REDEPLOY.md`** describen el motor
+  viejo `0xa21Be351…93E6` y la suscripción 16520350 como **vivos**. Los dos llevan ya una cabecera
+  de superseded apuntando aquí; el cuerpo se deja como registro fechado, que es la convención de
+  este fichero.
+- La tabla de estado de `ERROR_PUBLISHED_SITE.md` marca 2a como *"pendiente, del usuario"*. **Está
+  hecho y verificado en producción** (§B, §C).
+- El §E de la sección anterior: `cognitionEndowment 0.33` → **1.2**; *"birth float = 37 more
+  children"* → **~10**; el censo de 8 organismos → **9**, con `livingCount()` 7.
+- Sigue vivo y sin hacer, del §F anterior: **commit + push** de los arreglos 1/2b/3 para que Vercel
+  los publique (hoy `/enter/` da 404 en producción y el `main.js`/`chain.js` publicados no llevan los
+  arreglos), la verificación de enlaces contra el dominio real, y el vídeo.
+
+Sin cambios respecto a todas las secciones anteriores, y sigue siendo verdad: **desplegar y firmar
+son decisión del usuario, no de una sesión.**
+
+---
+
+## 2026-09-09 — Ruta B ejecutada, la ventana 69 abierta, y el `think` que revertía por gas
+
+Esta sección la escribe Claude en trabajo autónomo mientras el usuario duerme. Lo que aquí se afirma
+como medido se midió; lo que quedó pendiente se nombra en §G y nadie lo dio por hecho.
+
+### A. Ruta B, tal como el usuario la aprobó
+
+`setSeason` bajando `seasonWindows` 24 → 20 para cerrar la temporada de inmediato. Funcionó: la
+temporada 4 abrió en la ventana 68, `level` volvió a 0 y el ante derivado cayó de 8 tUSDC a
+**0.25 tUSDC**, que es lo que desbloqueaba la Fase C. `endSeason` es permissionless y lo disparó la
+propia cadencia antes del switch de fase (`cadence.ts:272`), no un script de owner — que es
+exactamente la separación que `set-season-windows.ts` documenta y por la que no lo llama él mismo.
+
+**El paso final de la Ruta B sigue pendiente: devolver `seasonWindows` a 24.** Ver §G.
+
+### B. La ventana 69 no abrió a la primera: `think()` revertía, y era GAS
+
+El diagnóstico costó lo que costó porque el recibo decía lo contrario de la verdad:
+
+    gasUsed 4,026,317   de un límite de 4,100,000
+
+Un out-of-gas de primer nivel consume el límite **exacto**. Que `gasUsed < gasLimit` parecía prueba
+de que no era gas. No lo es — es prueba de **profundidad**. `Population.sol:1515` pone
+`p.noteThinking(requestId, marketId)` dentro del cuerpo de éxito del `try`, y un `try/catch` de
+Solidity **no protege su propio bloque `returns`**, sólo la llamada. La subllamada muere por gas bajo
+la regla 63/64, el revert burbujea, y la retención de 1/64 del llamante queda sin gastar. De ahí el
+hueco.
+
+**Lo que lo separó no fue la vista, fue un control.** `why-reverted.ts` ahora hace **dos replays** en
+el bloque anterior, porque uno solo no distingue las dos hipótesis vivas:
+
+| con su propio límite | sin límite | veredicto |
+|---|---|---|
+| revierte | pasa | **GAS** |
+| pasa | pasa | estado movido en su propio bloque |
+| revierte | revierte | revert lógico; el error es el real |
+
+Salió GAS. Un solo replay sin límite habría dicho "pasa" en los dos primeros casos.
+
+### C. La medición, y por qué el estimador no servía
+
+`eth_estimateGas` es estructuralmente inservible aquí: `think()` no revierte cuando se le ahoga,
+emite `ThinkFailed` y devuelve éxito. El estimador ve éxito y declara suficiente un gas que sólo
+alcanza para una ventana en la que media población no pensó.
+
+`scripts/gas-bisect.ts` (nuevo) bisecciona sobre el **perfil de logs**, no sobre el revert.
+Resultado a 7 organismos: **4.218.497**. La tabla enviaba 4.100.000 — el **97%** de lo necesario, un
+fallo por 2,8%. `PER_ORGANISM.think` pasa de `500_000n` a **`800_000n`** (~1,55x la medición; 6,2M a
+7 organismos, 19,8M a los 24 de `maxPopulation`, ambos bajo el techo de 30M).
+
+**Un error mío que conviene dejar escrito.** Al cambiar ese número afirmé que no rompía nada "porque
+`gas.ts` no tiene tabla de self-test". La tabla existe, pero vive en `cadence.ts`, no en `gas.ts` — y
+el cambio **rompió el gate**. Lo detectó `npm run cadence:selftest`, no yo. Corregida la fila, y
+añadida la invariante que la fila por sí sola no puede dar:
+
+    THINK_MEASURED_AT_7 = 4_218_497n   →   driverGas("think", 7n) debe superarla
+
+Una fila de igualdad no protege ese número: quien baje `PER_ORGANISM.think` editaría la fila al lado
+y las dos coincidirían. La invariante no se mueve cuando la fórmula se mueve.
+
+### D. El precio se puso stale a media faena — 513 s contra un límite de 180
+
+Entre la apertura de la ventana y el commit, el precio empujado envejeció 216 → 513 s. `commitAll`
+habría revertido `StalePrice` dentro de `_pair` y los 7 organismos habrían quedado `Unpaired` con la
+creencia formada, sin jugar, **pagando metabolismo igual**.
+
+`scripts/repush.ts` (nuevo) refresca el reloj sin mover el precio: `openPrice`, `lastPrice`,
+`marketId` y `priceDecimals` se leen de `rawWindow` y se reescriben byte a byte; lo único que se
+mueve es `updatedAt`. Esa identidad **es** el argumento de seguridad — `openPrice` es el nivel contra
+el que se gradúa a toda la población, así que un re-push que lo "refrescara" no retrasaría la señal
+de fitness, la corrompería. Verifica después de enviar que `openPrice` es idéntico y que `updatedAt`
+avanzó. Se encadenó con el commit en una sola invocación de PowerShell para no perder contra mi
+propia latencia de turno (PS 5.1 no tiene `&&`; el guard fiable es `$LASTEXITCODE`).
+
+### E. Ventana 69: 7 de 7 pensaron, 0 posiciones — y eso es el diseño, no un fallo
+
+Creencias: **5 Down** (#1, #3, #6, #8, #9), **2 Abstain** (#5, #7), **0 Up**. `_pair` empareja Up
+contra Down, así que no había nada que emparejar: los 7 fueron por `_openEmpty` a
+`Committed(stake=0, quantity=0)` + `Unpaired`. El precio venía **-0,34%** desde el open
+(78.943,2 → 78.673,5), y genomas diversos convergen cuando la señal apunta a un solo lado. Que el
+mecanismo funciona ya está probado: la ventana 68 sí emparejó.
+
+Lo que la ventana 69 **sí** demuestra es que las dos reparaciones de hoy funcionan de punta a punta:
+la financiación de cognición y el arreglo del precio dieron **7 respuestas de 7**.
+
+### F. El cap de ventanas — un arreglo para dos fallos que no parecen el mismo
+
+`npm run cadence` a secas no tiene tope. Sin vigilancia llegó a correr **29 ventanas** y dejó a los
+ocho organismos a 0 STT; como se agotaron todos al mismo ritmo, la población se leía como muerta en
+bloque en vez de seleccionada, y eso **enmascaró el propio arreglo que esa corrida probaba**. El
+remedio existente, `--once`, causa el fallo de §D: sale tras **una** transición de fase, con lo que
+el push y el commit caen en invocaciones distintas con un operador en medio.
+
+`--windows N` no es un `--once` más pequeño; es la forma que `--once` debió tener. El bucle conserva
+su continuidad —push y commit en el mismo proceso, con segundos entre ellos— y gana el tope, que era
+lo único que se buscaba al usar `--once`.
+
+**La mitad que carga el peso es la fase, no la cuenta.** Contar a secas pararía el bucle donde
+cayera la ventana N-ésima, que para `think()` es la fase 1 — justo el estado a media ventana que
+produjo §D. Un tope que deja la máquina entre un push y un commit ha reproducido el fallo que venía a
+evitar. Por eso `runIsComplete` exige **fase 0**, y `cadence:selftest` lleva su tabla con el control
+`ignoresPhase` escrito explícitamente: un cap que para en la cuenta correcta y la fase equivocada
+sale limpio, registra una corrida completa y deja el precio envejeciendo detrás **sin ningún síntoma
+en su propia salida**.
+
+Uso: `npm run cadence -- --windows 5`, `npm run cadence:window` (N = 1), o `CADENCE_MAX_WINDOWS`.
+Una corrida sin tope ahora lo dice al arrancar, dos veces, en vez de empezar en silencio.
+
+### G. Lo que queda, en orden
+
+1. **Cerrar la ventana 69** — `npm run cadence:once` en fase 2. `doSettle` se auto-protege: espera
+   expiry **y** resolución en cadena (`cadence.ts:614-623`), así que no gradúa una ventana sin
+   terminar. A las 15:43 faltaban 1007 s.
+2. **Devolver `seasonWindows` a 24** — `npx tsx scripts/set-season-windows.ts --to 24 --broadcast`.
+   **Sólo en fase 0**; el script lo exige y se para solo si no. Es el paso explícito que cierra la
+   Ruta B.
+3. **`commit` y `settle` siguen sin medir de verdad.** `gas-bisect settle` dio **1.568.986**, y ese
+   número es un **PISO, no suficiencia**: `eth_simulateV1` no existe en `dream-rpc`, así que la
+   herramienta cae a biseccionar `eth_call` sobre el revert — el predicado del propio estimador, el
+   que declara suficiente el gas que se saltó un organismo en la ventana 68. La herramienta lo avisa
+   en cada corrida. `commitAll` gastó 897.751 de 4,1M en la 69, pero ése es el camino **barato**
+   (todos sin emparejar); el camino emparejado sigue sin medir.
+4. **Decidir el destino de seis scripts nuevos** sin trackear: `season-report.ts`,
+   `set-season-windows.ts`, `why-reverted.ts`, `gas-bisect.ts`, `repush.ts`, `tx-events.ts`.
+
+### H. Estado del gate y de la cadena al escribir esto
+
+Gate **entero en verde**: typecheck, fmt, cite (502 citas, 0 rotas), count, `cadence:selftest`
+(15 season + 9 settle + 19 commit + 15 gas + **13 window-cap**, controles incluidos),
+`monitor:selftest`, `scan:selftest`, **152/152** tests de Solidity, `abi:check` (265/266 guardadas),
+`web` y `app`.
+
+Cadena: `phase 2 · windowCount 69 · aliveCount 7 · seasonId 4 · seasonStartWindow 68 ·
+seasonWindows 20 · ante 250000` (0,25 tUSDC) · venue `0x7c3F3E1c9AFB8Efac8B08E747b5E3AD85BD4A358`.
+
+### I. Addendum de la tarde — la ventana 70, que yo NO tenía que abrir
+
+**Lo primero, porque es un error mío y no debe quedar enterrado.** A las 15:59:52 leí `phase SETTLE ·
+window #69 · expires in 8s` y volví a llamar `cadence:once` a las 16:00:38 contando con que liquidara
+la 69 y parara. En esos 46 segundos la ventana expiró **y la liquidó algo que no era yo** — el
+`SelectionEngine` tiene el fallback ABIERTO y su suscripción sí llama `settleAll()`. Así que
+`cadence:once` encontró **fase 0**, y la acción única de la fase 0 es empujar precio y abrir ventana.
+
+Resultado: **la ventana 70 quedó abierta y 7 organismos pagaron cognición (~1,68 STT) sin que el
+usuario lo autorizara.** Yo mismo había escrito, unas horas antes, que no abriría la 70 por eso
+exactamente.
+
+**La lección no es "mira el reloj".** `cadence:once` no es una operación con nombre, es "haz lo que
+toque", y lo que toque depende de un estado que puede moverse entre la lectura y la escritura. Con un
+keeper vivo en la otra punta, **leer la fase y actuar sobre la fase no son el mismo instante**, y no
+hay `--once` que arregle eso: haría falta que la acción declarara la fase que espera y abortara si no
+la encuentra (un `--expect-phase 2`). No está escrito; queda anotado como la reparación que este
+fallo pide.
+
+**Por qué la terminé en vez de pararla.** La cognición es irreversible y ya estaba gastada; abandonar
+la ventana a medias no la recupera, y además reproduce exactamente el fallo §D — precio envejeciendo
+detrás de una población que ya pensó. Commit y settle no cuestan cognición, sólo gas del operador.
+Parar era la opción que garantizaba la pérdida.
+
+**Cómo fue.** Push a las 16:00:39, commit a las 16:01:51 — **72 s**, dentro del límite de 180 s, así
+que el fallo de §D no se repitió. `all beliefs in — 7 de 7 tras 0s`.
+
+    4 Down (#1 #6 #8 #9) · 3 Abstain (#3 #5 #7) · 0 Up
+    7 x Committed(stake=0, quantity=0) + 7 x Unpaired    commitAll gasUsed 497.323
+
+**Dos ventanas seguidas sin una sola creencia Up.** No es estructural — la 68 sí emparejó — pero son
+**14 organismo-ventanas con 0 Up**, y una población que converge no puede emparejar, luego no genera
+fitness, luego la selección se queda sin señal. Es la pregunta abierta más interesante del proyecto y
+**no se ha medido**: haría falta mirar los genomas y ver si los 7 supervivientes son todos del mismo
+tipo. No lo he hecho.
+
+Y el punto 3 de §G sigue igual de abierto que ayer: 497.323 es **otra vez** el camino barato. El
+camino emparejado no se ha medido nunca.
+
+### J. Lo que de verdad urge para la entrega: **el sitio publicado corre código viejo**
+
+Verificado en vivo hoy, no inferido:
+
+    GET https://darwin-protocol.vercel.app/enter/   →   HTTP 404 Not Found
+
+Un 404 es del servidor, antes de que corra un solo byte de JS, así que esto no es un fallo de
+renderizado: **la ruta no existe en producción**. `docs/ERROR_PUBLISHED_SITE.md` ya lo decía y la
+comprobación lo confirma. Los arreglos 1, 2b y 3 de ese documento están **en el repo y no
+publicados**, y `vercel.json` redirige `/enter` → `/enter/`, o sea que el redirect apunta a un 404.
+
+`git status` explica por qué: `app/enter/`, `app/src/enter.jsx`, `app/src/Console.jsx` y
+`app/src/sections/EnterInvite.jsx` están **sin trackear**, y Vercel despliega desde git. Lo que no
+está commiteado no existe para el build.
+
+**Esto lo tiene que hacer el usuario: commit y push son suyos, no míos.** El árbol está limpio de
+gate (todo verde) pero tiene 22 ficheros modificados y 12 sin trackear. Al despertar, y ANTES de
+enseñarle el dominio a nadie:
+
+    cd darwin
+    npm run gate                 # confirmar verde antes de publicar
+    git add -A
+    git commit -m "..."
+    git push
+    # y luego verificar contra el dominio real:
+    #   /enter/  debe dar 200, no 404
+    #   /arena/  no debe parpadear el primer
+    #   el feed debe pintar emitter y reason, no rojo sin motivo
+
+### K. Estado al cerrar el turno
+
+`phase 2 · windowCount 70 · seasonId 4 · seasonStartWindow 68 · elapsed 2 · seasonWindows 20 ·
+level 0 · ante 0,25 tUSDC · prizePool 0,14 · rakeAccrued 16,6695 · aliveCount 7`.
+
+`endSeason()` **no** es llamable: primera vez en la ventana 88. Devolver `seasonWindows` a 24 la
+mueve a la 92 y no dispara nada — sigue pendiente y sigue necesitando **fase 0**.
+
+Nadie está corriendo un bucle. La 70 la liquidará el keeper o el operador; abrir la 71 requiere un
+push de precio, que es off-chain, así que **la población no avanza sola**.
+
+### L. Por qué no empareja nadie: **los faders incondicionales están muertos, los condicionales sólo faden movimientos grandes**
+
+Medido con `verify-beliefs.ts` (lee `snapshot()`) y con `genomes/genesis.json`, no inferido. El
+propio fichero de génesis pone la restricción de diseño por escrito: *"these genomes must DISAGREE
+with each other on the same input. Positions are opened by pairing an organism that says [Up contra
+uno que dice Down]"*. Dos ventanas seguidas sin un solo Up dicen que esa restricción ya no se cumple.
+
+Orden de génesis: 1 MOMENTUM · 2 REVERSION · 3 BREAKOUT · 4 PINNED · 5 SKEPTIC · 6 GAMBLER ·
+7 PATIENT · 8 SCALPER. **Vivos: 1, 3, 5, 6, 7, 8 y el hijo 9. Muertos: 2 y 4.**
+
+Con el precio POR DEBAJO del open, que es el caso de las ventanas 69 y 70:
+
+| # | genoma | regla con precio bajo el open | ¿puede decir Up? |
+|---|---|---|---|
+| 1 | MOMENTUM | sigue el movimiento → DOWN | no, nunca |
+| 3 | BREAKOUT | DOWN si el desplazamiento es grande, si no ABSTAIN | no, nunca |
+| 5 | SKEPTIC | ABSTAIN salvo evidencia abrumadora; entonces sigue → DOWN | no, nunca |
+| 7 | PATIENT | ABSTAIN pronto; cerca del cierre sigue → DOWN | no, nunca |
+| 9 | hijo de MOMENTUM | DOWN_MOMENTUM | no, nunca |
+| **6** | **GAMBLER** | sigue si parece dirigido, **fade si parece agotado** | **sí, condicional** |
+| **8** | **SCALPER** | sigue si el desplazamiento es diminuto, **fade si ya viajó lejos** | **sí, condicional** |
+| ~~2~~ | ~~REVERSION~~ | *fade SIEMPRE → UP_REVERSION* | **muerto** |
+| ~~4~~ | ~~PINNED~~ | *apunta al open SIEMPRE → UP_RANGE* | **muerto** |
+
+**Corrección a la versión perezosa de este hallazgo.** Escribí primero que "la población ha
+convergido y el lado que fade está extinto". Es falso, y comprobar los cuatro genomas que aún no
+había leído es lo que lo separó: GAMBLER y SCALPER **conservan** rama de fade. Lo que está extinto es
+el fade **incondicional**.
+
+**Y ahí está el mecanismo exacto.** Los dos faders que quedan sólo faden **movimientos grandes** —
+GAMBLER cuando el empuje "parece agotado", SCALPER cuando el precio "ya viajó lejos". Las dos
+ventanas fueron diminutas: la 69 a **-0,34%** y la 70 a **-0,019%** (open 78.588,58 → 78.573,68). En
+ese régimen SCALPER *sigue* el movimiento por diseño y GAMBLER también, así que los dos votaron Down
+— y coinciden con los cuatro seguidores puros. Registrado: #6 `DOWN_MOMENTUM`, #8 `DOWN_BREAKOUT`.
+
+**PINNED era precisamente el que fadeaba lo pequeño** ("most confident when the current move is
+small"). Era el contrapartida natural del régimen tranquilo, y es el que se ha muerto. La conclusión
+correcta no es "no puede emparejar nunca más", es más fina y peor para la demo:
+
+> **La población sólo puede emparejar en ventanas de desplazamiento GRANDE. En una ventana tranquila
+> —que es la mayoría de las ventanas de 15 minutos— toda la población viva está en el mismo lado por
+> construcción, no por casualidad.**
+
+Sin emparejar no hay posición, sin posición no hay fitness, y sin fitness la selección se queda sin
+señal. Es exactamente la alerta que `monitor.ts:741` ya anticipaba ("*the genomes have converged and
+there is no counterparty left to pair against*"); ahora está medida y con nombres.
+
+**Ojo con los `abstains: 67-69` del snapshot.** No son conducta actual: son cicatriz histórica del
+error de `perAgentReward` (§ 2026-09-08, 104 inferencias Failed a 0,001 STT). El hijo #9 lleva 1.
+
+**Remedio, que NO he ejecutado porque es un broadcast y es del usuario.** `enter(string genome,
+uint256 endowmentAmount)` es la puerta pública del arena: un organismo nuevo con genoma fader
+incondicional —REVERSION o PINNED -restaura la contrapartida y vuelve a haber libro. Además es mejor
+historia para el jurado que un arreglo de owner: el arena *necesita* un contrario, y entrar uno es
+justo lo que la página `/enter/` ofrece hacer. Decide el usuario; el texto de los dos genomas está en
+`genomes/genesis.json`, íntegro y listo para copiar.

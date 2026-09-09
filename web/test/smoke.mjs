@@ -1853,6 +1853,168 @@ assert(
   `bars=${JSON.stringify(fillClasses("grid"))}`,
 );
 
+/*//////////////////////////////////////////////////////////////
+      THE DECODED REACTION, AND THE IMPORT EDGE THAT MUST NOT EXIST
+//////////////////////////////////////////////////////////////*/
+
+/*
+ *  On 2026-09-08 `ReactionFailed` stopped rendering as the word "reaction failed" and started
+ *  naming the error its `reason` carries. The feature was right and the wiring was not: the
+ *  decoder needed viem, so `render.js` grew `import { decodeErrorResult } from "./viem.js"` —
+ *  and `main.js` imports `render.js` statically. One edge, two consequences, neither visible in a
+ *  browser with a network attached:
+ *
+ *    · `?demo=1` made 370 off-origin requests to esm.sh. This directory's central claim is that
+ *      it runs with no install and no build, and the demo mode is documented three times as
+ *      working with the network unplugged. `web/vendor/gsap.min.js` is a committed file for
+ *      exactly this reason; viem is not vendored, so the claim died silently.
+ *
+ *    · THIS SUITE STOPPED RUNNING AT ALL. Node's ESM loader refuses an `https:` specifier
+ *      (`ERR_UNSUPPORTED_ESM_URL_SCHEME`), so `npm test --prefix web` died before its first
+ *      assertion. All 231 checks were absent, and absent checks are green in exactly the way
+ *      that matters least.
+ *
+ *  The second one is why this block walks the import graph instead of asserting on two file names.
+ *  A test that cannot be loaded reports nothing, so the invariant worth holding is structural:
+ *  NOTHING reachable from `main.js` by a static import may name an off-origin module. viem is
+ *  still reached — lazily, from `chain.js`, at the moment the page actually talks to a chain.
+ */
+const SRC_ROOT = new URL("../", import.meta.url);
+
+/** Static import/export specifiers, with block comments stripped so prose about them doesn't count. */
+function staticSpecifiers(text) {
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, "");
+  const out = [];
+  // Anchored at line start, which is what keeps `await import("./viem.js")` — the lazy edge this
+  // whole design depends on — from being read as a static one.
+  for (const re of [
+    /(?:^|\n)[ \t]*import\s+[^;]*?from\s*["']([^"']+)["']/g,
+    /(?:^|\n)[ \t]*import\s*["']([^"']+)["']/g,
+    /(?:^|\n)[ \t]*export\s+(?:\*|\{[^}]*\})\s*from\s*["']([^"']+)["']/g,
+  ]) {
+    for (const m of code.matchAll(re)) out.push(m[1]);
+  }
+  return out;
+}
+
+/** Walk the static graph from `entry`, collecting every off-origin specifier and who named it. */
+function offOrigin(entry) {
+  const seen = new Set();
+  const external = [];
+  const queue = [new URL(entry, SRC_ROOT)];
+  while (queue.length) {
+    const url = queue.shift();
+    if (seen.has(url.href)) continue;
+    seen.add(url.href);
+    let text;
+    try {
+      text = readFileSync(url, "utf8");
+    } catch {
+      continue;
+    }
+    const from = url.href.slice(SRC_ROOT.href.length);
+    for (const spec of staticSpecifiers(text)) {
+      if (/^[a-z][a-z0-9+.-]*:/i.test(spec)) external.push(`${from} -> ${spec}`);
+      else if (spec.startsWith(".") || spec.startsWith("/")) queue.push(new URL(spec, url));
+    }
+  }
+  return { external, visited: seen.size };
+}
+
+const fromMain = offOrigin("js/main.js");
+assert(
+  "nothing in main.js's static import graph reaches off-origin",
+  fromMain.external.length === 0,
+  `${fromMain.external.join(" · ")} — the page now needs the network to LOAD, so ?demo=1 is not offline and ` +
+    `this suite cannot be loaded by Node at all. Decode at ingest behind chain.js's lazy import instead.`,
+);
+// CONTROL. The same walker, pointed at the one file that is SUPPOSED to name viem statically, must
+// find it — otherwise the check above passes because the walker sees nothing, which is precisely
+// how a detector goes quiet. `abi.js` is reachable only through `await import("./abi.js")`.
+const fromAbi = offOrigin("js/abi.js");
+assert(
+  "CONTROL: the same walker does find the deliberate off-origin edge in abi.js",
+  fromAbi.external.some((e) => e.includes("esm.sh")),
+  `external=${JSON.stringify(fromAbi.external)} visited=${fromAbi.visited} — the walker is not resolving imports, ` +
+    `so the assertion above is measuring nothing`,
+);
+// And the producer end of the seam. If `chain.js` stops annotating, the live page shows
+// "undecodable reason" on every row forever while this fixture-only suite stays green — the
+// renderer cannot tell "nobody decoded this" from "this could not be decoded".
+assert(
+  "chain.js decodes ReactionFailed at ingest, and readFeed calls it",
+  /async function annotateReactions\(/.test(chainSrc) && /await annotateReactions\(found\)/.test(chainSrc),
+  "readFeed no longer annotates the reaction rows, so render.js receives no `decoded` and every row falls " +
+    "through to the undecodable branch",
+);
+
+/*
+ *  The three rows the renderer can now produce. A decline and a refusal are OPPOSITE readings of
+ *  one event — the cross-talk guard working versus the engine having called in and been refused —
+ *  and the whole point of 2b was that a single red row said neither.
+ */
+const declineRow = { eventName: "ReactionFailed", args: {
+  emitter: cfg.owner,
+  blockNumber: 483_224_186n,
+  reason: "0x8e0ebc6c",
+  decoded: { name: "NoCommittedWindow", declined: true, args: [{ type: "uint8", value: "0" }] },
+} };
+const refusedRow = { eventName: "ReactionFailed", args: {
+  emitter: cfg.owner,
+  blockNumber: 483_224_186n,
+  reason: "0x05fb5e1b",
+  decoded: { name: "WrongPhase", declined: false, args: [{ type: "uint8", value: "2" }, { type: "uint8", value: "0" }] },
+} };
+const rawRow = { eventName: "ReactionFailed", args: { emitter: cfg.owner, blockNumber: 1n, reason: "0x1234abcd", decoded: null } };
+
+const declined = ui.feed([declineRow], cfg, ctx);
+const refused = ui.feed([refusedRow], cfg, ctx);
+const raw = ui.feed([rawRow], cfg, ctx);
+
+assert(
+  "a declined reaction names the error and stays quiet",
+  declined.textContent.includes("selection declined") && declined.textContent.includes("NoCommittedWindow(0)"),
+  JSON.stringify(declined.textContent),
+);
+assert(
+  "a refused reaction says Population refused it, with the arguments",
+  refused.textContent.includes("selection was refused") && refused.textContent.includes("WrongPhase(2, 0)"),
+  JSON.stringify(refused.textContent),
+);
+// The severity split, asserted as a DIFFERENCE. A decline gets no severity class at all; a refusal
+// is amber. Reading either alone would pass on a page that painted every row the same.
+assert(
+  "the decline is not amber and the refusal is",
+  !declined.classes.includes("warn") && refused.classes.includes("warn"),
+  `declined=${JSON.stringify(declined.classes)} refused=${JSON.stringify(refused.classes)}`,
+);
+// CONTROL for the pair above: with no `decoded` the row must fall back to the four real bytes it
+// does have, and must NOT invent one of the two verdicts.
+assert(
+  "CONTROL: an undecoded reason renders its selector and neither verdict",
+  raw.textContent.includes("undecodable reason") &&
+    raw.textContent.includes("0x1234abcd") &&
+    !raw.textContent.includes("declined") &&
+    !raw.textContent.includes("refused"),
+  JSON.stringify(raw.textContent),
+);
+// Types ride down from `chain.js` instead of formatted strings, so the renderer is what shortens an
+// address — `format.js` is the renderer's dependency and not the chain reader's.
+const addrRow = ui.feed(
+  [{ eventName: "ReactionFailed", args: { emitter: cfg.owner, blockNumber: 1n, reason: "0x1507f5ce", decoded: {
+    name: "MarketUnreadable",
+    declined: true,
+    args: [{ type: "bytes32", value: `0x${"ab".repeat(32)}` }, { type: "address", value: cfg.population }],
+  } } }],
+  cfg,
+  ctx,
+).textContent;
+assert(
+  "a decoded address argument is shortened by the renderer, not printed in full",
+  addrRow.includes("MarketUnreadable(") && !addrRow.includes(cfg.population) && addrRow.includes(fmt.addr(cfg.population)),
+  JSON.stringify(addrRow),
+);
+
 console.log("\n" + checks.join("\n"));
 console.log(`\n${fails === 0 ? "ALL GREEN" : fails + " FAILURE(S)"}`);
 process.exit(fails === 0 ? 0 : 1);

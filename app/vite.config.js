@@ -146,8 +146,46 @@ function deployments() {
   };
 }
 
+/**
+ *  `/enter` → `/enter/`, in dev and in preview.
+ *
+ *  The console is a second Rollup input (`enter/index.html`), so in production it is a real
+ *  document at `/enter/` and `vercel.json` carries the same redirect. Without this, the two
+ *  local servers disagree with the host on the one URL a judge is most likely to type: Vite's
+ *  SPA html-fallback answers `/enter` with the *landing's* `index.html`, which renders the
+ *  landing under the console's URL — a wrong page with a 200, which is worse than a 404
+ *  because nothing looks broken.
+ *
+ *  302 rather than the 301 `arena()` uses below: a permanent redirect for a path that is
+ *  being added today is exactly the thing a browser caches and then keeps applying after
+ *  someone changes their mind about it. Vercel's own entry is `permanent: false` for the
+ *  same reason.
+ */
+function enterConsole() {
+  const bounce = (req, res, next) => {
+    const url = req.url ?? "/";
+    const pathname = url.split("?")[0];
+    if (pathname !== "/enter") return next();
+    res.statusCode = 302;
+    // Query strings are load-bearing on this page: `?population=0x…` is a documented
+    // override and both browser suites navigate with it.
+    res.setHeader("Location", `/enter/${url.slice(pathname.length)}`);
+    return res.end();
+  };
+
+  return {
+    name: "darwin-enter",
+    configureServer(server) {
+      server.middlewares.use(bounce);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(bounce);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), arena(), deployments()],
+  plugins: [react(), arena(), deployments(), enterConsole()],
 
   server: {
     port: 3000,
@@ -167,5 +205,24 @@ export default defineConfig({
     // them as base64 would grow them ~33% and block first paint.
     assetsInlineLimit: 0,
     sourcemap: true,
+
+    /*
+      TWO documents, not one. Until 2026-09-08 this build had a single implicit input
+      (`index.html`) because the site was one page; the entry form has since moved out of
+      the landing into `enter/index.html`, and an input Rollup is not told about is simply
+      not emitted — `npm run build` would succeed, `dist/enter/` would not exist, and every
+      `/enter/` link on the landing, in the nav and in the footer would 404 in production
+      while working perfectly under `npm run dev` (where Vite resolves HTML off disk).
+      That failure mode is invisible locally, which is why it is spelled out here.
+
+      Naming the inputs also fixes the chunk names: with a bare array Rollup derives entry
+      names from the file paths and both documents are called `index`.
+    */
+    rollupOptions: {
+      input: {
+        landing: path.resolve(HERE, "index.html"),
+        enter: path.resolve(HERE, "enter/index.html"),
+      },
+    },
   },
 });

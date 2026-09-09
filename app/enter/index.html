@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DARWIN — enter an organism</title>
+    <meta
+      name="description"
+      content="The entry console for DARWIN on Somnia Shannon: mint testnet collateral, approve the exact endowment, and call Population.enter with your own genome. Three signatures, quoted against the live contract."
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#060d0c" />
+
+    <!--
+      The same mark as `../index.html` and `../../web/index.html`. The landing, the console
+      and the arena are one product, and a judge who clicks between them must not see the
+      tab change identity.
+    -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23060d0c'/%3E%3Ccircle cx='15' cy='17' r='9.5' fill='none' stroke='%235fe3c0' stroke-width='1.7'/%3E%3Ccircle cx='15' cy='17' r='2.6' fill='%235fe3c0'/%3E%3Ccircle cx='25.5' cy='6.5' r='2.2' fill='%237a7686'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <div style="padding: 2rem; font: 400 15px/1.6 Georgia, serif; color: #deeae6">
+        <h1 style="font-weight: 400">DARWIN — entry console</h1>
+        <p>
+          This page needs JavaScript: it quotes <code>Population</code>&rsquo;s live minimums
+          and simulates <code>enter</code> before asking for a signature, and a form that
+          could do neither would only be able to take a signature and hand back a revert.
+        </p>
+        <p>
+          The explanation of what an organism is needs no JavaScript at all —
+          <a style="color: #5fe3c0" href="/">the landing</a> — and the read-only arena console
+          is at <a style="color: #5fe3c0" href="/arena/">/arena/</a>.
+        </p>
+      </div>
+    </noscript>
+    <script type="module" src="/src/enter.jsx"></script>
+  </body>
+</html>

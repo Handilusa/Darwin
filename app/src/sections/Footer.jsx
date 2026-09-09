@@ -30,6 +30,7 @@ const READ = [
   { href: "#cognition", label: "Thinking costs value" },
   { href: "#death", label: "Death is a state" },
   { href: "#lineage", label: "Generation, not PnL" },
+  { href: "/enter/", label: "Enter an organism" },
   { href: "/arena/", label: "The live arena" },
   { href: "/arena/?demo=1", label: "The offline demo" },
 ];
@@ -42,7 +43,15 @@ const VERIFY = [
   { cmd: 'grep -rn "dead = false" contracts/src', what: "no revival path exists" },
 ];
 
-export function Footer() {
+/**
+ *  @param base  Prefix for the reading list's in-page anchors. Empty on the landing, where
+ *               `#genome` is a section in this document; `"/"` on `/enter/`, where it is a
+ *               section in another one and a bare `#genome` would scroll nowhere at all.
+ *               Only the `#`-anchors are rewritten — `/arena/` and `/enter/` are already
+ *               absolute and must not be turned into `//arena/`, which is a protocol-relative
+ *               URL and would leave the site.
+ */
+export function Footer({ base = "" }) {
   const ref = useReveal();
   const pop = usePopulation();
 
@@ -58,7 +67,7 @@ export function Footer() {
     <footer className="foot" ref={ref}>
       <div className="wrap foot-in">
         <div className="foot-col" data-rise>
-          <a className="brand" href="#top" style={{ marginBottom: "var(--s-4)" }}>
+          <a className="brand" href={`${base}#top`} style={{ marginBottom: "var(--s-4)" }}>
             <svg className="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
               <circle cx="15" cy="17" r="9.5" fill="none" stroke="var(--life)" strokeWidth="1.7" />
               <circle cx="15" cy="17" r="2.6" fill="var(--life)" />
@@ -93,7 +102,7 @@ export function Footer() {
           <ul>
             {READ.map((l) => (
               <li key={l.href}>
-                <a href={l.href}>{l.label}</a>
+                <a href={l.href.startsWith("#") ? `${base}${l.href}` : l.href}>{l.label}</a>
               </li>
             ))}
             <li>

@@ -7,28 +7,41 @@
  *  reveal hooks exist to prevent. Same trap `CLAUDE.md` records for `web/`.
  *
  *  The launcher, the DevToolsActivePort dance and the console-event buckets live in `cdp.mjs`,
- *  shared with `arena.mjs` and `shots.mjs`. Everything below is what is true of the LANDING
- *  specifically; see that file for why the debug port is 0 and not 9222.
+ *  shared with `arena.mjs`, `console.mjs` and `shots.mjs`. Everything below is what is true of
+ *  the LANDING specifically; see that file for why the debug port is 0 and not 9222.
+ *
+ *  ── WHAT THIS SUITE IS FOR, AS OF 2026-09-08 ────────────────────────────────
+ *  It used to assert that the entry form rendered here. It now asserts the opposite. The three
+ *  transactions moved to `/enter/` (`src/Console.jsx`) because the landing is *information and
+ *  instructions* and a page that explains what an organism is should not also be asking for a
+ *  signature halfway down. So the strongest checks below are absences: no wallet prompt, no
+ *  `.enter-grid`, and — since every `<button>`, `<input>` and `<textarea>` in `app/src` lives in
+ *  `Enter.jsx`, which this page no longer mounts — **no native form control anywhere in the
+ *  document**. That last one is exact rather than approximate, and it catches a returning
+ *  `ConnectButton` without depending on RainbowKit's `data-testid`.
+ *
+ *  The form's own behaviour (the branches, the templates, the absent/unreachable classifier) is
+ *  `test/console.mjs`. It moved rather than being deleted: the checks that used to prove a
+ *  non-Population address withholds the form are still run, against the page that now has one.
  *
  *  Checks, in order:
  *    1. no console errors, no unhandled rejections, no failed requests
- *    2. the seven sections, the RainbowKit button and the genome templates are in the DOM
+ *    2. the seven sections are in the DOM, and NO write affordance is
  *    3. the hero field paints (canvas has non-transparent pixels)
  *    4. the three vendored families loaded (no silent fallback to a system serif)
  *    5. nothing is left stranded at opacity 0 while on screen, at six scroll stops
  *    6. scrolling to #death kills one organism, and scrolling away does not revive it
- *    7. the entry surface renders either the form or the undeployed notice
- *    8. an address with no contract behind it withholds the form — and the SAME detector
- *       reports the form's absence differently on the no-query pass, so it can fail
- *    9. the hero's live dot does not pulse while nothing is being read
- *   10. a malformed ?population= is said out loud rather than silently dropped
+ *    7. beat 6 is a static invitation: three named calls, no controls, a link to the console
+ *    8. the hero's live dot does not pulse while nothing is being read
+ *    9. a malformed ?population= is said out loud rather than silently dropped
+ *   10. THE CONTROL: `/enter/` DOES render the wallet and DOES carry controls
  *
- *  Checks 8-10 each navigate again with a chosen query string. That is deliberate and it is
- *  the convention this repo arrived at the hard way (`FRONTEND_CHECKPOINT.md:1445-1448`):
- *  an assertion that "X cannot happen" is paired with a control that makes X happen and
- *  requires the same detector to fire. Check 7 alone is exactly the shape that cannot fail —
- *  it accepts "the form OR the undeployed notice", which is both branches that existed
- *  before the absent branch was written, so it stays green on the bug it is above.
+ *  Checks 8-10 each navigate again. That is deliberate and it is the convention this repo
+ *  arrived at the hard way (`FRONTEND_CHECKPOINT.md:1445-1448`): an assertion that "X cannot
+ *  happen" is paired with one that makes X happen on purpose and requires the same detector to
+ *  fire. Checks 2 and 7 are pure absences, which is the shape that passes on a page that failed
+ *  to render at all — so check 10 loads the one page where the wallet and the controls are
+ *  *supposed* to exist and requires the same two detectors to report them.
  *
  *  Usage: node test/landing.mjs [url]        (default http://localhost:3000/)
  */
@@ -38,7 +51,7 @@ import { launch, classify, sleep } from "./cdp.mjs";
 const URL_UNDER_TEST = process.argv[2] ?? "http://localhost:3000/";
 const fail = [];
 
-const session = await launch({ watchdogMs: 210_000, windowSize: "1440,900" });
+const session = await launch({ watchdogMs: 240_000, windowSize: "1440,900" });
 if (!session) process.exit(0);
 const { send, evaluate, events, note, forget, close } = session;
 
@@ -61,7 +74,7 @@ if (failedReqs.length) note(`  (network failures, expected before Season 0: ${fa
 if (warnings.length) fail.push(`console.warn from page:\n    ${warnings.join("\n    ")}`);
 note(`browser errors ${logErrors.length} · console.error ${apiErrors.length} · warn ${warnings.length} · exceptions ${exceptions.length}`);
 
-/* ── 2. structure ────────────────────────────────────────────────────────── */
+/* ── 2. structure — and the absence of everything transactional ──────────── */
 const struct = await evaluate(`(() => {
   const ids = ["top","genome","window","cognition","death","lineage","enter"];
   return {
@@ -70,17 +83,41 @@ const struct = await evaluate(`(() => {
     rises: document.querySelectorAll("[data-rise]").length,
     canvases: document.querySelectorAll("canvas").length,
     connect: !!document.querySelector('[data-testid="rk-connect-button"]'),
+    /* Every one of these in app/src is inside Enter.jsx, which this page does not mount. */
+    controls: document.querySelectorAll("button, input, textarea, select").length,
+    grids: document.querySelectorAll(".enter-grid").length,
     templates: document.querySelectorAll(".tmpl").length,
+    navCta: !!document.querySelector('.nav-cta[href="/enter/"]'),
+    inviteCta: !!document.querySelector('#enter a[href="/enter/"]'),
+    consoleLinks: document.querySelectorAll('a[href="/enter/"]').length,
     title: document.title,
   };
 })()`);
 if (struct.missing.length) fail.push(`missing sections: ${struct.missing.join(", ")}`);
-if (!struct.connect) fail.push("RainbowKit ConnectButton did not render");
-// The template buttons live inside the form, and the form only exists once an arena is
-// deployed — so `.tmpl` is asserted in check 7, against whichever branch actually rendered.
+
+if (struct.connect) {
+  fail.push(
+    "the landing rendered a RainbowKit ConnectButton. A wallet prompt is the first step of the signing flow, " +
+      "not information — it belongs on /enter/. The nav's right-hand slot is a link to that page now (Nav.jsx).",
+  );
+}
+if (struct.controls > 0) {
+  fail.push(
+    `${struct.controls} native form control(s) on the landing. Every <button>, <input> and <textarea> in app/src ` +
+      `lives in Enter.jsx, so a non-zero count here means either the form came back or a wallet button did.`,
+  );
+}
+if (struct.grids > 0) fail.push(".enter-grid rendered on the landing — the entry form is mounted here again");
+if (struct.templates > 0) {
+  fail.push(`${struct.templates} genome template button(s) on the landing — those belong to the form on /enter/`);
+}
+if (!struct.navCta) fail.push('the nav has no .nav-cta[href="/enter/"] — the console is unreachable from the top of the page');
+if (!struct.inviteCta) fail.push('beat 6 does not link to /enter/ — the page explains the three calls and then dead-ends');
+
 note(`title     ${JSON.stringify(struct.title)}`);
 note(
-  `sections ${struct.found}/7 · [data-rise] ${struct.rises} · canvas ${struct.canvases} · connect ${struct.connect} · .tmpl ${struct.templates}`,
+  `sections ${struct.found}/7 · [data-rise] ${struct.rises} · canvas ${struct.canvases} · ` +
+    `connect ${struct.connect} · controls ${struct.controls} · links to /enter/ ${struct.consoleLinks}`,
 );
 
 /* ── 3. the hero field actually paints ───────────────────────────────────── */
@@ -181,40 +218,54 @@ if (cells.alive.maxAlpha < 100) {
   );
 }
 
-/* ── 7. the enter surface with no deployment ─────────────────────────────── */
+/* ── 7. beat 6 is an invitation, not a transaction ───────────────────────── */
+//
+// The three calls still have to be NAMED here — that is the instructional half of the user's
+// ask, and a page that dropped them would pass a check that only looked for the absence of a
+// form. So this asserts both halves: the words are present, and nothing here can be clicked
+// into a wallet.
 await evaluate(`document.querySelector("#enter").scrollIntoView({behavior:"instant",block:"start"})`);
 await sleep(1200);
-const enter = await evaluate(`(() => {
+const invite = await evaluate(`(() => {
   const s = document.querySelector("#enter");
+  const steps = [...s.querySelectorAll(".step")];
   return {
+    steps: steps.length,
+    calls: steps.map(x => { const b = x.querySelector("b"); return b ? b.textContent.trim() : ""; }),
+    controls: s.querySelectorAll("button, input, textarea, select").length,
     hasGrid: !!s.querySelector(".enter-grid"),
+    link: !!s.querySelector('a[href="/enter/"]'),
     undeployed: s.textContent.includes("No arena is deployed yet"),
     chars: s.textContent.trim().length,
   };
 })()`);
-note(`enter: grid=${enter.hasGrid} undeployedCopy=${enter.undeployed} (${enter.chars} chars of copy)`);
-if (!enter.undeployed && !enter.hasGrid) fail.push("enter section rendered neither the form nor the undeployed notice");
-// Exactly one of the two branches, and if it is the form it must carry all four templates.
-if (enter.hasGrid && struct.templates < 4) {
-  fail.push(`the entry form rendered but only ${struct.templates} of 4 genome templates`);
+note(`enter beat: ${invite.steps} steps ${JSON.stringify(invite.calls)} · controls ${invite.controls} · ${invite.chars} chars`);
+
+if (invite.steps !== 3) fail.push(`beat 6 lists ${invite.steps} steps, not the three calls entry actually takes`);
+for (const want of ["faucet", "approve", "enter("]) {
+  if (!invite.calls.some((c) => c.includes(want))) {
+    fail.push(`beat 6 never names \`${want}\` — the instructions are incomplete: ${JSON.stringify(invite.calls)}`);
+  }
 }
-if (!enter.hasGrid) note("  (form withheld: POPULATION is empty until the Season 0 deploy — this is the judge's view today)");
+if (invite.controls > 0) fail.push(`beat 6 carries ${invite.controls} control(s) — it is meant to be readable, not clickable`);
+if (invite.hasGrid) fail.push("beat 6 rendered .enter-grid — the form is back on the landing");
+if (!invite.link) fail.push("beat 6 names the three calls and offers no way to reach the console that makes them");
+if (invite.undeployed) note("  (also printing the undeployed notice: POPULATION resolved to nothing — this is the pre-Season-0 view)");
 
 /*//////////////////////////////////////////////////////////////
-      8, 9, 10 — POINT IT AT SOMETHING THAT IS NOT A POPULATION
+      8, 9 — POINT IT AT SOMETHING THAT IS NOT A POPULATION
 //////////////////////////////////////////////////////////////*/
 
 /**
  *  ONE probe, run against three navigations.
  *
- *  This is the whole reason the checks below can fail. Check 7 asks "did the page render one
- *  of the two branches it has always had", which is answered yes by the bug it sits above.
- *  What distinguishes a working absent branch from a broken one is a DIFFERENCE between two
- *  pages, so the same function reads both and the assertions compare them.
- *
  *  `?population=` is the right lever rather than seeding localStorage: it is a documented
  *  entry point (`web/config.js:14-15`), `settings()` gives it precedence over everything, and
  *  it leaves no state behind for the next navigation to inherit.
+ *
+ *  `hasGrid` and `connect` are carried through every reading on purpose. Checks 2 and 7 only
+ *  look at the first navigation, and "no form on the landing" has to hold for the query strings
+ *  a judge might actually paste, not just for the bare URL.
  */
 const PROBE = `(() => {
   const s = document.querySelector("#enter");
@@ -223,13 +274,9 @@ const PROBE = `(() => {
   const txt = s ? s.textContent : "";
   return {
     hasGrid: !!(s && s.querySelector(".enter-grid")),
+    connect: !!document.querySelector('[data-testid="rk-connect-button"]'),
     undeployed: txt.includes("No arena is deployed yet"),
-    absent: txt.includes("There is no Population at this address"),
-    unreachable: txt.includes("The chain did not answer"),
     ignored: txt.includes("That address in the URL was ignored"),
-    skeletons: s ? s.querySelectorAll(".skel").length : -1,
-    /* The footer sentence that must not be printed over reads that never happened. */
-    claimsLiveReads: txt.includes("every twenty seconds, and requoted"),
     heroPulses: !!(dot && dot.classList.contains("dot-live")),
     heroText: hero ? hero.textContent.replace(/\\s+/g, " ").trim() : null,
     heroSeason: /Season \\d+ · \\d+ windows/.test(hero ? hero.textContent : ""),
@@ -246,11 +293,11 @@ const PROBE = `(() => {
 const NOT_A_POPULATION = "0x000000000000000000000000000000000000dEaD";
 const base = URL_UNDER_TEST.replace(/\?.*$/, "").replace(/\/$/, "");
 
-/** The no-query reading, taken with the same probe. This is the control. */
+/** The no-query reading, taken with the same probe. This is the baseline. */
 const asShipped = await evaluate(PROBE);
 note(
-  `control (no query): grid=${asShipped.hasGrid} undeployed=${asShipped.undeployed} absent=${asShipped.absent} ` +
-    `pulse=${asShipped.heroPulses} skel=${asShipped.skeletons}`,
+  `control (no query): grid=${asShipped.hasGrid} connect=${asShipped.connect} undeployed=${asShipped.undeployed} ` +
+    `pulse=${asShipped.heroPulses} season=${asShipped.heroSeason}`,
 );
 
 forget();
@@ -260,65 +307,25 @@ await send("Page.navigate", { url: `${base}/?population=${NOT_A_POPULATION}` });
 await sleep(6000);
 const eoa = await evaluate(PROBE);
 note(
-  `EOA pointed:        grid=${eoa.hasGrid} absent=${eoa.absent} unreachable=${eoa.unreachable} ` +
-    `pulse=${eoa.heroPulses} season=${eoa.heroSeason} skel=${eoa.skeletons}`,
+  `EOA pointed:        grid=${eoa.hasGrid} connect=${eoa.connect} ` +
+    `pulse=${eoa.heroPulses} season=${eoa.heroSeason}`,
 );
 note(`  hero says: ${JSON.stringify(eoa.heroText)}`);
 
-/* ── 8. the form is withheld, and the reason is named ─────────────────────── */
-//
-// `unreachable` is an ACCEPTABLE outcome here and deliberately not a failure: if the RPC is
-// down or rate-limiting, viem never learns there is no code at the address, and the correct
-// page in that case is the one that does not accuse the address. What is asserted is the
-// disjunction — one of the two withholding branches rendered — plus the two things that must
-// be true of either.
-if (!eoa.absent && !eoa.unreachable) {
+if (eoa.hasGrid || eoa.connect) {
   fail.push(
-    `pointed at ${NOT_A_POPULATION} — an address with no code — the page rendered neither the "no Population" ` +
-      `notice nor the "chain did not answer" notice. This is the bug lib/reads.js exists to fix: nine reads ` +
-      `return 0x, allowFailure turns them into nine undefineds, and the form cannot tell that from "still loading".`,
-  );
-}
-if (eoa.hasGrid) {
-  fail.push(
-    `the entry form rendered against ${NOT_A_POPULATION}. Every gate in it is computed from reads that came ` +
-      `back empty, so the button sits disabled with no reason given and a signature would be taken against nothing.`,
-  );
-}
-if (eoa.claimsLiveReads) {
-  fail.push(
-    "the quote panel's footer still claims to read the contract every twenty seconds while every read failed — " +
-      "that sentence may only be printed while state is actually arriving",
-  );
-}
-if (eoa.skeletons > 0) {
-  fail.push(
-    `${eoa.skeletons} loading skeletons are still animating against an address with no contract behind it — ` +
-      `a read that came back empty is not a read still in flight (see Val's \`failed\` branch)`,
-  );
-}
-// THE CONTROL. The detector above must report something DIFFERENT on the shipped page, or it
-// is not reading the page at all. Today that page is `undeployed`; after Season 0 it is the
-// form. Either is fine — what is forbidden is the two navigations looking identical.
-if (asShipped.absent) {
-  fail.push(
-    "the no-query page ALSO renders the absent notice, so check 8 cannot distinguish a working " +
-      "absent branch from a page that always shows it — the probe is measuring nothing",
-  );
-}
-if (!asShipped.hasGrid && !asShipped.undeployed) {
-  fail.push(
-    "the no-query control rendered neither the form nor the undeployed notice, so there is no baseline " +
-      "to compare the EOA navigation against",
+    `?population=${NOT_A_POPULATION} produced a write affordance on the landing ` +
+      `(grid=${eoa.hasGrid} connect=${eoa.connect}). The absence asserted in checks 2 and 7 must not be ` +
+      `something a query string can undo.`,
   );
 }
 
-/* ── 9. the hero does not claim liveness over reads that failed ───────────── */
+/* ── 8. the hero does not claim liveness over reads that failed ───────────── */
 if (eoa.heroPulses) {
   fail.push(
     "the hero's .dot-live is still pulsing while every read against the resolved address failed. That dot is the " +
-      "only mark on the page that asserts a reading is current without a number beside it, and the entry form " +
-      "below it is simultaneously refusing to render — the top of the page must not be more confident than the bottom.",
+      "only mark on the page that asserts a reading is current without a number beside it, and beat 6 below it is " +
+      "simultaneously refusing to name an arena — the top of the page must not be more confident than the bottom.",
   );
 }
 if (eoa.heroSeason) {
@@ -328,13 +335,21 @@ if (eoa.heroSeason) {
       `setSeason call moves them and it goes on looking correct while being wrong.`,
   );
 }
+// The detector for check 8 is `dot.classList.contains("dot-live")`, and the only page that can
+// prove it fires is one where the reads succeed — which needs a deployed Population AND a
+// reachable RPC. Neither is this suite's to guarantee, so a quiet baseline is reported rather
+// than failed. Read the line: if it says `pulse=false` on both navigations, check 8 passed
+// without being exercised, and it is the RPC that owes you an explanation, not the page.
+if (!asShipped.heroPulses) {
+  note("  NOTE check 8 unexercised: the baseline page did not pulse either, so `dot-live` was never seen to fire");
+}
 
-/* ── 10. a malformed override is said out loud ────────────────────────────── */
+/* ── 9. a malformed override is said out loud ────────────────────────────── */
 forget();
 await send("Page.navigate", { url: `${base}/?population=0xnope` });
 await sleep(2600);
 const bad = await evaluate(PROBE);
-note(`bad query:          ignored=${bad.ignored} grid=${bad.hasGrid} pulse=${bad.heroPulses}`);
+note(`bad query:          ignored=${bad.ignored} grid=${bad.hasGrid} connect=${bad.connect}`);
 if (!bad.ignored) {
   fail.push(
     "?population=0xnope was dropped in silence. `settings()` records it as `badQuery` (web/config.js:141) and then " +
@@ -342,20 +357,63 @@ if (!bad.ignored) {
       "anything was ignored — the arena forces its setup card open for exactly this case (render.js:1837-1844).",
   );
 }
-// The control for check 10: the same probe must NOT report `ignored` on a well-formed URL,
+// The control for check 9: the same probe must NOT report `ignored` on a well-formed URL,
 // or the notice is unconditional and the check above passes on a page that always shows it.
 if (asShipped.ignored || eoa.ignored) {
   fail.push(
     "the 'address in the URL was ignored' notice renders on a URL with no bad query in it — it is unconditional, " +
-      "and check 10 is therefore measuring nothing",
+      "and check 9 is therefore measuring nothing",
   );
+}
+
+/* ── 10. THE CONTROL FOR CHECKS 2 AND 7 ──────────────────────────────────── */
+//
+// Everything asserted above about the landing is an absence, and an absence is what a page
+// that failed to render at all also reports. So load the one page that is SUPPOSED to have a
+// wallet and controls, with the same two detectors, and require both to fire. If this check
+// fails, the passes above mean nothing: either RainbowKit's `data-testid` moved, or the
+// provider stack is broken everywhere, or `/enter/` is not being served — and that last one is
+// the failure a production build without `rollupOptions.input` produces while `npm run dev`
+// looks perfect (see `vite.config.js`).
+forget();
+await send("Page.navigate", { url: `${base}/enter/` });
+await sleep(5000);
+const consolePage = await evaluate(`(() => ({
+  connect: !!document.querySelector('[data-testid="rk-connect-button"]'),
+  controls: document.querySelectorAll("button, input, textarea, select").length,
+  hasEnter: !!document.getElementById("enter"),
+  crumb: !!document.querySelector(".console-crumb"),
+  landingOnly: !!document.getElementById("genome") && !!document.querySelector(".field canvas"),
+  title: document.title,
+}))()`);
+note(
+  `/enter/ control:    connect=${consolePage.connect} controls=${consolePage.controls} ` +
+    `#enter=${consolePage.hasEnter} crumb=${consolePage.crumb} · title ${JSON.stringify(consolePage.title)}`,
+);
+if (!consolePage.connect) {
+  fail.push(
+    "/enter/ did not render a ConnectButton either, so 'the landing has no wallet prompt' is not a finding — " +
+      "the detector never fires anywhere. Check RainbowKit's data-testid and that /enter/ is actually served.",
+  );
+}
+if (consolePage.controls === 0) {
+  fail.push(
+    "/enter/ carries no form controls at all, so 'the landing has no form controls' is measuring nothing. " +
+      "The console must at minimum render the wallet button in its nav.",
+  );
+}
+if (!consolePage.crumb) {
+  fail.push("/enter/ has no .console-crumb — this is the landing being served under the console's URL (Vite's html fallback)");
+}
+if (consolePage.landingOnly) {
+  fail.push("/enter/ rendered the landing's hero field and #genome beat — the second Rollup input is not being served");
 }
 
 /* One page's console errors must not be attributed to another. This bucket covers the last
    navigation only, which is why `forget()` precedes each one. */
 const late = classify(events);
-if (late.exceptions.length) fail.push(`exceptions after re-navigation:\n    ${late.exceptions.join("\n    ")}`);
-if (late.apiErrors.length) fail.push(`console.error after re-navigation:\n    ${late.apiErrors.join("\n    ")}`);
+if (late.exceptions.length) fail.push(`exceptions on /enter/:\n    ${late.exceptions.join("\n    ")}`);
+if (late.apiErrors.length) fail.push(`console.error on /enter/:\n    ${late.apiErrors.join("\n    ")}`);
 
 /* ── report ──────────────────────────────────────────────────────────────── */
 close();
@@ -366,5 +424,5 @@ if (fail.length) {
   for (const f of fail) console.log("  * " + f);
   process.exit(1);
 }
-console.log("PASS — landing renders, reveals complete, death fires and stays fired, and a non-Population address withholds the form");
+console.log("PASS — the landing reads, reveals and kills as designed, names the three calls, and takes no signatures");
 process.exit(0);

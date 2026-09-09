@@ -9,6 +9,7 @@
   "scripts": {
     "cadence": "tsx scripts/cadence.ts",
     "cadence:once": "tsx scripts/cadence.ts --once",
+    "cadence:window": "tsx scripts/cadence.ts --windows 1",
     "cadence:selftest": "tsx scripts/cadence.ts --self-test",
     "fund": "tsx scripts/fund.ts",
     "monitor": "tsx scripts/monitor.ts",

@@ -55,6 +55,23 @@
  *                  `CognitionUnspent` (`Population.sol:1503-1526`), `phase = 1` regardless.
  *                  An underestimate here means an organism that PAID its 0.24 STT deposit
  *                  and got no request — the deposit is drawn before the call.
+ *
+ *                  BUT `think` DOES NOT ONLY DEGRADE QUIETLY, and this was measured the
+ *                  hard way on tx 0x064d8bfe... (block 483919081, window 68, 7 organisms).
+ *                  `p.noteThinking(requestId, marketId)` at `Population.sol:1515` sits in
+ *                  the `try`'s SUCCESS body, and a Solidity `try/catch` does not protect
+ *                  its own `returns` block — only the callee. So when the forwarded 63/64
+ *                  is enough for `createAdvancedRequest` to succeed but what remains is not
+ *                  enough for `noteThinking`, that inner out-of-gas is NOT caught at
+ *                  `:1516`. It bubbles, and the whole window fails to open.
+ *
+ *                  The receipt's tell is that `gasUsed` came in UNDER the limit — 4,026,317
+ *                  of 4,100,000. A top-level out-of-gas consumes the limit exactly; a
+ *                  revert bubbling up from a starved subcall leaves the caller's 1/64
+ *                  retention unspent. `gasUsed < gasLimit` on an out-of-gas failure is
+ *                  therefore evidence of depth, not evidence against gas — which is the
+ *                  opposite of how it reads, and is why this one was nearly misdiagnosed as
+ *                  a logic revert.
  *    - `commitAll` `try` in `_pair` via `this.executePair` and in `_openEmpty` ->
  *                  `CommitFailed` (`:1669`, `:1738`), phase advanced regardless. An
  *                  underestimate means a paired organism that thought and was never played.
@@ -115,7 +132,27 @@ const FLOOR: Record<DriverCall, bigint> = {
  *  largest — but only organisms with a pending genome pay it.
  */
 const PER_ORGANISM: Record<DriverCall, bigint> = {
-  think: 500_000n,
+  /**
+   *  MEASURED, not estimated: 516,928 per organism.
+   *
+   *  `scripts/gas-bisect.ts think --block 483919080` bisects the failing window-68 call
+   *  against the state it actually ran on and puts the minimum for a non-reverting
+   *  `think()` at 7 living organisms at 4,218,497. Net of the 600,000 floor that is
+   *  (4,218,497 - 600,000) / 7 = 516,928 each.
+   *
+   *  The old figure was 500,000, which made the limit 4,100,000 — 97% of what the call
+   *  needed. It was not measured; it was inferred from `settle`'s shape, and it is the one
+   *  number in this file that was tight against its guess rather than generous against a
+   *  measurement. It cost window 68 (tx 0x064d8bfe...). Note how small the miss was: 2.8%.
+   *  A table that only just clears is a table that fails on the window after the next
+   *  organism hatches, and `maxPopulation` is 24.
+   *
+   *  800,000 is ~1.55x the measurement — deliberately above the ~1.4x `settle` carries,
+   *  because `settle`'s ratio was chosen when its own floor had already absorbed the
+   *  cold-slot uncertainty and `think`'s has not. At 7 that is 6.2M against a 30M ceiling;
+   *  at the full 24 it is 19.8M, still uncapped.
+   */
+  think: 800_000n,
   commit: 500_000n,
   settle: 900_000n,
   hatch: 1_200_000n,

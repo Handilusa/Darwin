@@ -889,15 +889,66 @@ await evaluate(`(() => {
 
 
 /*//////////////////////////////////////////////////////////////
-            12 — THE PAGE A JUDGE SEES TODAY: NO DEPLOYMENT
+        12 — THE FRONT DOOR: THE PRIMER AND THE OPERATOR'S FORM
 //////////////////////////////////////////////////////////////*/
 
+/*  THIS SECTION USED TO NAVIGATE TO A BARE `/arena/`, AND THAT STOPPED REACHING ITS SUBJECT.
+ *
+ *  It was written as "the page a judge sees today: no deployment", when `web/config.js` shipped
+ *  `POPULATION = ""` and every resolution source came up empty, so a bare `/arena/` was the primer
+ *  and the address form. `POPULATION` got Season 0's real proxy on 2026-09-08, and a bare `/arena/`
+ *  is now the live arena — correctly, and by the same change that fixed the primer/arena flicker a
+ *  visitor reported. Twelve assertions here then failed together on a page that was behaving exactly
+ *  as designed: no `.panel-primer`, no `.panel-setup`, 2308 characters against a 1400 ceiling, zero
+ *  beat claims, and 12b unable to inject its probe.
+ *
+ *  Twelve red lines that mean "the premise moved" are worse than no check at all: they are noise a
+ *  real regression hides inside, on the day the suite matters most. But the primer is NOT dead code
+ *  either — `main.js`'s `!app.cfg && !app.connecting` branch still paints it, and it is reached
+ *  whenever the configured address does not resolve. So the subject is created on purpose now
+ *  instead of assumed, and WHICH failure creates it is a deliberate choice:
+ *
+ *    · `?population=<no contract>` gives `absent`, whose documented remedy is "edit the address" —
+ *      so it FORCES THE FOLD OPEN, and every fold and geometry assertion below loses its subject.
+ *    · `?rpc=<dead port>` gives `unreachable`, where the address is unjudged and inviting an edit
+ *      would be advice to break a working setting — so the fold stays CLOSED, which is the state
+ *      this section was written against and the one 12c's comment describes.
+ *
+ *  The dead RPC is therefore not a shortcut to a green run, it is the one route that reaches the
+ *  page as designed; and choosing it makes CLAUDE.md's `absent` ≠ `unreachable` rule executable at
+ *  the DOM, where it had only ever been asserted against a classifier under a fake DOM. Port 9 is
+ *  discard: the connection is refused rather than hanging, so the error state paints in one round
+ *  trip. The failure is CAUGHT by `boot()`, so nothing here relaxes the exceptions check below.
+ *
+ *  And the primer is WAITED FOR rather than slept toward. Reaching it takes a refused connection
+ *  plus viem's own retries, which is not a number this file can predict — a fixed sleep would make
+ *  every assertion below a race against the RPC layer, which is exactly the defect the entrance
+ *  measurement in 12d exists to document.
+ */
 forget();
-const liveUrl = URL_UNDER_TEST.replace(/\?.*$/, "");
+const DEAD_RPC = "http://127.0.0.1:9/";
+const bareUrl = URL_UNDER_TEST.replace(/\?.*$/, "");
+const liveUrl = `${bareUrl}?rpc=${encodeURIComponent(DEAD_RPC)}`;
+const VISIBLE = 0.5;
 t0 = Date.now();
 await send("Page.navigate", { url: liveUrl });
-await sleep(2600);
+await sleep(1200);
 await evaluate(RGB_HELPER);
+
+const PRIMER_DEADLINE = 14_000;
+let primerAt = null;
+while (elapsed() < PRIMER_DEADLINE) {
+  if (await evaluate(`!!document.querySelector(".panel-primer")`)) {
+    primerAt = elapsed();
+    break;
+  }
+  await sleep(150);
+}
+// Reported, not asserted here: every check below names the specific thing it could not find, which
+// is more use than one line saying the page never got there. The note carries the latency so a
+// reader can see whether the front door arrived in one round trip or in five.
+note(`frontdoor primer at ${primerAt ?? "never"}ms via ${liveUrl}`);
+await sleep(400); // the panels mount together; let the paint that carries the form finish
 
 /* THE COPY BUDGET, ASSERTED FROM BOTH SIDES.
    This page is the whole product until Season 0 deploys, and it had grown to ~4530 characters of
@@ -1164,8 +1215,15 @@ if (setup.thesisText && setup.wordmark && setup.thesisText.replace(/[.!?]+$/, ""
 if (setup.thesisText && setup.primerLede && setup.thesisText.trim().toLowerCase() === setup.primerLede.trim().toLowerCase()) {
   fail.push(`the masthead thesis repeats the primer's lede verbatim (${JSON.stringify(setup.thesisText)}) — one of the two is spending space on nothing`);
 }
-if (setup.thesisOpacity != null && parseFloat(setup.thesisOpacity) < 0.5) {
-  fail.push(`the masthead thesis is stranded invisible (opacity ${setup.thesisOpacity})`);
+// No entrance tween runs on this page — `first()` fires on the paint that carries a live snapshot,
+// and this page never gets one — so the sentence is statically visible here and a plain read is a
+// real measurement rather than a sample taken inside a fade. The animated case, which is where the
+// single mistimed read used to live, is 12d.
+if (setup.thesisOpacity != null && parseFloat(setup.thesisOpacity) < VISIBLE) {
+  fail.push(
+    `the masthead thesis is stranded invisible on the front door (opacity ${setup.thesisOpacity}) — nothing ` +
+      `animates it on this page, so every rect read in this snapshot is off a hidden element`,
+  );
 }
 // ── and the sentence is not stranded in dead space. The control first, as always: a detector that
 // cannot report the defect is not evidence that the defect is absent.
@@ -1454,6 +1512,151 @@ for (const w of [1400, 700]) {
   );
 }
 await send("Emulation.clearDeviceMetricsOverride", {});
+
+/*//////////////////////////////////////////////////////////////
+    12d — THE LIVE FRONT DOOR: NO PRIMER FLASH, AND THE SENTENCE ARRIVES
+//////////////////////////////////////////////////////////////*/
+
+/*  TWO DEFECTS OFF ONE POLL, BOTH REPORTED FROM THE PUBLISHED SITE, BOTH ON A BARE `/arena/`.
+ *
+ *  ONE — THE FLICKER. A visitor with a perfectly good address was shown the primer and the address
+ *  form for the length of two round trips and then had them replaced by the arena; worse than the
+ *  flash, `primer()` asserts "Season 0 is not deployed yet", so the published site opened by denying
+ *  its own deploy. The fix was to split `configured but unread` from `unconfigured`
+ *  (`main.js:230`, the `app.connecting` branch), and NOTHING guarded it — the two states share a
+ *  branch again after any careless edit, and the symptom lasts two round trips, which is precisely
+ *  the width no single-sample check can see. So the primer is looked for on EVERY sample from
+ *  navigation until the dashboard has landed, and one sighting is a failure.
+ *
+ *  TWO — THE ENTRANCE. `.hero-thesis` fades in from `opacity: 0` over 0.7s (`motion.js:362`, inside
+ *  `first()`), and `first()` runs on the paint that carries the first live snapshot, not on
+ *  navigation. Polled every 130ms from a cold navigate that reads: sentence present and fully opaque
+ *  at 145ms (the pre-read header), the live snapshot mounting at 2237ms, opacity reset to 0 by the
+ *  tween's from-state, then 0.6562 / 0.889 / 0.9779 / 0.9991, and 1 from 2942ms onward for the
+ *  remaining eight seconds. §12 used to take ONE read at 2600ms and call `opacity 0.4674` stranded —
+ *  a confident number that was not a measurement of anything, the same defect class as the rect
+ *  taken off the folded details, and worse than either because where the read landed depended on how
+ *  fast Shannon answered. It is waited out here instead. The deadline is what preserves the ability
+ *  to fail: a clock that stalls with the from-state applied leaves the sentence at 0, `guarantee()`'s
+ *  own rescue fires 1900ms after the timeline starts (0.7s + 1200ms slack), and both are well inside
+ *  this budget — so a sentence still invisible at the deadline is genuinely stranded and says so.
+ *
+ *  THREE CONTROLS, because all three verdicts here are absences, and an absence is what a broken
+ *  detector reports too:
+ *    · the dashboard must actually arrive (cards > 0). Without it, "the primer never appeared" is
+ *      passed maximally by a page that rendered nothing at all — the loudest way to fail this check
+ *      would otherwise be to pass it.
+ *    · the same expression, re-run against §12's unreachable URL, must FIND a primer. That is the
+ *      selector under test, on a page that has one, through the same poller.
+ *    · an element pinned at `opacity: 0.2`, injected on every sample and read by the same predicate,
+ *      must come back invisible — or "the sentence became visible" is not evidence about anything.
+ *      It hangs off `#header` so it has a subject even in a run where the sentence is missing, and it
+ *      is re-injected each sample because `mount()` is `replaceChildren` and the paint under test
+ *      destroys it.
+ */
+const LIVE_DEADLINE = 12_000;
+/* HOW LONG THE SENTENCE IS WATCHED FOR AFTER THE DASHBOARD LANDS, AND WHY IT IS NOT SHORTER.
+   Breaking out on the first sample that reads visible would be its own flake in the opposite
+   direction: the pre-read header's sentence is ALREADY at opacity 1, `first()` applies the tween's
+   from-state inside a `requestAnimationFrame` callback, and a CDP read can land in the gap between
+   the mount and that callback — so "visible" on the mount sample says nothing about whether the
+   entrance then stranded it. The verdict is therefore the LAST read of a window that outlasts every
+   mechanism that could still raise it: 0.7s of tween, plus `guarantee()`'s 1200ms slack, plus
+   margin. A sentence still dark at 2400ms past the mount was raised by neither. */
+const WATCH_PAST_MOUNT = 2400;
+const SAMPLE = `(() => {
+  let probe = document.getElementById("probe-invisible");
+  if (!probe) {
+    const host = document.querySelector("#header") || document.body;
+    probe = document.createElement("p");
+    probe.id = "probe-invisible";
+    probe.textContent = "PROBE";
+    probe.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0.2";
+    host.appendChild(probe);
+  }
+  const t = document.querySelector(".hero-thesis");
+  const op = (el) => (el ? Number(getComputedStyle(el).opacity) : null);
+  return {
+    primer: !!document.querySelector(".panel-primer"),
+    cards: document.querySelectorAll(".card").length,
+    thesis: op(t),
+    control: op(probe),
+  };
+})()`;
+
+/**
+ *  Poll one page to its deadline. Stops once the dashboard has landed and been watched long enough
+ *  for the entrance to have run its course — or, for the control run, as soon as a primer is up.
+ */
+async function watchLive(url, { stopOnPrimer = false } = {}) {
+  forget();
+  t0 = Date.now();
+  await send("Page.navigate", { url });
+  const seen = { primerAt: null, cardsAt: null, thesisAt: null, samples: 0, controls: [], last: null };
+  while (elapsed() < LIVE_DEADLINE) {
+    const s = await evaluate(SAMPLE);
+    seen.samples++;
+    seen.last = s;
+    seen.controls.push(s.control);
+    if (s.primer && seen.primerAt == null) seen.primerAt = elapsed();
+    if (s.cards > 0 && seen.cardsAt == null) seen.cardsAt = elapsed();
+    if (s.thesis != null && s.thesis >= VISIBLE && seen.cardsAt != null && seen.thesisAt == null) {
+      seen.thesisAt = elapsed();
+    }
+    if (stopOnPrimer && seen.primerAt != null) break;
+    if (seen.cardsAt != null && elapsed() >= seen.cardsAt + WATCH_PAST_MOUNT) break;
+    await sleep(130);
+  }
+  await evaluate(`document.getElementById("probe-invisible")?.remove(); true`);
+  return seen;
+}
+
+const live = await watchLive(bareUrl);
+// §12's unreachable URL: this one MUST show a primer, or the absence asserted above is a broken
+// selector rather than a fixed flicker.
+const cFlicker = await watchLive(liveUrl, { stopOnPrimer: true });
+
+if (cFlicker.primerAt == null) {
+  fail.push(
+    `12d's primer detector never found a primer on the page that HAS one (${cFlicker.samples} samples of ` +
+      `${liveUrl}) — so "the live page never flashed the primer" is a statement about a broken selector, ` +
+      `not about the live page`,
+  );
+}
+if (live.cardsAt == null) {
+  fail.push(
+    `the live arena never rendered an organism in ${LIVE_DEADLINE}ms (last sample ${JSON.stringify(live.last)}) — ` +
+      `every absence asserted here is then free, and the page a judge lands on showed them nothing`,
+  );
+} else if (live.primerAt != null) {
+  fail.push(
+    `the live arena flashed the primer at ${live.primerAt}ms before the dashboard landed at ${live.cardsAt}ms — ` +
+      `a visitor with a working address is being told "Season 0 is not deployed yet" and handed an address form, ` +
+      `then having both replaced: main.js's connecting branch has collapsed back into the unconfigured one`,
+  );
+}
+if (!live.controls.some((v) => v != null)) {
+  fail.push(`12d's opacity poller never read its own control (${live.controls.length} samples, all null) — the sentence verdict under it is decoration`);
+} else if (live.controls.some((v) => v != null && v >= VISIBLE)) {
+  fail.push(
+    `12d's opacity poller calls an element pinned at 0.2 visible (${JSON.stringify(live.controls.slice(0, 4))}) — ` +
+      `its threshold cannot report an invisible sentence`,
+  );
+}
+if (live.cardsAt != null && !(live.last?.thesis != null && live.last.thesis >= VISIBLE)) {
+  fail.push(
+    `the masthead thesis is still invisible ${live.last == null ? "" : "at opacity " + live.last.thesis + " "}` +
+      `${WATCH_PAST_MOUNT}ms after the dashboard landed at ${live.cardsAt}ms (${live.samples} samples) — the entrance ` +
+      `tween stranded the one claim on the page and guarantee()'s deadline did not rescue it`,
+  );
+}
+note(
+  `live      dashboard at ${live.cardsAt ?? "never"}ms · thesis visible at ${live.thesisAt ?? "never"}ms · ` +
+    `primer seen ${live.primerAt == null ? "never (correct)" : "at " + live.primerAt + "ms"} · ${live.samples} samples`,
+);
+note(
+  `  control primer found at ${cFlicker.primerAt ?? "never"}ms on the unreachable URL · opacity probe ${JSON.stringify(live.controls[0])}`,
+);
 
 /*//////////////////////////////////////////////////////////////
                              REPORT

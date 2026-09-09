@@ -127,7 +127,9 @@ directory"* is the authority and carries the measurement table.
 Operations (viem + tsx, no Hardhat on this path):
 
 ```bash
-npm run cadence                # the state machine; keeps the population alive
+npm run cadence -- --windows 5 # N COMPLETE windows, then exit at phase 0 — the default way to run it
+npm run cadence:window         # the same, N = 1
+npm run cadence                # UNBOUNDED. Drives windows until killed; see the warning below
 npm run cadence:once           # one action then exit — for cron
 npm run monitor                # alerts on absence of progress, not on exceptions
 npm run fee                    # asserts settlementFeeBpsTimes1k == 0 on a real market
@@ -136,6 +138,48 @@ npm run subscribe -- --discover        # tallies settlement topic0s — but see 
 npm run subscribe -- --topic0 0xb1884334e955f8d8727678d4fa52dd9fc7140ff5e4ad38d358453bd400ada178 --create
 npm run subscribe -- --status          # is reactivity wired, is its gas payer funded?
 ```
+
+**Bound the run, and `--windows N` is one fix for two failures that do not look related.** Added
+2026-09-09. `npm run cadence` a secas has no bound: left unattended once it drove 29 windows and took
+all eight organisms to zero STT, and because they starved at the same rate the population read as
+uniformly dead rather than selected — which masked the very fix that run was testing. There is no
+cheap undo; cognition is spent and metabolism is charged per settled window. `--once` was the remedy,
+and it caused the second failure: it exits after ONE phase transition, so the push and the commit
+land in **separate invocations** with an operator's turnaround between them. `maxStaleness` is 180 s.
+On 2026-09-09 that gap reached 513 s and `commitAll` would have reverted `StalePrice` inside `_pair`,
+leaving seven organisms with beliefs formed, unplayed, and still paying metabolism.
+
+So `--windows N` is not a smaller `--once`. It is the shape `--once` should have had — the loop keeps
+its continuity, push and commit inside one process seconds apart, and gains the bound that was the
+only reason to reach for `--once` at all. A bounded run may **only end at phase 0**: counting alone
+would stop it wherever the Nth window was reached, which for `think()` is phase 1, the exact
+mid-window state that produced the staleness failure. `runIsComplete` is a pure predicate and
+`cadence:selftest` carries its table with both controls — `ignoresPhase` is written out and the table
+must catch it, because a cap that stops at the right count and the wrong phase exits cleanly, logs a
+completed run, and leaves the price going stale behind it with no symptom in its own output.
+
+An unbounded run now says so on startup, twice, rather than starting silently.
+
+Diagnostics, all read-only, none of them needing a key (`npx tsx scripts/<name>.ts`):
+
+```bash
+npx tsx scripts/why-reverted.ts 0x<txhash>   # dual replay at the block BEFORE: gas vs same-block state vs logic
+npx tsx scripts/tx-events.ts 0x<txhash>      # decode every log, falling back to contracts/out for events no script reads
+npx tsx scripts/gas-bisect.ts settle         # what a driver call actually needs — see the caveat below
+npx tsx scripts/season-report.ts             # phase, season, level, ante, and the eight live SeasonParams
+npx tsx scripts/repush.ts                    # refresh the staleness clock without moving openPrice (--broadcast to send)
+npx tsx scripts/set-season-windows.ts --to 24 --broadcast   # the owner knob; phase 0 only, and it enforces that
+```
+
+**`gas-bisect` is honest about what it cannot measure here, and the caveat is the point.** It wants
+to bisect on the LOG PROFILE — the smallest gas at which the call emits exactly what it emits when
+gas is not the constraint — because every driver call wraps its per-organism work in `try/catch` and
+advances the phase regardless. Starve `think()` and it does not revert; it emits `ThinkFailed` and
+returns success, which is why `eth_estimateGas` is structurally unusable on this contract. **But
+`eth_simulateV1` is not available on `dream-rpc`**, so on Shannon the tool falls back to bisecting
+`eth_call` on revert — the estimator's own predicate — and reports a **FLOOR, not sufficiency**. It
+says so loudly on every run. Read a passing `settle` number as "it will not revert", never as "all
+organisms settled".
 
 Pass `--topic0` explicitly; do not let `--discover` choose. `BinarySettlement` emits two events and
 `--discover` ranks them by frequency, which puts **redeem** (`0xe31682dd…`, 281 occurrences) above
@@ -541,22 +585,30 @@ When code is uncertain about an external surface, it is marked `UNVERIFIED` at t
   that there is **no `innerHTML`** anywhere in it — `Population.enter` is permissionless, so every
   genome the page displays is untrusted input from a public write path.
 - `npm test --prefix web` runs the real renderer against the fixture under a 60-line fake DOM
-  (`web/test/smoke.mjs`) — **66 renderer call sites and 211 `assert()` call sites, executing 231
-  checks, re-measured 2026-09-07** (the earlier "fifty / 167 / 313 / 189" was true when written and
-  the suite has grown; the render-call runtime figure is dropped rather than guessed, because it
-  needs instrumenting render.js and the static site count is what a reader can reproduce). No network
+  (`web/test/smoke.mjs`) — **60 renderer call sites and 219 `assert()` call sites, executing 239
+  checks, re-measured 2026-09-08**. Every one of those three is a command, not a reading:
+  `grep -oE "\bui\.[A-Za-z0-9_]+\(" web/test/smoke.mjs | wc -l`, `grep -c "assert(" web/test/smoke.mjs`,
+  and `npm test --prefix web | grep -c "^  PASS"`. The renderer figure **went down** while the suite
+  grew, and that is not a shrinking suite: the earlier 66 was counted by a method nobody wrote down,
+  so it is replaced rather than reconciled — 60 is `ui.*` call sites, `lineage.*` (8), `fmt.*` (3) and
+  `chain.*` (24) being separate modules and counted separately or not at all. Write the command next
+  to any count you put here, or the next person re-measures a different thing and reads the delta as a
+  regression. (The earlier "fifty / 167 / 313 / 189" was true when written; the render-call *runtime*
+  figure stays dropped rather than guessed, because it needs instrumenting render.js.) No network
   and no browser. Run it after touching anything under `web/js/`. It is the only executable check this repo
   has on the frontend, and it exists because everything else about `web/` had only ever been verified
   by reading. It also loads `chain.js` with no network, which is what proves viem and `abi.js` are
   reached only through lazy `import()` — make one of them a static import and that assertion fails.
   `web/package.json` is there solely to tell Node these `.js` files are ES modules; it declares no
-  dependencies, so "no install, no build" still holds. Forty-four of the assertions recompute the
+  dependencies, so "no install, no build" still holds. Forty-five of the assertions recompute the
   scripted demo season's arithmetic from `config` and `Population.sol` — they fail if someone tunes a
   number to make the demo look better, and all of them were confirmed capable of failing by
   perturbing the fixture rather than by inspection. (That count is the `assert()` call sites between
-  `season plays 4 frames` and `the header follows the script to window 42`; the earlier note said
-  thirty-four on a boundary that can no longer be reproduced, so the boundary is now written down.
-  New assertions go OUTSIDE that range or the documented sub-count breaks.)
+  `season plays 4 frames` and `the header follows the script to window 42` — lines 471–635 on
+  2026-09-08, `sed -n '471,635p' web/test/smoke.mjs | grep -c "assert("`; the earlier note said
+  thirty-four on a boundary that can no longer be reproduced, and forty-four before an assertion
+  landed inside the range, so the boundary is now written down. New assertions go OUTSIDE that range
+  or the documented sub-count breaks.)
 - **Twelve of those assertions are detector self-tests, and they are not padding.** Two checks in this
   suite once asserted a string no code path can emit (`"unknown event"`, which `generic()` never
   prints) and stayed green on exactly the state they were written to catch. So a check whose subject
