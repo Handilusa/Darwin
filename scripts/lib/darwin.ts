@@ -16,10 +16,13 @@ import {
   defineChain,
   http,
   parseAbi,
+  parseEther,
   type Address,
   type Hex,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+
+export { parseEther, parseAbi, type Address, type Hex };
 
 /*//////////////////////////////////////////////////////////////
                               CHAIN
