@@ -346,6 +346,8 @@ export const erc20Abi = parseAbi([
   "function balanceOf(address account) view returns (uint256)",
   "function transfer(address to, uint256 amount) returns (bool)",
   "function approve(address spender, uint256 amount) returns (bool)",
+  "event Transfer(address indexed from, address indexed to, uint256 value)",
+  "event Approval(address indexed owner, address indexed spender, uint256 value)",
 ]);
 
 export const faucetAbi = parseAbi(["function faucet(uint256 amount)"]);

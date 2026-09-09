@@ -9,6 +9,9 @@
   "scripts": {
     "cadence": "tsx scripts/cadence.ts",
     "cadence:once": "tsx scripts/cadence.ts --once",
+    "cadence:think": "tsx scripts/cadence.ts --once --expect-phase 0",
+    "cadence:commit": "tsx scripts/cadence.ts --once --expect-phase 1",
+    "cadence:settle": "tsx scripts/cadence.ts --once --expect-phase 2",
     "cadence:window": "tsx scripts/cadence.ts --windows 1",
     "cadence:selftest": "tsx scripts/cadence.ts --self-test",
     "fund": "tsx scripts/fund.ts",

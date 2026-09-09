@@ -194,6 +194,42 @@ export function runIsComplete(window: bigint, start: bigint, cap: number | undef
 }
 
 /*//////////////////////////////////////////////////////////////
+                        THE PHASE GUARD
+//////////////////////////////////////////////////////////////*/
+
+/**
+ *  Phase guard: if `--expect-phase N` (or CADENCE_EXPECT_PHASE) is set, require that the
+ *  population is currently in this phase before taking ANY action. If the phase does not
+ *  match, abort cleanly without mutating state or sending a transaction.
+ *
+ *  WHY THIS EXISTS: see incident §I / 2026-09-09. `cadence:once` is not a named operation,
+ *  it is "do whatever's next". If an operator calls `cadence:once` intending to settle a
+ *  window, but an external keeper (like SelectionEngine's fallback) settles it in the
+ *  seconds before the call lands, `cadence:once` finds phase 0 and immediately opens a new
+ *  window, spending cognition on inferencing without authorization.
+ *  `--expect-phase 2` guarantees that if the window was already settled, cadence aborts.
+ */
+export function parseExpectedPhase(
+  argv: string[] = process.argv,
+  env: string | undefined = process.env.CADENCE_EXPECT_PHASE,
+): number | undefined {
+  const i = argv.indexOf("--expect-phase");
+  const raw = i === -1 ? env : argv[i + 1];
+  if (raw === undefined || raw === "") return undefined;
+  if (/^(0|think)$/i.test(raw)) return 0;
+  if (/^(1|commit)$/i.test(raw)) return 1;
+  if (/^(2|settle)$/i.test(raw)) return 2;
+  const n = Number(raw);
+  if (n === 0 || n === 1 || n === 2) return n;
+  throw new Error(`Invalid --expect-phase: '${raw}'. Expected 0 (THINK), 1 (COMMIT), or 2 (SETTLE).`);
+}
+
+export function matchesExpectedPhase(current: number, expected: number | undefined): boolean {
+  if (expected === undefined) return true;
+  return current === expected;
+}
+
+/*//////////////////////////////////////////////////////////////
                                MAIN
 //////////////////////////////////////////////////////////////*/
 
@@ -207,10 +243,14 @@ async function main(): Promise<void> {
   const { account, client } = wallet();
   const once = process.argv.includes("--once");
   const cap = windowCap();
+  const expectedPhase = parseExpectedPhase();
 
   await preflight(m, account.address);
 
   log(`cadence up as ${account.address}; population ${m.population}; symbol ${m.symbol}`);
+  if (expectedPhase !== undefined) {
+    log(`PHASE GUARD: requiring phase ${expectedPhase} (${PHASE[expectedPhase]}) before acting.`);
+  }
 
   // READ BEFORE THE FIRST STEP, or the baseline includes the window this run opens and the
   // cap is off by one in the expensive direction. Only read when bounded: an unbounded run
@@ -225,7 +265,18 @@ async function main(): Promise<void> {
 
   for (;;) {
     try {
-      const advanced = await step(m, client);
+      if (expectedPhase !== undefined) {
+        const ph = await read(m, "phase");
+        if (!matchesExpectedPhase(Number(ph), expectedPhase)) {
+          log(
+            `ABORT: expected phase ${expectedPhase} (${PHASE[expectedPhase]}), ` +
+              `but population is in phase ${Number(ph)} (${PHASE[Number(ph)] ?? "unknown"}). ` +
+              `Another actor may have advanced the window. Exiting without action.`,
+          );
+          break;
+        }
+      }
+      const advanced = await step(m, client, expectedPhase);
       if (once) break;
       if (cap !== undefined) {
         const [w, ph] = await Promise.all([read(m, "windowCount"), read(m, "phase")]);
@@ -268,12 +319,22 @@ async function main(): Promise<void> {
  *  due while the process was down must still close on the next tick rather than waiting
  *  for the window in flight to finish and hoping this branch is reached.
  */
-async function step(m: Manifest, client: WalletLike): Promise<boolean> {
+async function step(m: Manifest, client: WalletLike, expectedPhase?: number): Promise<boolean> {
+  const phaseRaw = await read(m, "phase");
+  const phase = Number(phaseRaw);
+
+  if (!matchesExpectedPhase(phase, expectedPhase)) {
+    log(
+      `ABORT: expected phase ${expectedPhase} (${PHASE[expectedPhase!]}), ` +
+        `but population is in phase ${phase} (${PHASE[phase] ?? "unknown"}). ` +
+        `Another actor may have advanced the window. Exiting without action.`,
+    );
+    return false;
+  }
+
   await maybeEndSeason(m, client);
 
-  const phase = await read(m, "phase");
-
-  switch (Number(phase)) {
+  switch (phase) {
     case 0:
       return await doThink(m, client);
     case 1:
@@ -1909,6 +1970,7 @@ function selfTestDriverGas(): void {
   log(`driver gas: ${total} checks pass, 2 of them controls (no limit may fall to the estimate that skipped MOMENTUM)`);
 
   selfTestWindowCap();
+  selfTestExpectPhase();
 }
 
 /**
@@ -1990,6 +2052,79 @@ function selfTestWindowCap(): void {
     return;
   }
   log(`window cap: ${total} checks pass, 2 of them controls (a bounded run can only ever end at phase 0)`);
+}
+
+/**
+ *  The phase-guard table. Guards against the window-70 failure mode where a keeper races cadence:once.
+ */
+function selfTestExpectPhase(): void {
+  type ParseCase = { argv: string[]; env?: string; want: number | undefined; shouldThrow?: boolean; why: string };
+  const parseCases: ParseCase[] = [
+    { argv: [], want: undefined, why: "no flag or env: undefined" },
+    { argv: ["--expect-phase", "0"], want: 0, why: "numeric 0" },
+    { argv: ["--expect-phase", "1"], want: 1, why: "numeric 1" },
+    { argv: ["--expect-phase", "2"], want: 2, why: "numeric 2" },
+    { argv: ["--expect-phase", "think"], want: 0, why: "named think" },
+    { argv: ["--expect-phase", "commit"], want: 1, why: "named commit" },
+    { argv: ["--expect-phase", "settle"], want: 2, why: "named settle" },
+    { argv: ["--expect-phase", "SETTLE"], want: 2, why: "case-insensitive SETTLE" },
+    { argv: [], env: "2", want: 2, why: "from environment variable" },
+    { argv: ["--expect-phase", "99"], shouldThrow: true, want: undefined, why: "out-of-range phase throws" },
+    { argv: ["--expect-phase", "foo"], shouldThrow: true, want: undefined, why: "garbage phase throws" },
+  ];
+
+  let bad = 0;
+  for (const c of parseCases) {
+    try {
+      const got = parseExpectedPhase(c.argv, c.env);
+      if (c.shouldThrow) {
+        bad++;
+        console.error(`FAIL  ${c.why}: expected throw, got ${got}`);
+      } else if (got !== c.want) {
+        bad++;
+        console.error(`FAIL  ${c.why}: got ${got}, want ${c.want}`);
+      }
+    } catch {
+      if (!c.shouldThrow) {
+        bad++;
+        console.error(`FAIL  ${c.why}: unexpected throw`);
+      }
+    }
+  }
+
+  type MatchCase = { current: number; expected: number | undefined; want: boolean; why: string };
+  const matchCases: MatchCase[] = [
+    { current: 0, expected: undefined, want: true, why: "unguarded allows phase 0" },
+    { current: 2, expected: undefined, want: true, why: "unguarded allows phase 2" },
+    { current: 0, expected: 0, want: true, why: "matching phase 0 passes" },
+    { current: 2, expected: 2, want: true, why: "matching phase 2 passes" },
+    { current: 0, expected: 2, want: false, why: "THE INCIDENT CASE: expected SETTLE, got THINK (window already settled by keeper)" },
+    { current: 1, expected: 0, want: false, why: "expected THINK, got COMMIT" },
+    { current: 2, expected: 1, want: false, why: "expected COMMIT, got SETTLE" },
+  ];
+
+  for (const c of matchCases) {
+    const got = matchesExpectedPhase(c.current, c.expected);
+    if (got !== c.want) {
+      bad++;
+      console.error(`FAIL  matchesExpectedPhase(${c.current}, ${c.expected}) → ${got}, want ${c.want} (${c.why})`);
+    }
+  }
+
+  // CONTROL 1: an implementation that always allows (missing guard)
+  const alwaysPasses = () => true;
+  if (matchCases.every((c) => alwaysPasses() === c.want)) {
+    bad++;
+    console.error("FAIL  table does not catch a guard that always returns true");
+  }
+
+  const total = parseCases.length + matchCases.length + 1;
+  if (bad > 0) {
+    console.error(`${bad} of ${total} expect-phase checks failed`);
+    process.exitCode = 1;
+    return;
+  }
+  log(`expect phase: ${total} checks pass, 1 of them control (aborts when phase was moved by a keeper)`);
 }
 
 // ONE ENTRY POINT, and the `--self-test` branch is inside `main()` rather than here, so
