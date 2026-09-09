@@ -15,6 +15,7 @@
     "cadence:window": "tsx scripts/cadence.ts --windows 1",
     "cadence:selftest": "tsx scripts/cadence.ts --self-test",
     "fund": "tsx scripts/fund.ts",
+    "enter": "tsx scripts/enter.ts",
     "monitor": "tsx scripts/monitor.ts",
     "monitor:selftest": "tsx scripts/monitor.ts --self-test",
     "subscribe": "tsx scripts/subscribe.ts",
