@@ -16,6 +16,23 @@ import { collateralAbi, populationAbi, populationReadAbi, prophetAbi } from "../
 import { THESIS } from "../../../web/js/labels.js";
 
 const EXPLORER_URL = "https://shannon-explorer.somnia.network";
+const FAUCET_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours per wallet
+const FAUCET_AMOUNT_STR = "10";
+
+function formatCooldown(ms) {
+  if (ms <= 0) return "0m";
+  const totalSecs = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSecs / 3600);
+  const minutes = Math.floor((totalSecs % 3600) / 60);
+  const seconds = totalSecs % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
+}
 
 export function WalletDashboard({ onGoToLaunch }) {
   const { address, isConnected } = useAccount();
@@ -142,7 +159,58 @@ export function WalletDashboard({ onGoToLaunch }) {
 
   const livingCount = myOrganisms.filter((o) => !o.dead).length;
 
-  // 5. Direct Faucet transaction
+  // 5. Direct Faucet transaction & 24h cooldown per wallet
+  const [lastClaim, setLastClaim] = useState(() => {
+    if (typeof window === "undefined" || !address) return 0;
+    try {
+      const val = localStorage.getItem(`darwin.faucet.claim.${address.toLowerCase()}`);
+      return val ? parseInt(val, 10) || 0 : 0;
+    } catch {
+      return 0;
+    }
+  });
+
+  const [now, setNow] = useState(() => Date.now());
+
+  // Reload last claim whenever connected wallet address changes
+  useEffect(() => {
+    if (!address) {
+      setLastClaim(0);
+      return;
+    }
+    try {
+      const val = localStorage.getItem(`darwin.faucet.claim.${address.toLowerCase()}`);
+      setLastClaim(val ? parseInt(val, 10) || 0 : 0);
+    } catch {
+      setLastClaim(0);
+    }
+  }, [address]);
+
+  // Sync across open browser tabs
+  useEffect(() => {
+    function onStorage(e) {
+      if (address && e.key === `darwin.faucet.claim.${address.toLowerCase()}`) {
+        const val = e.newValue ? parseInt(e.newValue, 10) || 0 : 0;
+        setLastClaim(val);
+      }
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [address]);
+
+  const timePassed = now - lastClaim;
+  const isCooldown = Boolean(address && lastClaim > 0 && timePassed >= 0 && timePassed < FAUCET_COOLDOWN_MS);
+  const remainingMs = isCooldown ? FAUCET_COOLDOWN_MS - timePassed : 0;
+
+  // Live timer tick while cooldown is active
+  useEffect(() => {
+    if (!isCooldown) return;
+    const interval = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isCooldown]);
+
   const faucetTx = useWriteContract();
   const faucetRcpt = useWaitForTransactionReceipt({ hash: faucetTx.data });
 
@@ -150,18 +218,32 @@ export function WalletDashboard({ onGoToLaunch }) {
   const approveRcpt = useWaitForTransactionReceipt({ hash: approveTx.data });
 
   useEffect(() => {
-    if (faucetRcpt.isSuccess || approveRcpt.isSuccess) {
+    if (approveRcpt.isSuccess) {
       tokenReads.refetch();
     }
-  }, [faucetRcpt.isSuccess, approveRcpt.isSuccess, tokenReads]);
+  }, [approveRcpt.isSuccess, tokenReads]);
+
+  useEffect(() => {
+    if (faucetRcpt.isSuccess) {
+      if (address) {
+        const ts = Date.now();
+        try {
+          localStorage.setItem(`darwin.faucet.claim.${address.toLowerCase()}`, String(ts));
+        } catch {}
+        setLastClaim(ts);
+        setNow(ts);
+      }
+      tokenReads.refetch();
+    }
+  }, [faucetRcpt.isSuccess, address, tokenReads]);
 
   function handleQuickMint() {
-    if (!collateralAddress) return;
+    if (!collateralAddress || isCooldown) return;
     faucetTx.writeContract({
       address: collateralAddress,
       abi: collateralAbi,
       functionName: "faucet",
-      args: [parseUnits("100", decimals)],
+      args: [parseUnits(FAUCET_AMOUNT_STR, decimals)],
     });
   }
 
@@ -278,10 +360,28 @@ export function WalletDashboard({ onGoToLaunch }) {
                     className="btn btn-tiny btn-primary"
                     type="button"
                     onClick={handleQuickMint}
-                    disabled={faucetTx.isPending || faucetRcpt.isLoading}
+                    disabled={faucetTx.isPending || faucetRcpt.isLoading || isCooldown}
+                    title={
+                      isCooldown
+                        ? `Cooldown active: limit 10 ${symbol} every 24h per wallet. Next claim available in ${formatCooldown(remainingMs)}.`
+                        : `Claim 10 ${symbol} from faucet (limit: 10 per 24 hours per wallet).`
+                    }
                   >
-                    {faucetTx.isPending ? "Confirm…" : faucetRcpt.isLoading ? "Minting…" : "+100 Faucet"}
+                    {faucetTx.isPending
+                      ? "Confirm…"
+                      : faucetRcpt.isLoading
+                      ? "Minting…"
+                      : isCooldown
+                      ? `Cooldown (${formatCooldown(remainingMs)})`
+                      : `+${FAUCET_AMOUNT_STR} Faucet`}
                   </button>
+                  <span
+                    className={`pill ${isCooldown ? "pill-warn" : ""}`}
+                    style={{ fontSize: "10px", alignSelf: "center" }}
+                    title="10 tUSDC every 24 hours per wallet"
+                  >
+                    {isCooldown ? "Limit 10/24h" : "10 / 24h"}
+                  </span>
                 </div>
               </div>
 
