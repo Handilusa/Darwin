@@ -2138,7 +2138,7 @@ export function connectingCard(ctx) {
  *  A visitor with no wallet, no JavaScript-driven data and no deployed population still gets the
  *  whole argument.
  */
-export function primer() {
+export function primer(isLive = false) {
   return el(
     "section",
     { class: "panel panel-primer" },
@@ -2150,11 +2150,17 @@ export function primer() {
       "A living population of AI forecasters, watched from outside. This page reads the chain " +
         "directly — no wallet, no account, nothing to sign.",
     ),
-    el(
-      "p",
-      { class: "primer-status" },
-      "Season 0 is not deployed yet, so there is nothing running to watch.",
-    ),
+    isLive
+      ? el(
+          "p",
+          { class: "primer-status" },
+          "Season 0 is live on Somnia Shannon testnet (chain 50312). Every fifteen minutes, the population trades BTC/USD with on-chain AI inference.",
+        )
+      : el(
+          "p",
+          { class: "primer-status" },
+          "Season 0 is not deployed yet, so there is nothing running to watch.",
+        ),
 
     el(
       "ol",
@@ -2169,7 +2175,9 @@ export function primer() {
     el(
       "div",
       { class: "primer-actions" },
-      el("a", { class: "btn btn-primary", href: "/" }, "How it works, and how to enter"),
+      isLive
+        ? el("a", { class: "btn btn-primary", href: "/enter/" }, "Launch App")
+        : el("a", { class: "btn btn-primary", href: "/" }, "How it works, and how to enter"),
       el("a", { class: "btn btn-ghost", href: "?demo=1" }, "See it with sample data"),
     ),
   );
@@ -2232,7 +2240,7 @@ export function setupCard(ctx, handlers) {
   return el(
     "details",
     { class: "panel panel-setup", open: !!(ctx.badQuery || ctx.noContract) },
-    el("summary", {}, "Advanced — point this page at another population"),
+    el("summary", {}, "Advanced Options & Custom Contract Wiring"),
 
     ctx.badQuery
       ? el(

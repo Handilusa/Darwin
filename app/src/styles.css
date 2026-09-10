@@ -149,7 +149,7 @@ a:hover {
 
 .wrap {
   width: 100%;
-  max-width: 1240px;
+  max-width: 1400px;
   margin-inline: auto;
   padding-inline: var(--gut);
 }
@@ -253,6 +253,12 @@ code {
   box-shadow: none;
 }
 
+.btn-tiny {
+  padding: 0.28rem 0.65rem;
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+}
+
 /* ── the pill: one fact, stated once ─────────────────────────────────────── */
 
 .pill {
@@ -352,6 +358,9 @@ code {
 }
 
 .nav-in {
+  max-width: 1400px;
+  margin-inline: auto;
+  padding-inline: var(--gut);
   display: flex;
   align-items: center;
   gap: var(--s-5);
@@ -370,6 +379,7 @@ code {
   color: var(--text);
   text-decoration: none;
   flex: none;
+  transition: color var(--d-fast) var(--e-out);
 }
 
 .brand:hover {
@@ -397,9 +407,14 @@ code {
   text-transform: uppercase;
   color: var(--text-3);
   text-decoration: none;
+  transition: color var(--d-fast) var(--e-out);
 }
 
 .nav-link:hover {
+  color: var(--life);
+}
+
+.nav-link.is-current {
   color: var(--life);
 }
 
@@ -1581,6 +1596,505 @@ code {
   gap: var(--s-3);
   flex-wrap: wrap;
   margin-top: var(--s-5);
+}
+
+/* ══ input primitive ══════════════════════════════════════════════════════════ */
+
+.input {
+  width: 100%;
+  padding: var(--s-3);
+  background: var(--ink);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  color: var(--text);
+  font-size: var(--t-sm);
+  transition:
+    border-color var(--d-fast) var(--e-out),
+    background-color var(--d-fast) var(--e-out);
+}
+
+.input::placeholder {
+  color: var(--text-4);
+}
+
+.input:hover {
+  border-color: var(--line-3);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--life-dim);
+  background: var(--ink-2);
+  box-shadow: 0 0 0 3px var(--life-deep);
+}
+
+/* ══ console tabs bar ════════════════════════════════════════════════════════ */
+
+.console-tabs-bar {
+  position: sticky;
+  top: 60px;
+  z-index: 35;
+  background: color-mix(in srgb, var(--ink) 90%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+
+.console-tabs-in {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  overflow-x: auto;
+}
+
+.console-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color var(--d-fast) var(--e-out), border-color var(--d-fast) var(--e-out);
+}
+
+.console-tab:hover {
+  color: var(--text);
+}
+
+.console-tab.is-active {
+  color: var(--life);
+  border-bottom-color: var(--life);
+}
+
+.tab-icon {
+  font-size: 1.1em;
+}
+
+/* ══ wallet dashboard ════════════════════════════════════════════════════════ */
+
+.wallet-dashboard {
+  padding-block: var(--s-7) var(--s-8);
+}
+
+.dashboard-head {
+  max-width: 62ch;
+  margin-bottom: var(--s-6);
+}
+
+.dashboard-connect-card {
+  background: var(--ink-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  padding: var(--s-6);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s-5);
+  margin-top: var(--s-5);
+}
+
+.dash-connect-info h3 {
+  font-family: var(--f-display);
+  font-size: var(--t-xl);
+  color: var(--text);
+  margin-bottom: var(--s-2);
+}
+
+.dash-connect-info .prose {
+  margin-inline: auto;
+}
+
+.wallet-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  flex-wrap: wrap;
+  padding: var(--s-3) var(--s-4);
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  margin-bottom: var(--s-6);
+}
+
+.wallet-info {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.wallet-address {
+  font-family: var(--f-mono);
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--s-4);
+  margin-bottom: var(--s-7);
+}
+
+.metric-card {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--s-3);
+  transition: border-color var(--d-fast) var(--e-out);
+}
+
+.metric-card:hover {
+  border-color: var(--line-2);
+}
+
+.metric-label {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.metric-val {
+  font-family: var(--f-mono);
+  font-size: var(--t-xl);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.metric-val.is-life {
+  color: var(--life);
+}
+
+.metric-val.is-heat {
+  color: var(--heat);
+}
+
+.metric-sub {
+  font-size: var(--t-xs);
+  color: var(--text-3);
+  line-height: var(--lh-snug);
+  min-height: 2.6em;
+}
+
+.metric-action {
+  margin-top: var(--s-2);
+  display: flex;
+  gap: var(--s-2);
+}
+
+/* ── my organisms section ── */
+.my-organisms-section {
+  margin-top: var(--s-7);
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  margin-bottom: var(--s-5);
+}
+
+.section-title {
+  font-family: var(--f-sans);
+  font-size: var(--t-lg);
+  font-weight: 500;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.15rem 0.5rem;
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  border-radius: var(--r-pill);
+  background: var(--ink-4);
+  color: var(--life);
+  border: 1px solid var(--line-2);
+}
+
+.section-actions {
+  display: flex;
+  gap: var(--s-3);
+}
+
+.empty-box {
+  padding: var(--s-7);
+  text-align: center;
+}
+
+.empty-box h4 {
+  font-family: var(--f-display);
+  font-size: var(--t-lg);
+  color: var(--text);
+}
+
+.organisms-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: var(--s-4);
+}
+
+.organism-card {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  transition: border-color var(--d-fast) var(--e-out);
+}
+
+.organism-card:hover {
+  border-color: var(--line-2);
+}
+
+.organism-card.is-dead {
+  border-color: var(--ash-deep);
+  background: color-mix(in srgb, var(--ash-deep) 35%, var(--ink-2));
+}
+
+.organism-card.is-dead .org-id,
+.organism-card.is-dead .org-thesis {
+  color: var(--ash);
+}
+
+.org-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+.org-id-group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s-2);
+}
+
+.org-id {
+  font-family: var(--f-mono);
+  font-size: var(--t-md);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.org-thesis {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--life);
+}
+
+.org-gen {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  color: var(--text-3);
+}
+
+.org-vitals-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--s-2);
+  padding-block: var(--s-3);
+  border-block: 1px solid var(--line);
+}
+
+.org-vital {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+
+.org-vital .vital-label {
+  font-size: 0.625rem;
+  color: var(--text-4);
+}
+
+.org-vital .vital-value {
+  font-size: var(--t-sm);
+  margin-top: 0;
+}
+
+.is-ash {
+  color: var(--ash);
+}
+
+.org-prompt-box {
+  background: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--r-1);
+  padding: var(--s-3);
+}
+
+.prompt-label {
+  display: block;
+  font-family: var(--f-mono);
+  font-size: 0.625rem;
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--text-4);
+  margin-bottom: var(--s-1);
+}
+
+.prompt-quote {
+  font-family: var(--f-display);
+  font-style: italic;
+  font-size: var(--t-xs);
+  color: var(--text-2);
+  line-height: var(--lh-snug);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.org-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: var(--s-2);
+}
+
+/* ══ advanced arena & mechanics ═════════════════════════════════════════════ */
+
+.advanced-arena {
+  padding-block: var(--s-8);
+  border-top: 1px solid var(--line);
+  background: var(--ink);
+}
+
+.advanced-head {
+  max-width: 62ch;
+  margin-bottom: var(--s-7);
+}
+
+.mechanics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--s-5);
+  margin-bottom: var(--s-8);
+}
+
+.mechanic-card {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  transition: border-color var(--d-fast) var(--e-out);
+}
+
+.mechanic-card:hover {
+  border-color: var(--line-2);
+}
+
+.mech-num {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  font-weight: 500;
+  letter-spacing: var(--ls-label);
+  color: var(--life);
+}
+
+.mech-title {
+  font-family: var(--f-display);
+  font-size: var(--t-lg);
+  color: var(--text);
+}
+
+.mech-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin-top: var(--s-2);
+  padding-left: 0;
+  list-style: none;
+}
+
+.mech-list li {
+  font-size: var(--t-xs);
+  line-height: 1.55;
+  color: var(--text-2);
+  position: relative;
+  padding-left: var(--s-3);
+}
+
+.mech-list li::before {
+  content: "·";
+  position: absolute;
+  left: 0;
+  color: var(--life);
+  font-weight: bold;
+}
+
+.mech-list b {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.advanced-config-panel {
+  background: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-2);
+  padding: var(--s-6);
+  max-width: 64rem;
+}
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  max-width: 42rem;
+}
+
+.config-input-wrap {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+}
+
+.config-input-wrap .input {
+  flex: 1;
+}
+
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  margin-top: var(--s-3);
 }
 
 /* ══ footer ══════════════════════════════════════════════════════════════════ */

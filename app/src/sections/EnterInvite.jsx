@@ -153,7 +153,7 @@ export function EnterInvite() {
 
           <div className="hero-cta" style={{ marginTop: "var(--s-5)" }}>
             <a className="btn btn-primary" href="/enter/">
-              Open the entry console
+              Launch App
             </a>
             <a className="btn" href="/arena/">
               Watch the arena

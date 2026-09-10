@@ -23,17 +23,59 @@
  *  front of someone who came to read would be the same mistake this split exists to undo.
  */
 
+import { useState, useEffect } from "react";
 import { Nav } from "./sections/Nav.jsx";
+import { WalletDashboard } from "./sections/WalletDashboard.jsx";
 import { Enter } from "./sections/Enter.jsx";
+import { AdvancedArena } from "./sections/AdvancedArena.jsx";
 import { Footer } from "./sections/Footer.jsx";
 
 /** Two ways out, both absolute: this document is not the one the anchors belong to. */
 const LINKS = [
   { href: "/", label: "The argument" },
+  { href: "/enter/", label: "App" },
   { href: "/arena/", label: "Arena" },
 ];
 
+const TAB_KEY = "darwin.console.tab";
+
 export default function Console() {
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      const h = globalThis.location?.hash;
+      if (h === "#enter" || h === "#launch") return "launch";
+      if (h === "#advanced") return "advanced";
+      if (h === "#dashboard") return "dashboard";
+      return localStorage.getItem(TAB_KEY) || "dashboard";
+    } catch {
+      return "dashboard";
+    }
+  });
+
+  useEffect(() => {
+    function onHash() {
+      const h = globalThis.location?.hash;
+      if (h === "#enter" || h === "#launch") setActiveTab("launch");
+      else if (h === "#advanced") setActiveTab("advanced");
+      else if (h === "#dashboard") setActiveTab("dashboard");
+    }
+    onHash();
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+
+  function handleGoTo(tabId) {
+    setActiveTab(tabId);
+    try {
+      localStorage.setItem(TAB_KEY, tabId);
+    } catch {}
+    const targetId = tabId === "launch" ? "enter" : tabId;
+    const el = document.getElementById(targetId);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
   return (
     <>
       <a className="vh" href="#enter">
@@ -51,17 +93,55 @@ export default function Console() {
         */}
         <div className="console-crumb-bar">
           <div className="wrap console-crumb">
-            <span className="label">Entry console</span>
+            <span className="label">Darwin App</span>
             <span className="console-crumb-sep">·</span>
             <span className="console-crumb-text">
-              The three transactions that put an organism in the arena. The explanation of what
-              an organism is lives on <a href="/">the landing</a>; live organisms, treasuries
-              and deaths are in <a href="/arena/">the arena</a>.
+              Unified console: inspect your wallet, mint collateral, launch organisms and explore
+              arena climate rules. Narrative explanation on <a href="/">the landing</a>; live colosseum
+              in <a href="/arena/">the arena</a>.
             </span>
           </div>
         </div>
 
+        {/* ── Sticky Subnavigation Tab Bar ── */}
+        <nav className="console-tabs-bar" aria-label="Console views">
+          <div className="wrap console-tabs-in">
+            <button
+              className={`console-tab ${activeTab === "dashboard" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => handleGoTo("dashboard")}
+            >
+              <span className="tab-icon">📊</span>
+              <span>Wallet Dashboard</span>
+            </button>
+            <button
+              className={`console-tab ${activeTab === "launch" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => handleGoTo("launch")}
+            >
+              <span className="tab-icon">🚀</span>
+              <span>Launch Organism</span>
+            </button>
+            <button
+              className={`console-tab ${activeTab === "advanced" ? "is-active" : ""}`}
+              type="button"
+              onClick={() => handleGoTo("advanced")}
+            >
+              <span className="tab-icon">⚙️</span>
+              <span>Rules &amp; Advanced</span>
+            </button>
+          </div>
+        </nav>
+
+        <div id="dashboard">
+          <WalletDashboard onGoToLaunch={() => handleGoTo("launch")} />
+        </div>
+
         <Enter />
+
+        <div id="advanced">
+          <AdvancedArena />
+        </div>
       </main>
 
       {/* `base="/"` because the footer's reading list is landing anchors, and from this

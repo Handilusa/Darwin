@@ -28,15 +28,18 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
  *  as two different destinations.
  */
 const LANDING_LINKS = [
-  { href: "#window", label: "The window" },
-  { href: "#death", label: "Death" },
+  { href: "#genome", label: "01 · Genome" },
+  { href: "#window", label: "02 · Window" },
+  { href: "#cognition", label: "03 · Cognition" },
+  { href: "#death", label: "04 · Death" },
+  { href: "#lineage", label: "05 · Lineage" },
   { href: "/arena/", label: "Arena" },
 ];
 
 export function Nav({ home = "#top", links = LANDING_LINKS, wallet = false }) {
   return (
     <header className="nav">
-      <div className="wrap nav-in">
+      <div className="nav-in">
         <a className="brand" href={home}>
           <svg className="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
             <circle cx="15" cy="17" r="9.5" fill="none" stroke="var(--life)" strokeWidth="1.7" />
@@ -48,7 +51,11 @@ export function Nav({ home = "#top", links = LANDING_LINKS, wallet = false }) {
 
         <nav className="nav-links" aria-label="Sections">
           {links.map((l) => (
-            <a className="nav-link" href={l.href} key={l.href}>
+            <a
+              className={`nav-link${wallet && l.href === "/enter/" ? " is-current" : ""}`}
+              href={l.href}
+              key={l.href}
+            >
               {l.label}
             </a>
           ))}
@@ -62,7 +69,7 @@ export function Nav({ home = "#top", links = LANDING_LINKS, wallet = false }) {
           />
         ) : (
           <a className="btn btn-primary nav-cta" href="/enter/">
-            Enter
+            Launch App
           </a>
         )}
       </div>

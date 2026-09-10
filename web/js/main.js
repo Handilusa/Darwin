@@ -225,6 +225,7 @@ function withCountdown(state) {
 }
 
 function paint() {
+  const s = settings();
   mount(
     $("#banner"),
     app.demo ? ui.demoBanner() : null,
@@ -236,7 +237,6 @@ function paint() {
   );
 
   if (!app.cfg) {
-    const s = settings();
     mount($("#header"), ui.masthead());
 
     /*
@@ -336,6 +336,18 @@ function paint() {
     ui.claimPanel(state, app.logs),
     ui.feed(app.logs, app.cfg, { ...c, range: app.feedRange ? String(app.feedRange.scanned) : null }),
     ui.wiringPanel(app.cfg),
+    ui.primer(true),
+    ui.setupCard(
+      {
+        population: s.population,
+        rpc: s.rpc,
+        defaultRpc: DEFAULT_RPC,
+        chainId: CHAIN_ID,
+        badQuery: s.badQuery,
+        noContract: null,
+      },
+      { onConnect },
+    ),
   );
 
   // Animation runs after mount, because the nodes it moves do not exist until then. The first frame
@@ -378,7 +390,13 @@ function select(id) {
 
 function selectionFromHash() {
   const m = /^#organism\/(\d+)$/.exec(globalThis.location.hash || "");
-  return m ? Number(m[1]) : null;
+  if (m) return Number(m[1]);
+  try {
+    const q = new URLSearchParams(globalThis.location?.search || "");
+    const sel = q.get("selected");
+    if (sel && /^\d+$/.test(sel)) return Number(sel);
+  } catch {}
+  return null;
 }
 
 async function loadDetail(id) {

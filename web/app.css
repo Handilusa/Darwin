@@ -157,13 +157,13 @@ code {
 }
 
 .nav-in {
-  max-width: 1560px;
+  max-width: 1400px;
   margin-inline: auto;
   padding-inline: var(--gut);
   display: flex;
   align-items: center;
   gap: var(--s-5);
-  min-height: 54px;
+  min-height: 60px;
 }
 
 .brand {
@@ -219,7 +219,7 @@ code {
 
 .nav-cta {
   flex: none;
-  padding: 0.38rem 0.85rem;
+  padding: 0.42rem 0.9rem;
   font-size: var(--t-xs);
 }
 

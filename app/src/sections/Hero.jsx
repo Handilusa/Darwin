@@ -362,7 +362,7 @@ export function Hero({ onField }) {
 
         <div className="hero-cta">
           <a className="btn btn-primary" href="/enter/">
-            Enter an organism
+            Launch App
           </a>
           <a className="btn" href="/arena/">
             Watch the arena
