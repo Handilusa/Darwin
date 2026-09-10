@@ -589,6 +589,43 @@ actually running is checkable against the repo rather than taken on trust.
 Everything else the system touches — `AgentRequester`, the markets module, `BinarySettlement`,
 the outcome token and tUSDC — is Somnia's, not ours, and is listed in the same manifest.
 
+## Frequently Asked Questions (FAQ)
+
+### How often does the arena trade, and does it run autonomously?
+Trading windows correspond to 15-minute BTC event markets on DreamDEX. However, EVM smart contracts cannot initiate calls on their own without a transaction trigger. The state machine (`think` → `commitAll` → `settleAll`) is driven by the off-chain keeper script:
+```bash
+npm run cadence -- --windows 5   # Drive 5 complete windows, then stop at phase 0
+npm run cadence:window           # Drive exactly 1 complete window
+```
+When `cadence` is not actively running, the population remains safely parked in phase 0 (idle), waiting for the next run.
+
+### Are organisms real on-chain entities or simulated/mock bots?
+**They are 100% real on-chain smart contracts.** There are no mock agents or off-chain bot databases:
+- Each organism is a distinct `BeaconProxy` contract pointing to `Prophet.sol`.
+- Each organism custodies its own ERC-20 collateral (`tUSDC`), holds its own native gas token (`STT`), and holds its own ERC-6909 outcome tokens.
+- On every window, each organism pays **0.24 STT** directly to Somnia network validators (`AgentRequester`) for real on-chain LLM inference.
+- If an organism's treasury drops to zero from metabolic rent or wrong calls, it dies **permanently and irreversibly**.
+
+### What is `0xe0F46e61Cb3c87c01c4f79b6E9727772388838Cb`? Why does the UI say "Read from `0xe0F4...`"?
+`0xe0F46e61Cb3c87c01c4f79b6E9727772388838Cb` is the deployed **`Population` proxy contract** on Somnia Shannon testnet (`50312`). It acts as the central colosseum, climate manager, and matchmaker. The notice *"Read from `0xe0F4...` every twenty seconds"* in the entry app (`app/`) is an informational status line confirming that your frontend is reading live climate parameters and ante quotes directly from that contract.
+
+### Why does the live feed show `ReactionFailed · NoCommittedWindow(0)`?
+**This is not an error — it is the cross-talk defense working as designed.**
+`BinarySettlement` is a shared testnet singleton where every DreamDEX binary market finalizes. Because `SelectionEngine` is subscribed to this contract to trigger same-block reactive settlements, it receives events whenever *anyone's* market resolves on Shannon. The guard `_windowIsDecidable()` checks our population's phase: if we are in phase 0 (idle), it politely declines the foreign event with `NoCommittedWindow(0)`.
+
+### How many organisms can live in the arena, and what happens if 100 people join?
+- **Current Arena Cap:** The contract enforces `maxPopulation = 24` living organisms (currently 12 living, with 12 spots available).
+- **Why 24?** This is an EVM block gas and inference latency bound. In every window, `Population` batches inference requests for all living organisms simultaneously (24 organisms = 72 validator LLM calls) and settles them atomically. Going higher risks hitting Somnia's block gas ceiling.
+- **If the arena is full:** Calling `Population.enter()` reverts with `PopulationFull()`. A slot only opens when an existing organism starves to death or is retired by its entrant.
+- **Scaling to 100+ users:** Darwin scales via **multi-arena sharding**. Multiple `Population` proxy contracts can be deployed over the same `ProphetBeacon`—either for different asset pairs (BTC Arena, ETH Arena, SOL Arena) or tiered leagues (Division 1, Division 2).
+
+### If I enter multiple organisms, do they collide or overlap?
+**They do not collide — they compete in the same arena.**
+All organisms in a `Population` instance share the same active market window. If you create two organisms with opposing strategies (for example, one `MOMENTUM` and one `REVERSION`), when price moves they will form opposing beliefs (UP vs DOWN). The venue will then pair them directly against each other in a 1:1 duel using their respective stakes.
+
+---
+
 ## License
 
 MIT.
+

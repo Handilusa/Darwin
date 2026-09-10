@@ -50,6 +50,28 @@
       would be one missed escape away from running an entrant's script in an operator's
       browser. There is no `innerHTML` anywhere in web/ — grep for it as a review check.
     -->
+    <header class="nav">
+      <div class="nav-in">
+        <a class="brand" href="/" title="Darwin — Home">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <circle cx="15" cy="17" r="9.5" fill="none" stroke="var(--life)" stroke-width="1.7" />
+            <circle cx="15" cy="17" r="2.6" fill="var(--life)" />
+            <circle cx="25.5" cy="6.5" r="2.2" fill="var(--ash)" />
+          </svg>
+          Darwin
+        </a>
+
+        <nav class="nav-links" aria-label="Sections">
+          <a class="nav-link" href="/">The argument</a>
+          <a class="nav-link" href="/enter/">Enter</a>
+          <a class="nav-link is-current" href="/arena/">Arena</a>
+        </nav>
+
+        <a class="btn btn-primary nav-cta" href="/enter/">
+          Enter
+        </a>
+      </div>
+    </header>
     <div id="banner"></div>
     <div id="header"></div>
     <main id="body">

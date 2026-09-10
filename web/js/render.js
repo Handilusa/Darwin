@@ -694,10 +694,24 @@ export function grid(rows, cfg, ctx = {}) {
     const t = BigInt(b.treasury ?? 0n) - BigInt(a.treasury ?? 0n);
     return t > 0n ? 1 : t < 0n ? -1 : Number(a.id) - Number(b.id);
   };
-  const living = population.filter((o) => !o.dead).sort(byTreasury);
-  const dead = population
+
+  const isMyOrg = (o) => {
+    if (!ctx.userWallet || !ctx.entrants) return false;
+    const entrant = ctx.entrants.get(Number(o.id));
+    return Boolean(entrant && entrant.toLowerCase() === ctx.userWallet.toLowerCase());
+  };
+
+  const allLiving = population.filter((o) => !o.dead).sort(byTreasury);
+  const allDead = population
     .filter((o) => o.dead)
     .sort((a, b) => Number(b.deathWindow ?? 0) - Number(a.deathWindow ?? 0) || Number(a.id) - Number(b.id));
+
+  const myLiving = allLiving.filter(isMyOrg);
+  const myDead = allDead.filter(isMyOrg);
+  const myCount = myLiving.length + myDead.length;
+
+  const living = ctx.filterOnlyMine ? myLiving : allLiving;
+  const dead = ctx.filterOnlyMine ? myDead : allDead;
 
   if (!population.length) {
     return el(
@@ -718,15 +732,50 @@ export function grid(rows, cfg, ctx = {}) {
       // settles in exactly one collateral token, so `TUSDC` repeated down the grid is the same
       // string twelve times — it distinguishes nothing between organisms while costing each card
       // about 40px, which is precisely the room the belief tag needs to sit beside the number.
-      el("h2", {}, "Population", cfg.tokenSymbol ? el("span", { class: "sub", text: `balances in ${cfg.tokenSymbol}` }) : null),
-      el("span", { class: "muted", text: `${living.length} alive · ${population.length} ever` }),
+      el(
+        "div",
+        { class: "panel-title-wrap" },
+        el("h2", {}, "Population", cfg.tokenSymbol ? el("span", { class: "sub", text: `balances in ${cfg.tokenSymbol}` }) : null),
+        ctx.userWallet && myCount > 0
+          ? el(
+              "div",
+              { class: "grid-filter-bar" },
+              el(
+                "button",
+                {
+                  class: ["filter-tab", !ctx.filterOnlyMine && "is-active"],
+                  type: "button",
+                  click: () => { if (ctx.filterOnlyMine && ctx.onToggleFilter) ctx.onToggleFilter(); },
+                },
+                `All (${population.length})`,
+              ),
+              el(
+                "button",
+                {
+                  class: ["filter-tab", "filter-tab-yours", ctx.filterOnlyMine && "is-active"],
+                  type: "button",
+                  click: () => { if (!ctx.filterOnlyMine && ctx.onToggleFilter) ctx.onToggleFilter(); },
+                },
+                `★ Yours (${myCount})`,
+              ),
+            )
+          : null,
+      ),
+      el("span", {
+        class: "muted",
+        text: ctx.filterOnlyMine
+          ? `${myLiving.length} alive · ${myCount} yours`
+          : `${allLiving.length} alive · ${population.length} ever`,
+      }),
     ),
     dead.length ? band(dead, cfg, ctx) : null,
-    el(
-      "div",
-      { class: "grid" },
-      living.map((o) => card(o, cfg, ctx)),
-    ),
+    ctx.filterOnlyMine && living.length === 0 && dead.length === 0
+      ? el("p", { class: "empty", text: "You have no organisms in this arena view." })
+      : el(
+          "div",
+          { class: "grid" },
+          living.map((o) => card(o, cfg, ctx)),
+        ),
   );
 }
 
@@ -776,6 +825,8 @@ function tomb(o, cfg, ctx) {
   const name = ctx.labels?.get(id);
   const selected = ctx.selected != null && Number(ctx.selected) === id;
   const dec = cfg.decimals ?? 6;
+  const entrant = ctx.entrants?.get(id);
+  const isMine = Boolean(ctx.userWallet && entrant && entrant.toLowerCase() === ctx.userWallet.toLowerCase());
 
   // The stamp, and ONLY the stamp, comes from the diff. Placement above reads `o.dead` and
   // `o.deathWindow` only, so a cold load with `ctx.fx == null` renders this same band, static and
@@ -794,7 +845,7 @@ function tomb(o, cfg, ctx) {
   return el(
     "article",
     {
-      class: ["card", "card-dead", "card-tomb", selected && "card-selected"],
+      class: ["card", "card-dead", "card-tomb", selected && "card-selected", isMine && "card-is-mine"],
       dataset: fx ? { fx } : undefined,
       tabindex: "0",
       role: "button",
@@ -814,7 +865,13 @@ function tomb(o, cfg, ctx) {
       el("span", { class: "card-id", text: `#${o.id}` }),
       name ? el("span", { class: "card-name", text: name }) : null,
       el("span", { class: "card-gen", title: "generation", text: `G${o.generation}` }),
-      rootKind(o) === "entrant"
+      isMine
+        ? el("span", {
+            class: "card-gen card-yours",
+            title: `Your organism (#${o.id}) · Died at window ${o.deathWindow}`,
+            text: "★ YOURS",
+          })
+        : rootKind(o) === "entrant"
         ? el("span", {
             class: "card-gen card-entrant",
             title: `born at window ${o.birthWindow} with no parent — paid in through enter()`,
@@ -842,6 +899,8 @@ function card(o, cfg, ctx) {
   const id = Number(o.id);
   const name = ctx.labels?.get(id);
   const selected = ctx.selected != null && Number(ctx.selected) === id;
+  const entrant = ctx.entrants?.get(id);
+  const isMine = Boolean(ctx.userWallet && entrant && entrant.toLowerCase() === ctx.userWallet.toLowerCase());
 
   // What changed about THIS organism since the last paint, if anything.
   //
@@ -863,7 +922,7 @@ function card(o, cfg, ctx) {
   return el(
     "article",
     {
-      class: ["card", o.dead && "card-dead", selected && "card-selected"],
+      class: ["card", o.dead && "card-dead", selected && "card-selected", isMine && "card-is-mine"],
       dataset: fx ? { fx } : undefined,
       tabindex: "0",
       role: "button",
@@ -892,7 +951,13 @@ function card(o, cfg, ctx) {
       // is the name `Prophet.entrant()` gives it. Two different meanings of one word on the same
       // screen would read as a cross-reference between them. The chain's word wins for the field
       // it names, and this badge says what actually happened instead.
-      rootKind(o) === "entrant"
+      isMine
+        ? el("span", {
+            class: "card-gen card-yours",
+            title: `Your organism (#${o.id}) · Entrant: ${entrant}`,
+            text: "★ YOURS",
+          })
+        : rootKind(o) === "entrant"
         ? el("span", {
             class: "card-gen card-entrant",
             title: `born at window ${o.birthWindow} with no parent — paid in through enter()`,
@@ -1197,6 +1262,9 @@ export function detail(row, info, cfg, ctx = {}) {
   const breed = breeding(row, cfg, ctx);
   const pending = info && (BigInt(info.pendingBeliefRequestId ?? 0n) > 0n || BigInt(info.pendingMutationRequestId ?? 0n) > 0n);
 
+  const entrant = info?.entrant || ctx.entrants?.get(Number(row.id));
+  const isMine = Boolean(ctx.userWallet && entrant && entrant.toLowerCase() === ctx.userWallet.toLowerCase());
+
   return el(
     "aside",
     { class: "panel panel-detail" },
@@ -1206,6 +1274,15 @@ export function detail(row, info, cfg, ctx = {}) {
       el("h2", {}, `Organism #${row.id}`, name ? el("span", { class: "sub", text: name }) : null),
       ctx.onClose ? el("button", { class: "btn btn-ghost", type: "button", click: ctx.onClose }, "close") : null,
     ),
+    isMine
+      ? el(
+          "div",
+          { class: "detail-yours-banner" },
+          el("span", { class: "yours-star", text: "★" }),
+          el("span", { class: "yours-text", text: " YOUR ORGANISM " }),
+          el("span", { class: "muted sub", text: "— Funded by your tracked wallet" }),
+        )
+      : null,
 
     el(
       "div",
@@ -2368,4 +2445,351 @@ export function standingsPanel(rows, prizePool, cfg, ctx = {}) {
   );
 }
 
+/**
+ *  MY OPERATIONS & PROMPT STRATEGY LAB
+ *
+ *  Dedicated analytics panel allowing operators to track their wallet's organisms,
+ *  calculate net PnL / treasury, and rank prompt strategies from best to worst.
+ */
+export function operationsPanel(rows, cfg, ctx = {}) {
+  const population = [...(rows || [])];
+  const userWallet = ctx.userWallet ? ctx.userWallet.toLowerCase() : null;
+  const dec = cfg.decimals ?? 6;
+
+  const isMyOrg = (o) => {
+    if (!userWallet || !ctx.entrants) return false;
+    const entrant = ctx.entrants.get(Number(o.id));
+    return Boolean(entrant && entrant.toLowerCase() === userWallet);
+  };
+
+  const myOrganisms = population.filter(isMyOrg);
+  const myLiving = myOrganisms.filter((o) => !o.dead);
+  const myDead = myOrganisms.filter((o) => o.dead);
+
+  // Aggregate stats
+  let totalTreasury = 0n;
+  let totalWins = 0;
+  let totalLosses = 0;
+  let totalAbstains = 0;
+  let totalWindowsLived = 0;
+
+  for (const o of myOrganisms) {
+    if (!o.dead && o.treasury != null) totalTreasury += BigInt(o.treasury);
+    totalWins += Number(o.correctCount ?? 0);
+    totalLosses += Number(o.wrongCount ?? 0);
+    totalAbstains += Number(o.abstainCount ?? 0);
+    totalWindowsLived += Number(o.windowsLived ?? 0);
+  }
+
+  const netScore = totalWins - totalLosses;
+  const totalDecided = totalWins + totalLosses;
+  const overallWinRate = totalDecided > 0 ? Math.round((totalWins / totalDecided) * 100) : 0;
+
+  // Header & Wallet Connection Bar
+  const head = el(
+    "div",
+    { class: "panel-head" },
+    el(
+      "div",
+      {},
+      el("h2", { text: "Operations & Prompt Analytics" }),
+      el("p", {
+        class: "panel-desc",
+        text: "Track your active portfolio, analyze trading prompt effectiveness, and inspect best vs worst strategies.",
+      }),
+    ),
+    userWallet
+      ? el(
+          "div",
+          { class: "wallet-tracker-status" },
+          el("span", { class: "wallet-indicator-dot" }),
+          el("span", { class: "wallet-label", text: "Tracking" }),
+          el("code", { class: "wallet-code", title: userWallet }, addr(userWallet)),
+          el(
+            "button",
+            {
+              class: "btn btn-ghost btn-xs",
+              type: "button",
+              title: "Disconnect or switch tracked wallet",
+              click: () => { if (ctx.onSetWallet) ctx.onSetWallet(null); },
+            },
+            "Change",
+          ),
+        )
+      : null,
+  );
+
+  // If no wallet is tracked yet:
+  if (!userWallet) {
+    const input = el("input", {
+      class: "input wallet-input",
+      type: "text",
+      placeholder: "Paste wallet address (0x...)",
+      spellcheck: "false",
+    });
+
+    const submitTrack = () => {
+      const val = input.value.trim();
+      if (val && /^0x[a-fA-F0-9]{40}$/.test(val)) {
+        if (ctx.onSetWallet) ctx.onSetWallet(val);
+      } else if (val) {
+        if (typeof alert !== "undefined") alert("Please enter a valid 0x Ethereum address (42 characters)");
+      }
+    };
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") submitTrack();
+    });
+
+    const tryDetect = async () => {
+      if (typeof window !== "undefined" && window.ethereum) {
+        try {
+          const accs = await window.ethereum.request({ method: "eth_requestAccounts" });
+          if (accs && accs[0] && ctx.onSetWallet) ctx.onSetWallet(accs[0]);
+        } catch {}
+      } else if (typeof alert !== "undefined") {
+        alert("No web3 wallet detected. Please paste your address manually.");
+      }
+    };
+
+    const ownerAddr = cfg.owner ? String(cfg.owner) : "0x1420cF8Bb9D92C3fDb674ECc5A57295c59078fDA";
+
+    return el(
+      "section",
+      { class: "panel panel-operations" },
+      head,
+      el(
+        "div",
+        { class: "wallet-connect-prompt" },
+        el(
+          "div",
+          { class: "wallet-connect-inner" },
+          el("p", {
+            class: "muted",
+            text: "Enter your Somnia address to view your portfolio analytics and rank your trading prompts:",
+          }),
+          el(
+            "div",
+            { class: "wallet-input-row" },
+            input,
+            el("button", { class: "btn btn-primary btn-sm", type: "button", click: submitTrack }, "Track Wallet"),
+            typeof window !== "undefined" && window.ethereum
+              ? el("button", { class: "btn btn-ghost btn-sm", type: "button", click: tryDetect }, "Connect Wallet")
+              : null,
+          ),
+          el(
+            "div",
+            { class: "wallet-quick-chips" },
+            el("span", { class: "muted sub", text: "Quick select: " }),
+            el(
+              "button",
+              {
+                class: "chip chip-action",
+                type: "button",
+                click: () => { if (ctx.onSetWallet) ctx.onSetWallet(ownerAddr); },
+              },
+              `Deployer / Owner (${addr(ownerAddr)})`,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // If wallet IS tracked, but has no organisms in this arena
+  if (myOrganisms.length === 0) {
+    return el(
+      "section",
+      { class: "panel panel-operations" },
+      head,
+      el(
+        "div",
+        { class: "op-empty" },
+        el("p", {
+          text: `No organisms found in this arena belonging to ${addr(userWallet)}.`,
+        }),
+        el("p", {
+          class: "muted",
+          text: "When you enter organisms using this wallet, their live portfolio, PnL, and prompt performance will appear here automatically.",
+        }),
+        el(
+          "div",
+          { style: { marginTop: "var(--s-3)" } },
+          link("/enter/", "Enter a New Organism →", { class: "btn btn-primary btn-sm" }),
+        ),
+      ),
+    );
+  }
+
+  // KPI Vitals Grid (4 boxes)
+  const kpiGrid = el(
+    "div",
+    { class: "op-kpi-grid" },
+    el(
+      "div",
+      { class: "op-kpi-card" },
+      el("span", { class: "op-kpi-label", text: "Portfolio Treasury" }),
+      el("div", { class: "op-kpi-value amount" }, moneyFixed(totalTreasury, dec, 2), el("span", { class: "op-kpi-unit", text: ` ${cfg.tokenSymbol ?? "tUSDC"}` })),
+      el("span", { class: "op-kpi-sub muted", text: `${myLiving.length} active organism${myLiving.length === 1 ? "" : "s"}` }),
+    ),
+    el(
+      "div",
+      { class: "op-kpi-card" },
+      el("span", { class: "op-kpi-label", text: "My Organisms" }),
+      el("div", { class: "op-kpi-value" }, `${myLiving.length}`, el("span", { class: "op-kpi-unit muted", text: ` / ${myOrganisms.length} total` })),
+      el("span", { class: "op-kpi-sub muted", text: `${myDead.length} died · irreversible` }),
+    ),
+    el(
+      "div",
+      { class: "op-kpi-card" },
+      el("span", { class: "op-kpi-label", text: "Combat Record" }),
+      el("div", { class: "op-kpi-value" }, `${totalWins}W`, el("span", { class: "muted", text: " - " }), `${totalLosses}L`),
+      el("span", { class: "op-kpi-sub", text: `${totalAbstains} abstains · ${totalDecided > 0 ? overallWinRate + "% win rate" : "no paired calls"}` }),
+    ),
+    el(
+      "div",
+      { class: "op-kpi-card" },
+      el("span", { class: "op-kpi-label", text: "Net Score / Edge" }),
+      el("div", { class: ["op-kpi-value", netScore > 0 ? "text-life" : netScore < 0 ? "text-bad" : ""] }, `${netScore > 0 ? "+" : ""}${netScore}`),
+      el("span", { class: "op-kpi-sub muted", text: `${totalWindowsLived} cumulative windows lived` }),
+    ),
+  );
+
+  // Prompt & Strategy Leaderboard (Best vs Worst)
+  const ranked = [...myOrganisms].sort((a, b) => {
+    const netA = Number(a.correctCount ?? 0) - Number(a.wrongCount ?? 0);
+    const netB = Number(b.correctCount ?? 0) - Number(b.wrongCount ?? 0);
+    if (netB !== netA) return netB - netA;
+
+    const decA = Number(a.correctCount ?? 0) + Number(a.wrongCount ?? 0);
+    const decB = Number(b.correctCount ?? 0) + Number(b.wrongCount ?? 0);
+    const wrA = decA > 0 ? Number(a.correctCount ?? 0) / decA : 0;
+    const wrB = decB > 0 ? Number(b.correctCount ?? 0) / decB : 0;
+    if (wrB !== wrA) return wrB - wrA;
+
+    if (a.dead !== b.dead) return a.dead ? 1 : -1;
+    const tA = BigInt(a.treasury ?? 0n);
+    const tB = BigInt(b.treasury ?? 0n);
+    return tB > tA ? 1 : tB < tA ? -1 : Number(a.id) - Number(b.id);
+  });
+
+  const promptCards = ranked.map((o, rankIdx) => {
+    const id = Number(o.id);
+    const prompt = ctx.genomes?.get(id) || "";
+    const correct = Number(o.correctCount ?? 0);
+    const wrong = Number(o.wrongCount ?? 0);
+    const abstains = Number(o.abstainCount ?? 0);
+    const net = correct - wrong;
+    const isTop = rankIdx === 0 && (correct > 0 || (ranked.length > 1 && !o.dead));
+    const isWorst = !isTop && (wrong > correct || o.dead);
+
+    // Strategy Diagnosis
+    let diagIcon = "⚖️";
+    let diagText = "Neutral / Preserving: Organism has abstained or had no paired counterparty yet.";
+    let diagClass = "diag-neutral";
+
+    if (o.dead) {
+      diagIcon = "💀";
+      diagText = "Insolvent: Collateral was exhausted by metabolic rent or wrong bets. Irreversibly terminal.";
+      diagClass = "diag-dead";
+    } else if (correct > 0 && wrong === 0) {
+      diagIcon = "🏆";
+      diagText = "High Edge: Undefeated in live market windows. Capital expanding toward breeding threshold (streak ≥ 4).";
+      diagClass = "diag-good";
+    } else if (wrong > correct) {
+      diagIcon = "⚠️";
+      diagText = "Drawdown / Ineffective: Strategy took opposing bets that failed. Candidate for thesis mutation.";
+      diagClass = "diag-warn";
+    } else if (correct > 0 && correct === wrong) {
+      diagIcon = "⚡";
+      diagText = "Coin-flipper territory: Strategy accuracy is around 50%. In zero-fee markets, metabolic drag will slowly erode treasury.";
+      diagClass = "diag-neutral";
+    }
+
+    return el(
+      "article",
+      { class: ["op-prompt-card", isTop && "op-prompt-top", isWorst && "op-prompt-worst"] },
+      el(
+        "div",
+        { class: "op-card-head" },
+        el(
+          "div",
+          { class: "op-card-id-row" },
+          el("span", { class: ["op-rank-badge", isTop ? "rank-gold" : isWorst ? "rank-low" : "rank-mid"], text: `#${rankIdx + 1}` }),
+          chip(id, ctx),
+          el("span", { class: "card-gen", text: `G${o.generation}` }),
+          o.dead
+            ? el("span", { class: "tag tag-dead", text: `dead at w${o.deathWindow}` })
+            : beliefTag(o.belief, o.thesis),
+        ),
+        el(
+          "div",
+          { class: "op-card-metrics" },
+          el("span", { class: "amount", text: moneyFixed(o.treasury ?? 0n, dec, 2) }),
+          el("span", { class: "sub muted", text: ` ${cfg.tokenSymbol ?? "tUSDC"}` }),
+          el("span", { class: "op-metric-sep", text: "·" }),
+          el("span", { class: "op-record-tag", text: `${correct}W - ${wrong}L · ${abstains}A` }),
+          el("span", { class: ["op-net-tag", net > 0 ? "text-life" : net < 0 ? "text-bad" : "muted"], text: `(${net > 0 ? "+" : ""}${net})` }),
+        ),
+      ),
+      el(
+        "div",
+        { class: "op-genome-box" },
+        el(
+          "div",
+          { class: "op-genome-label" },
+          el("span", { text: "Trading Thesis (Prompt)" }),
+          el("span", { class: "muted sub", text: prompt ? `${prompt.length} chars` : "reading..." }),
+        ),
+        el("blockquote", { class: "op-genome-text" }, prompt || "Loading prompt from chain..."),
+      ),
+      el(
+        "div",
+        { class: ["op-diag-bar", diagClass] },
+        el("span", { class: "op-diag-icon", text: diagIcon }),
+        el("span", { class: "op-diag-text", text: diagText }),
+        el(
+          "button",
+          {
+            class: "btn btn-ghost btn-xs op-inspect-btn",
+            type: "button",
+            click: () => {
+              if (ctx.onSelect) ctx.onSelect(id);
+              if (typeof document !== "undefined") {
+                const elNode = document.querySelector(`[data-id="${id}"]`) || document.getElementById("body");
+                if (elNode?.scrollIntoView) elNode.scrollIntoView({ behavior: "smooth", block: "nearest" });
+              }
+            },
+          },
+          "Inspect in Arena",
+        ),
+      ),
+    );
+  });
+
+  return el(
+    "section",
+    { class: "panel panel-operations" },
+    head,
+    kpiGrid,
+    el(
+      "div",
+      { class: "op-leaderboard-head" },
+      el("h3", { text: "Strategy Performance & Prompt Ranking" }),
+      el("span", { class: "muted", text: "Ranked from best to worst performing. Inspect prompts to isolate successful strategies." }),
+    ),
+    el("div", { class: "op-prompt-list" }, promptCards),
+    el(
+      "div",
+      { class: "op-panel-foot" },
+      el("p", {
+        class: "muted",
+        text: "Want to deploy a mutated or improved strategy?",
+      }),
+      link("/enter/", "Enter a New Organism in Console →", { class: "btn btn-primary btn-sm" }),
+    ),
+  );
+}
+
 export { mount, $ };
+

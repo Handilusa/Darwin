@@ -61,6 +61,11 @@ const app = {
   seenHead: null, // key of the newest feed row already shown
   painted: false,
 
+  entrants: new Map(),
+  genomes: new Map(),
+  userWallet: (typeof localStorage !== "undefined" && localStorage.getItem("darwin_user_wallet")) || null,
+  filterOnlyMine: false,
+
   // Derived per paint and handed to the renderer through `ctx()`.
   depth: null,
   fx: null,
@@ -89,6 +94,25 @@ function ctx() {
     // What changed since the last paint. `render.js` turns this into `data-fx` attributes and
     // `motion.js` plays them after mount; nothing else in the codebase reads it.
     fx: app.fx,
+    userWallet: app.userWallet,
+    entrants: app.entrants,
+    genomes: app.genomes,
+    filterOnlyMine: app.filterOnlyMine,
+    onToggleFilter: () => {
+      app.filterOnlyMine = !app.filterOnlyMine;
+      paint();
+    },
+    onSetWallet: (addr) => {
+      if (addr) {
+        app.userWallet = String(addr).trim().toLowerCase();
+        try { localStorage.setItem("darwin_user_wallet", app.userWallet); } catch {}
+      } else {
+        app.userWallet = null;
+        app.filterOnlyMine = false;
+        try { localStorage.removeItem("darwin_user_wallet"); } catch {}
+      }
+      paint();
+    },
   };
 }
 
@@ -305,6 +329,7 @@ function paint() {
     $("#body"),
     ui.readErrors({ ...(app.cfg.failures || {}), ...(state.errors || {}) }),
     split,
+    ui.operationsPanel(rows, app.cfg, c),
     ui.standingsPanel(rows, state.prizePool, app.cfg, c),
     ui.tree(tree, app.cfg, c),
     ui.censusPanel(lineage.census(tree), app.depth),
@@ -399,6 +424,12 @@ async function bootDemo() {
     [13, "Momentum IV"], // born on screen, about nine seconds in
   ]);
   app.sourceLabel = "fixture";
+  if (fx.details) {
+    for (const [id, d] of fx.details.entries()) {
+      if (d?.entrant) app.entrants.set(Number(id), d.entrant.toLowerCase());
+      if (d?.systemPrompt) app.genomes.set(Number(id), d.systemPrompt);
+    }
+  }
   app.selected = selectionFromHash();
   paint();
   if (app.selected != null) loadDetail(app.selected);
@@ -573,6 +604,10 @@ async function boot() {
   }
   app.errorKind = null;
 
+  if (!app.userWallet && typeof window !== "undefined" && window.ethereum?.selectedAddress) {
+    app.userWallet = window.ethereum.selectedAddress.toLowerCase();
+  }
+
   chain.organismLabels().then((m) => {
     if (m.size) {
       app.labels = m;
@@ -592,6 +627,28 @@ async function refresh(force = false) {
   try {
     app.state = await chain.readState(app.client, app.cfg);
     app.error = null;
+
+    if (app.state?.organisms?.length) {
+      const missingEntrants = app.state.organisms.filter((o) => !app.entrants.has(Number(o.id)));
+      if (missingEntrants.length) {
+        chain.readEntrants(app.client, missingEntrants).then((m) => {
+          if (m?.size) {
+            for (const [id, addr] of m.entries()) app.entrants.set(id, addr);
+            paint();
+          }
+        }).catch(() => {});
+      }
+
+      const missingGenomes = app.state.organisms.filter((o) => !app.genomes.has(Number(o.id)));
+      if (missingGenomes.length) {
+        chain.readGenomes(app.client, missingGenomes).then((m) => {
+          if (m?.size) {
+            for (const [id, prompt] of m.entries()) app.genomes.set(id, prompt);
+            paint();
+          }
+        }).catch(() => {});
+      }
+    }
   } catch (e) {
     // NOT DEAD, despite how it looks: every chain read inside `readState` is wrapped in
     // `Promise.allSettled` and returns `null` on failure (`chain.js:233-262`), so no RPC error

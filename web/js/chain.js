@@ -719,3 +719,48 @@ export async function stampBlocks(client, numbers) {
 export function blockTime(number) {
   return blockTimes.get(String(number)) ?? null;
 }
+
+/**
+ *  Fetch entrant addresses for a list of organisms.
+ */
+export async function readEntrants(client, organisms) {
+  if (!organisms || !organisms.length || !client) return new Map();
+  const { prophetAbi } = await abis();
+  const calls = organisms.map(async (o) => {
+    try {
+      const entrant = await client.readContract({
+        address: o.addr,
+        abi: prophetAbi,
+        functionName: "entrant",
+      });
+      return [Number(o.id), entrant ? String(entrant).toLowerCase() : null];
+    } catch {
+      return [Number(o.id), null];
+    }
+  });
+  const entries = await Promise.all(calls);
+  return new Map(entries.filter(([, addr]) => Boolean(addr)));
+}
+
+/**
+ *  Fetch systemPrompt (English genomes) for a list of organisms.
+ */
+export async function readGenomes(client, organisms) {
+  if (!organisms || !organisms.length || !client) return new Map();
+  const { prophetAbi } = await abis();
+  const calls = organisms.map(async (o) => {
+    try {
+      const prompt = await client.readContract({
+        address: o.addr,
+        abi: prophetAbi,
+        functionName: "systemPrompt",
+      });
+      return [Number(o.id), prompt ? String(prompt) : ""];
+    } catch {
+      return [Number(o.id), ""];
+    }
+  });
+  const entries = await Promise.all(calls);
+  return new Map(entries.filter(([, text]) => Boolean(text)));
+}
+
