@@ -1,0 +1,41 @@
+#  Fly.io deployment — darwin cadence operator.
+#
+#  The cadence is a WORKER: no HTTP service, no public port. Fly keeps
+#  the machine alive with the auto_stop/auto_start policy below.
+#
+#  Secrets: use `fly secrets set` — never put them in this file.
+#    fly secrets set PRIVATE_KEY=0x... LLM_AGENT_ID=...
+#
+#  Deploy:
+#    1. fly auth login
+#    2. fly launch --no-deploy          (creates the app, skips first deploy)
+#    3. fly secrets set PRIVATE_KEY=0x... LLM_AGENT_ID=12847293847561029384
+#    4. fly deploy
+#
+#  Monitor:
+#    fly logs -a darwin-cadence
+
+app = "darwin-cadence"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# No [http_service] block — this is a background worker, not a web app.
+# Fly will not assign a public IP or route traffic to it.
+
+[processes]
+  cadence = "npx tsx scripts/cadence.ts"
+
+# Environment variables that are NOT secrets. Secrets go through `fly secrets set`.
+[env]
+  SOMNIA_RPC_URL = "https://dream-rpc.somnia.network"
+  SOMNIA_CHAIN_ID = "50312"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  # No auto-stop: the cadence must run 24/7.
+  # Fly's default is to stop idle machines; this overrides that.
+  auto_stop_machines = "off"
+  auto_start_machines = true

@@ -1,0 +1,48 @@
+# ── Build context: only what the cadence operator needs ──
+# Everything not explicitly copied in the Dockerfile is excluded here.
+
+# Version control
+.git
+.gitmodules
+
+# Frontend (stays on Vercel)
+app/
+web/
+
+# Smart contracts source & tooling (only deployments/ JSON is needed)
+contracts/src/
+contracts/test/
+contracts/script/
+contracts/lib/
+contracts/out/
+contracts/cache/
+contracts/foundry.toml
+
+# Hardhat (not used by the operator)
+hardhat/
+
+# Genomes (only used by enter.ts and fund.ts, not cadence)
+genomes/
+
+# Docs & notes
+docs/
+*.txt
+*.md
+SPIKE.md
+STORAGE.md
+CLAUDE.md
+README.md
+
+# Environment (secrets are injected via the platform, never baked into the image)
+.env
+.env.example
+
+# Dev tooling
+.claude/
+.darwin/
+.obsidian/
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
