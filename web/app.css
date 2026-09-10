@@ -1377,8 +1377,19 @@ code {
 
 .tree {
   display: block;
-  min-width: 100%;
   height: auto;
+}
+
+.tree-header-line {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.tree-divider {
+  stroke: var(--line-2);
+  stroke-width: 1;
+  stroke-dasharray: 2 6;
+  opacity: 0.5;
 }
 
 .tree-grid {
@@ -1392,19 +1403,32 @@ code {
   font-size: 10px;
   letter-spacing: var(--ls-label);
   fill: var(--text-4);
-  text-anchor: middle;
 }
 
 /* Descent, drawn parent to child. `motion.js` animates `stroke-dashoffset` on a new edge, so no
    dasharray may be set here — an inherited one would fight the tween's own. */
 .tree-edge {
   fill: none;
-  stroke: var(--line-3);
-  stroke-width: 1.25;
+  stroke: var(--life-dim);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 3px rgba(95, 227, 192, 0.3));
+  transition:
+    stroke var(--d-fast) var(--e-out),
+    stroke-width var(--d-fast) var(--e-out),
+    filter var(--d-fast) var(--e-out);
+}
+
+.tree-edge:hover {
+  stroke: var(--life);
+  stroke-width: 2;
+  filter: drop-shadow(0 0 6px rgba(95, 227, 192, 0.6));
 }
 
 .tree-edge.is-dead {
   stroke: var(--ash-dim);
+  stroke-width: 1.25;
+  filter: none;
 }
 
 .tree-node {
@@ -1499,6 +1523,11 @@ code {
   font-size: var(--t-xs);
   letter-spacing: 0.04em;
   color: var(--text-3);
+}
+
+.tree-note {
+  margin-left: auto;
+  color: var(--text-4);
 }
 
 .swatch {

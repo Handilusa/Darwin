@@ -1300,9 +1300,11 @@ export function detail(row, info, cfg, ctx = {}) {
                            LINEAGE TREE
 //////////////////////////////////////////////////////////////*/
 
-const COL = 132;
-const ROW = 34;
-const PAD = 26;
+const COL = 190;
+const ROW = 32;
+const PAD_X = 32;
+const PAD_TOP = 42;
+const PAD_BOTTOM = 24;
 const R = 7;
 
 /**
@@ -1320,41 +1322,90 @@ export function tree(t, cfg, ctx = {}) {
     );
   }
 
-  const width = PAD * 2 + t.generations * COL + 150;
-  const height = PAD * 2 + Math.max(t.rows - 1, 0) * ROW + 20;
-  const x = (n) => PAD + n.generation * COL;
-  const y = (n) => PAD + n.row * ROW;
+  // Display at least 4 generations (G0 to G3) so the generational grid is clearly readable as a timeline
+  // even when all current organisms are at generation 0 before breeding begins.
+  const displayGens = Math.max(t.generations, 3);
+  const width = Math.max(PAD_X * 2 + (displayGens + 1) * COL, 820);
+  const height = PAD_TOP + Math.max(t.rows - 1, 0) * ROW + PAD_BOTTOM;
+  const x = (n) => PAD_X + n.generation * COL;
+  const y = (n) => PAD_TOP + n.row * ROW;
 
   const canvas = svg("svg", {
     class: "tree",
     viewBox: `0 0 ${width} ${height}`,
     width,
     height,
-    // `.tree` is `min-width: 100%` so the panel never shows a collapsed canvas, and the default
-    // `xMidYMid` was therefore centring a 480px tree inside a 1440px box — half the lineage panel
-    // was empty on the left and the generation axis floated in the middle of nowhere. Pinning to
-    // xMin means the tree grows rightwards from G0, which is also the direction descent reads in.
-    preserveAspectRatio: "xMinYMin meet",
     role: "img",
     "aria-label": "lineage tree",
   });
 
-  // Generation gridlines first, so nothing draws over a node.
-  for (let g = 0; g <= t.generations; g += 1) {
-    const gx = PAD + g * COL;
-    canvas.appendChild(svg("line", { class: "tree-grid", x1: gx, y1: 4, x2: gx, y2: height - 4 }));
-    canvas.appendChild(svg("text", { class: "tree-gen", x: gx, y: height - 6 }, `G${g}`));
+  // Top header rule separating generation labels from tree nodes
+  canvas.appendChild(
+    svg("line", {
+      class: "tree-header-line",
+      x1: PAD_X - 16,
+      y1: 26,
+      x2: width - PAD_X + 16,
+      y2: 26,
+    }),
+  );
+
+  // Generation column headers and column divider guides
+  for (let g = 0; g <= displayGens; g += 1) {
+    const gx = PAD_X + g * COL;
+
+    // Column header label at top
+    canvas.appendChild(
+      svg(
+        "text",
+        {
+          class: "tree-gen",
+          x: gx - R,
+          y: 18,
+          "text-anchor": "start",
+        },
+        g === 0 ? "G0 · FOUNDERS" : `G${g}`,
+      ),
+    );
+
+    // Subtle vertical column divider between generations (does not cut through nodes)
+    if (g < displayGens) {
+      const divX = gx + COL - 24;
+      canvas.appendChild(
+        svg("line", {
+          class: "tree-divider",
+          x1: divX,
+          y1: 8,
+          x2: divX,
+          y2: height - 8,
+        }),
+      );
+    }
   }
 
+  // Draw parent -> child lineage edges with smooth curves that depart after the parent's label
+  // so the connecting branch line never cuts across the organism's name.
   for (const e of t.edges) {
     const a = t.byId.get(e.from);
     const b = t.byId.get(e.to);
     if (!a || !b) continue;
-    const mid = (x(a) + x(b)) / 2;
+
+    const aName = ctx.labels?.get(a.id);
+    const aLabel = `#${a.id}${aName ? ` ${aName}` : ""}`;
+    const aTextW = Math.round(aLabel.length * 6.5);
+    const startX = x(a) + R + 7 + aTextW + 8;
+    const endX = x(b) - R - 1;
+    const startY = y(a);
+    const endY = y(b);
+
+    const span = Math.max(endX - startX, 20);
+    const cp1x = startX + span * 0.5;
+    const cp2x = endX - span * 0.5;
+
     canvas.appendChild(
       svg("path", {
         class: ["tree-edge", e.dead && "is-dead"].filter(Boolean).join(" "),
-        d: `M ${x(a)} ${y(a)} H ${mid} V ${y(b)} H ${x(b)}`,
+        d: `M ${startX} ${startY} C ${cp1x} ${startY}, ${cp2x} ${endY}, ${endX} ${endY}`,
         // An edge into an organism born since the last paint draws itself, parent to child. Set as
         // a raw attribute because `svg()` takes no `dataset` — SVG elements still expose `.dataset`
         // to `motion.js` on the reading side.
@@ -1363,6 +1414,7 @@ export function tree(t, cfg, ctx = {}) {
     );
   }
 
+  // Draw organism nodes
   for (const n of t.nodes) {
     const name = ctx.labels?.get(n.id);
     const selected = ctx.selected != null && Number(ctx.selected) === n.id;
@@ -1391,10 +1443,14 @@ export function tree(t, cfg, ctx = {}) {
     );
     g.appendChild(svg("title", {}, `#${n.id}${name ? ` ${name}` : ""} · G${n.generation} · ${idx(THESIS, n.thesis)}`));
     g.appendChild(
-      svg("text", { class: "tree-label", x: x(n) + R + 6, y: y(n) + 4 }, `#${n.id}${name ? ` ${name}` : ""}`),
+      svg("text", { class: "tree-label", x: x(n) + R + 7, y: y(n) + 4 }, `#${n.id}${name ? ` ${name}` : ""}`),
     );
     canvas.appendChild(g);
   }
+
+  const hasEdges = t.edges.length > 0;
+  const genCount = t.generations + 1;
+  const genText = `${genCount} ${genCount === 1 ? "generation" : "generations"}`;
 
   return el(
     "section",
@@ -1403,7 +1459,12 @@ export function tree(t, cfg, ctx = {}) {
       "div",
       { class: "panel-head" },
       el("h2", { text: "Lineage" }),
-      el("span", { class: "muted", text: `${t.nodes.length} organisms · ${t.generations + 1} generations` }),
+      el("span", {
+        class: "muted",
+        text: !hasEdges && t.generations === 0
+          ? `${t.nodes.length} organisms · Generation 0 (awaiting breeding)`
+          : `${t.nodes.length} organisms · ${genText}`,
+      }),
     ),
     el("div", { class: "tree-scroll" }, canvas),
     el(
@@ -1417,6 +1478,12 @@ export function tree(t, cfg, ctx = {}) {
       " abstain ",
       el("span", { class: "swatch belief-none" }),
       " silent · small ring = dead",
+      !hasEdges
+        ? el("span", {
+            class: "tree-note",
+            text: "· Branches form as organisms breed (4 consecutive correct calls + 15 tUSDC)",
+          })
+        : null,
     ),
   );
 }
