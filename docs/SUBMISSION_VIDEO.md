@@ -29,8 +29,8 @@ en cadena y es atómica con la redención; el tick lo dispara todavía un keeper
 
 ## 1. Antes de grabar — pestañas abiertas
 
-1. `<TU-DOMINIO>/` — la landing.
-2. `<TU-DOMINIO>/arena/` — el dashboard en vivo. **Con la barra `/` final**, o los assets relativos dan 404.
+1. `https://darwin-protocol.vercel.app/` — la landing.
+2. `https://darwin-protocol.vercel.app/arena/` — el dashboard en vivo. **Con la barra `/` final**, o los assets relativos dan 404.
 3. `https://shannon-explorer.somnia.network/tx/0x14ac5ad9c5d6a149a4c01b56876601af2e13a97881afe35a1acda9a5eecc389d`
    — el `settleAll` de la ventana 68. ✓ verificado hoy: bloque 483075647, **394.027 gas, 9 logs**.
 4. `https://shannon-explorer.somnia.network/address/0xe0F46e61Cb3c87c01c4f79b6E9727772388838Cb`
