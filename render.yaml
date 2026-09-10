@@ -1,31 +1,32 @@
-#  Render deployment — darwin cadence operator.
+#  Render deployment — darwin cadence operator (FREE tier).
 #
-#  Render reads this file from the repo root on connect.
-#  The cadence is a WORKER service: no HTTP port, no public URL,
-#  always-on by design.
+#  Deployed as a Web Service (not a Background Worker) so it qualifies for
+#  Render's free tier. cadence-server.ts wraps cadence.ts with a tiny HTTP
+#  health endpoint that UptimeRobot pings every 5 min to prevent spin-down.
 #
-#  Secrets: set PRIVATE_KEY and LLM_AGENT_ID as "secret" env vars
-#  in the Render dashboard (they'll be marked sync: false below,
-#  meaning you must set them manually per environment).
+#  Secrets: set PRIVATE_KEY and LLM_AGENT_ID in the Render dashboard
+#  under Environment → Secret Files / Environment Variables.
 #
 #  Deploy:
-#    1. Push to your connected GitHub repo, OR
-#    2. render deploy (if using the CLI)
+#    1. Connect your GitHub repo at dashboard.render.com → New Web Service
+#    2. Render builds the Dockerfile automatically
+#    3. Set secrets in the Environment tab
+#    4. UptimeRobot pings your-app.onrender.com every 5 min
 
 services:
-  - type: worker
+  - type: web
     name: darwin-cadence
     runtime: docker
     dockerfilePath: ./Dockerfile
     region: frankfurt
-    plan: starter
+    plan: free
     envVars:
       # ── Required (set manually in Render dashboard) ──
       - key: PRIVATE_KEY
         sync: false
       - key: LLM_AGENT_ID
         sync: false
-      # ── Network defaults (override in dashboard if needed) ──
+      # ── Network defaults ──
       - key: SOMNIA_RPC_URL
         value: https://dream-rpc.somnia.network
       - key: SOMNIA_CHAIN_ID

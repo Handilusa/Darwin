@@ -45,4 +45,4 @@ COPY contracts/deployments/ contracts/deployments/
 
 # Default: unbounded loop, which is the whole point of deploying this.
 # Override with --windows N for bounded runs, or --self-test for CI.
-CMD ["npx", "tsx", "scripts/cadence.ts"]
+CMD ["npx", "tsx", "scripts/cadence-server.ts"]
