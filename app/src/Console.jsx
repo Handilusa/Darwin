@@ -49,14 +49,16 @@ export default function Console() {
           which is continuity with the landing for a visitor who scrolled there, and a
           number with no series for one who did not.
         */}
-        <div className="wrap console-crumb">
-          <span className="label">Entry console</span>
-          <span className="console-crumb-sep">·</span>
-          <span className="console-crumb-text">
-            The three transactions that put an organism in the arena. The explanation of what
-            an organism is lives on <a href="/">the landing</a>; live organisms, treasuries
-            and deaths are in <a href="/arena/">the arena</a>.
-          </span>
+        <div className="console-crumb-bar">
+          <div className="wrap console-crumb">
+            <span className="label">Entry console</span>
+            <span className="console-crumb-sep">·</span>
+            <span className="console-crumb-text">
+              The three transactions that put an organism in the arena. The explanation of what
+              an organism is lives on <a href="/">the landing</a>; live organisms, treasuries
+              and deaths are in <a href="/arena/">the arena</a>.
+            </span>
+          </div>
         </div>
 
         <Enter />

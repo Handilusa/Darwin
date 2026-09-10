@@ -1113,23 +1113,54 @@ code {
    orientation and two ways out.
 */
 
+.console-crumb-bar {
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink-2) 75%, var(--ink));
+}
+
+.console-crumb-bar + .enter,
+.console-crumb-bar + #enter {
+  border-top: none;
+  padding-top: var(--s-6);
+}
+
 .console-crumb {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--s-3);
-  padding-block: var(--s-6) var(--s-2);
+  gap: var(--s-2) var(--s-3);
+  padding-block: var(--s-3);
+}
+
+.console-crumb .label {
+  color: var(--life);
+  font-size: var(--t-xs);
+  letter-spacing: var(--ls-label);
+  white-space: nowrap;
 }
 
 .console-crumb-sep {
   color: var(--text-4);
+  user-select: none;
 }
 
 .console-crumb-text {
-  max-width: 72ch;
-  font-size: var(--t-sm);
-  line-height: 1.65;
+  font-size: var(--t-xs);
+  line-height: var(--lh-snug);
   color: var(--text-3);
+}
+
+.console-crumb-text a {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-decoration-color: var(--life-dim);
+  text-underline-offset: 0.22em;
+  transition: color var(--d-fast) var(--e-out), text-decoration-color var(--d-fast) var(--e-out);
+}
+
+.console-crumb-text a:hover {
+  color: var(--life);
+  text-decoration-color: var(--life);
 }
 
 /* ── the three transactions, always visible ──────────────────────────────── */
