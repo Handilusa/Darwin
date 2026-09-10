@@ -78,16 +78,15 @@ web/node_modules/
 # Wallet / blockchain key material
 keystore/
 **/keystore/
-*wallet*
 *wallet*.json
-*private*
+*wallet*.key
 *private*.json
-*seed*
+*private*.key
 *seed*.json
+*seed*.txt
 *mnemonic*
 *mnemonic*.txt
 *mnemonic*.json
-*secret*
 *secret*.json
 
 # Common credential/config files
