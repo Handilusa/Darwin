@@ -1403,9 +1403,11 @@ contract DarwinTest is Test {
 
         // THE WEDGE, from a stranger with no role in this arena. An owner-only griefing
         // path would be a tuning mistake rather than a vulnerability.
+        // Audit item #56: strangers must fund the breed deposit out of pocket.
         address griefer = makeAddr("griefer");
+        vm.deal(griefer, 1 ether);
         vm.prank(griefer);
-        population.breedProphet(winnerId);
+        population.breedProphet{value: population.requestDeposit()}(winnerId);
 
         assertGt(parent.pendingMutationRequestId(), 0, "the wedge did not arm, so this proves nothing");
         assertGe(parent.streak(), population.breedStreak(), "breeding moved the streak, so eligibility is not intact");
@@ -1979,6 +1981,13 @@ contract DarwinTest is Test {
         venue.redeemFor(address(this), 4242, 1);
     }
 
+    /// @dev Only the organism itself may redeem on its own behalf.
+    function test_venue_rejectsRedemptionByNonHolder() public {
+        vm.prank(address(0xBADBAD));
+        vm.expectRevert(DreamDEXVenue.NotHolder.selector);
+        venue.redeemFor(address(this), 4242, 1);
+    }
+
     /*//////////////////////////////////////////////////////////////
                           DEATH — IRREVERSIBLE
     //////////////////////////////////////////////////////////////*/
@@ -2186,8 +2195,105 @@ contract DarwinTest is Test {
         assertEq(parent.pendingMutationRequestId(), 0, "mutation id cleared");
 
         // CONTROL: with nothing in flight, the same caller breeds it again.
-        population.breedProphet(id);
+        vm.deal(address(this), 1 ether);
+        population.breedProphet{value: population.requestDeposit()}(id);
         assertGt(parent.pendingMutationRequestId(), 0, "the guard outlived the request it was guarding");
+    }
+
+    /**
+     *  STRANGER CANNOT DRAIN LEADER BY BREEDING WITHOUT PAYING THE FEE. Audit item #56.
+     *
+     *  A stranger calling `breedProphet` without value (or with insufficient value)
+     *  is rejected with `InsufficientBreedFee`.
+     */
+    function test_breeding_strangerWithoutFeeIsRejected() public {
+        Prophet parent = _p(_breedingCandidate());
+        _settle();
+        uint256 first = parent.pendingMutationRequestId();
+        requester.deliver(first, "clear id");
+        uint256 id = parent.prophetId();
+        uint256 dep = population.requestDeposit();
+
+        address stranger = makeAddr("stranger");
+        vm.deal(stranger, 1 ether);
+
+        // Zero value rejected
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Population.InsufficientBreedFee.selector, 0, dep));
+        population.breedProphet(id);
+
+        // Insufficient value rejected
+        vm.prank(stranger);
+        vm.expectRevert(abi.encodeWithSelector(Population.InsufficientBreedFee.selector, dep - 1, dep));
+        population.breedProphet{value: dep - 1}(id);
+    }
+
+    /**
+     *  STRANGER BREEDING PAYS OUT OF POCKET AND DOES NOT DRAIN THE LEADER. Audit item #56.
+     *
+     *  When a stranger provides `msg.value >= requestDeposit()`, the deposit is paid
+     *  by the caller, excess is refunded, and the organism's own native balance is untouched.
+     */
+    function test_breeding_strangerWithFeeDoesNotDrainLeader() public {
+        Prophet parent = _p(_breedingCandidate());
+        _settle();
+        uint256 first = parent.pendingMutationRequestId();
+        requester.deliver(first, "clear id");
+        uint256 id = parent.prophetId();
+        uint256 dep = population.requestDeposit();
+
+        address stranger = makeAddr("stranger");
+        vm.deal(stranger, 10 ether);
+
+        uint256 parentBalBefore = address(parent).balance;
+        uint256 strangerBalBefore = stranger.balance;
+
+        vm.prank(stranger);
+        population.breedProphet{value: dep + 1 ether}(id);
+
+        assertGt(parent.pendingMutationRequestId(), 0, "breeding was not requested");
+        // Leader's cognition was NOT touched:
+        assertEq(address(parent).balance, parentBalBefore, "leader cognition was drained");
+        // Stranger spent exactly dep (excess 1 ether refunded):
+        assertEq(stranger.balance, strangerBalBefore - dep, "stranger refund incorrect");
+    }
+
+    /**
+     *  ENTRANT OR OWNER CAN BREED WITHOUT FEE DRAWING FROM ORGANISM. Audit item #56.
+     *
+     *  Entrant or owner can call `breedProphet` with 0 value, drawing the deposit
+     *  from the organism's cognition balance.
+     */
+    function test_breeding_entrantCanBreedWithoutFee() public {
+        address alice = makeAddr("alice");
+        uint256 aliceId = _enter(alice, "alice genome", 100 * ONE);
+        address bob = makeAddr("bob");
+        uint256 bobId = _enter(bob, "bob genome", 100 * ONE);
+
+        Econ memory e = _econ();
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        _upWins();
+        _think();
+        _answer(aliceId, "UP_MOMENTUM");
+        _answer(bobId, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        uint256 first = _p(aliceId).pendingMutationRequestId();
+        requester.deliver(first, "clear id");
+
+        Prophet p = _p(aliceId);
+        uint256 dep = population.requestDeposit();
+        uint256 parentBalBefore = address(p).balance;
+
+        // Alice (the entrant) breeds with 0 msg.value:
+        vm.prank(alice);
+        population.breedProphet(aliceId);
+
+        assertGt(p.pendingMutationRequestId(), 0, "breeding not requested");
+        assertEq(address(p).balance, parentBalBefore - dep, "cognition was not drawn from organism");
     }
 
     /**
@@ -2438,6 +2544,307 @@ contract DarwinTest is Test {
         assertEq(child.parentId(), 1, "the child is not the capped parent's");
         assertEq(child.generation(), 1, "generation did not advance");
         assertFalse(child.dead(), "the child was born dead");
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                         EVICTION — AUDIT ITEM #57
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     *  EVICTION: A higher-generation child displaces the worst performer when maxPopulation is reached.
+     *  Audit item #57.
+     */
+    function test_eviction_higherGenChildDisplacesWorstPerformer() public {
+        address alice = makeAddr("alice");
+        address bob = makeAddr("bob");
+        address charlie = makeAddr("charlie");
+
+        uint256 p1Id = _enter(alice, "alice", 20 * ONE);
+        uint256 p2Id = _enter(bob, "bob", 10 * ONE);
+        uint256 p3Id = _enter(charlie, "charlie", 10 * ONE);
+
+        Econ memory e = _econ();
+        e.maxPopulation = 3;
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        // Window 1: Alice wins against Bob. Charlie is unpaired.
+        _upWins();
+        _think();
+        _answer(p1Id, "UP_MOMENTUM");
+        _answer(p2Id, "DOWN_REVERSION");
+        _answer(p3Id, "UP_MOMENTUM");
+        _commit();
+        _settle();
+
+        Prophet p1 = _p(p1Id);
+        Prophet p2 = _p(p2Id);
+        Prophet p3 = _p(p3Id);
+
+        assertEq(p1.correctCount(), 1, "Alice should have won");
+        assertEq(p2.wrongCount(), 1, "Bob should have lost");
+        assertEq(p3.correctCount(), 0, "Charlie should not have won");
+
+        // Alice qualifies to breed, request is in flight
+        uint256 reqId = p1.pendingMutationRequestId();
+        assertGt(reqId, 0, "mutation not requested for Alice");
+        requester.deliver(reqId, "alice mutated child");
+        assertEq(p1.pendingChildPrompt(), "alice mutated child");
+
+        assertEq(population.livingCount(), 3, "arena should be full at maxPopulation");
+
+        // Calling hatchAll should evict Bob (lowest score = -1)
+        vm.prank(owner);
+        population.hatchAll();
+
+        // Bob should be dead and evicted
+        assertTrue(p2.dead(), "Bob should be dead after eviction");
+        assertFalse(p1.dead(), "Alice should still be alive");
+        assertFalse(p3.dead(), "Charlie should still be alive");
+
+        // Newborn child should be prophet 4, child of Alice, generation 1
+        assertEq(population.prophetCount(), 4, "total prophets should be 4");
+        assertEq(population.livingCount(), 3, "living count should remain capped at 3");
+
+        Prophet child = _p(4);
+        assertEq(child.parentId(), p1Id, "child parent should be Alice");
+        assertEq(child.generation(), 1, "child generation should be 1");
+        assertFalse(child.dead(), "child should be alive");
+    }
+
+    /**
+     *  EVICTION: Capital and unspent cognition are refunded to the entrant upon eviction.
+     *  Audit item #57.
+     */
+    function test_eviction_refundsCapitalAndCognitionToEntrant() public {
+        address alice = makeAddr("alice");
+        address bob = makeAddr("bob");
+
+        uint256 p1Id = _enter(alice, "alice", 20 * ONE);
+        uint256 p2Id = _enter(bob, "bob", 10 * ONE);
+
+        Econ memory e = _econ();
+        e.maxPopulation = 2;
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        _upWins();
+        _think();
+        _answer(p1Id, "UP_MOMENTUM");
+        _answer(p2Id, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        uint256 reqId = _p(p1Id).pendingMutationRequestId();
+        requester.deliver(reqId, "alice child");
+
+        Prophet p2 = _p(p2Id);
+        uint256 bobTreasuryBefore = p2.treasury();
+        uint256 bobCognitionBefore = address(p2).balance;
+        uint256 bobCollateralBefore = collateral.balanceOf(bob);
+        uint256 bobNativeBefore = bob.balance;
+
+        assertGt(bobTreasuryBefore, 0, "Bob should have remaining treasury");
+
+        // Hatching should evict Bob and refund Bob's entrant
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertTrue(p2.dead(), "Bob should be dead");
+        assertEq(collateral.balanceOf(bob), bobCollateralBefore + bobTreasuryBefore, "collateral not refunded to Bob");
+        assertEq(bob.balance, bobNativeBefore + bobCognitionBefore, "native cognition not refunded to Bob");
+    }
+
+    /**
+     *  EVICTION: Ties in score break to lowest treasury; lower score is evicted over lower treasury.
+     *  Audit item #57.
+     */
+    function test_eviction_picksLowestScoreFirstThenLowestTreasury() public {
+        address alice = makeAddr("alice");
+        address bob = makeAddr("bob");
+        address charlie = makeAddr("charlie");
+        address dan = makeAddr("dan");
+
+        uint256 p1Id = _enter(alice, "alice", 30 * ONE);
+        uint256 p2Id = _enter(bob, "bob", 10 * ONE);
+        uint256 p3Id = _enter(charlie, "charlie", 20 * ONE);
+        uint256 p4Id = _enter(dan, "dan", 10 * ONE);
+
+        Econ memory e = _econ();
+        e.maxPopulation = 4;
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        // Window 1: Alice (UP) pairs against Dan (DOWN). Alice wins, Dan loses (score -1).
+        // Bob and Charlie do not answer -> abstain (score 0).
+        _upWins();
+        _think();
+        _answer(p1Id, "UP_MOMENTUM");
+        _answer(p4Id, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        Prophet p1 = _p(p1Id);
+        Prophet p2 = _p(p2Id);
+        Prophet p3 = _p(p3Id);
+        Prophet p4 = _p(p4Id);
+
+        assertEq(p1.correctCount(), 1, "Alice won");
+        assertEq(p4.wrongCount(), 1, "Dan lost, score -1");
+        assertEq(p2.wrongCount(), 0, "Bob score 0");
+        assertEq(p3.wrongCount(), 0, "Charlie score 0");
+        assertLt(p2.treasury(), p3.treasury(), "Bob has lower treasury than Charlie");
+
+        uint256 reqId = p1.pendingMutationRequestId();
+        requester.deliver(reqId, "alice child 1");
+
+        // HatchAll 1: Dan has score -1, Bob & Charlie have score 0.
+        // Dan is evicted because Dan has the lowest score, even though Bob has same treasury!
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertTrue(p4.dead(), "Dan (score -1) should be evicted");
+        assertFalse(p2.dead(), "Bob (score 0) should survive");
+        assertFalse(p3.dead(), "Charlie (score 0) should survive");
+
+        // Now deliver a second child to Alice
+        string[] memory answers = new string[](3);
+        answers[0] = "alice child 2";
+        answers[1] = "alice child 2";
+        answers[2] = "alice child 2";
+        Response[] memory rs = _responsesFrom(answers);
+        Request memory req = _emptyRequest();
+        vm.prank(address(population));
+        p1.noteMutating(88);
+        vm.prank(address(requester));
+        p1.handleMutation(88, rs, ResponseStatus.Success, req);
+
+        // HatchAll 2: Both Bob and Charlie have score 0, but Bob has ~10 ONE and Charlie ~20 ONE.
+        // Child 5 is gen 1, so cannot be evicted.
+        // Bob has lower treasury on score tie, so Bob is evicted! Charlie survives.
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertTrue(p2.dead(), "Bob (lower treasury on score tie) should be evicted");
+        assertFalse(p3.dead(), "Charlie (higher treasury on score tie) should survive");
+    }
+
+    /**
+     *  EVICTION: A child cannot evict an incumbent of same or higher generation.
+     *  Audit item #57.
+     */
+    function test_eviction_doesNotEvictSameOrHigherGeneration() public {
+        address alice = makeAddr("alice");
+        address bob = makeAddr("bob");
+
+        uint256 p1Id = _enter(alice, "alice", 20 * ONE);
+        uint256 p2Id = _enter(bob, "bob", 10 * ONE);
+
+        Econ memory e = _econ();
+        e.maxPopulation = 2;
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        _upWins();
+        _think();
+        _answer(p1Id, "UP_MOMENTUM");
+        _answer(p2Id, "DOWN_REVERSION");
+        _commit();
+        _settle();
+
+        // Alice breeds -> child 3 (generation 1). Evicts Bob (generation 0).
+        uint256 reqId = _p(p1Id).pendingMutationRequestId();
+        requester.deliver(reqId, "child gen 1");
+
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertEq(population.livingCount(), 2);
+        Prophet childGen1 = _p(3);
+        assertEq(childGen1.generation(), 1);
+
+        // Now Alice (gen 0) has another child (gen 1).
+        // The living organisms are Alice (gen 0, parent) and Child 3 (gen 1).
+        // Alice's new child is gen 1.
+        // Can Alice's gen 1 child evict Child 3 (gen 1)? NO! Because Child 3 is generation 1 >= childGen 1.
+        string[] memory answers = new string[](3);
+        answers[0] = "another gen 1 child";
+        answers[1] = "another gen 1 child";
+        answers[2] = "another gen 1 child";
+        Response[] memory rs = _responsesFrom(answers);
+        Request memory req = _emptyRequest();
+
+        Prophet p1 = _p(p1Id);
+        vm.prank(address(population));
+        p1.noteMutating(99);
+        vm.prank(address(requester));
+        p1.handleMutation(99, rs, ResponseStatus.Success, req);
+
+        vm.prank(owner);
+        population.hatchAll();
+
+        // No eviction occurred because Child 3 is generation 1!
+        assertEq(population.prophetCount(), 3, "no new child should have hatched");
+        assertFalse(childGen1.dead(), "Child 3 of gen 1 must not be evicted by a gen 1 child");
+        assertEq(p1.pendingChildPrompt(), "another gen 1 child", "prompt must be preserved");
+    }
+
+    /**
+     *  EVICTION: An organism with a pending child prompt is not evicted.
+     *  Audit item #57.
+     */
+    function test_eviction_doesNotEvictBreedingOrganism() public {
+        address alice = makeAddr("alice");
+        address bob = makeAddr("bob");
+        address charlie = makeAddr("charlie");
+        address dave = makeAddr("dave");
+
+        uint256 p1Id = _enter(alice, "alice", 30 * ONE);
+        uint256 p2Id = _enter(bob, "bob", 30 * ONE);
+        uint256 p3Id = _enter(charlie, "charlie", 10 * ONE);
+        uint256 p4Id = _enter(dave, "dave", 10 * ONE);
+
+        Econ memory e = _econ();
+        e.maxPopulation = 4;
+        e.breedStreak = 1;
+        _setEconomics(e);
+
+        Prophet p1 = _p(p1Id);
+        Prophet p2 = _p(p2Id);
+        Prophet p3 = _p(p3Id);
+        Prophet p4 = _p(p4Id);
+
+        string[] memory answers1 = new string[](3);
+        answers1[0] = "alice child";
+        answers1[1] = "alice child";
+        answers1[2] = "alice child";
+        vm.prank(address(population));
+        p1.noteMutating(111);
+        vm.prank(address(requester));
+        p1.handleMutation(111, _responsesFrom(answers1), ResponseStatus.Success, _emptyRequest());
+
+        string[] memory answers2 = new string[](3);
+        answers2[0] = "bob child";
+        answers2[1] = "bob child";
+        answers2[2] = "bob child";
+        vm.prank(address(population));
+        p2.noteMutating(222);
+        vm.prank(address(requester));
+        p2.handleMutation(222, _responsesFrom(answers2), ResponseStatus.Success, _emptyRequest());
+
+        // Alice and Bob both have pending child prompts and 30 ONE.
+        // Charlie and Dave have 10 ONE and no pending prompts.
+        // When hatchAll runs:
+        // Alice hatches -> Charlie is evicted (lowest id among 10 ONE tie).
+        // Bob hatches -> Dave is evicted.
+        // Neither Alice nor Bob is evicted!
+        vm.prank(owner);
+        population.hatchAll();
+
+        assertTrue(p3.dead(), "Charlie should be evicted");
+        assertTrue(p4.dead(), "Dave should be evicted");
+        assertFalse(p1.dead(), "Alice (breeding organism) should NOT be evicted");
+        assertFalse(p2.dead(), "Bob (breeding organism) should NOT be evicted");
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -5722,7 +6129,7 @@ contract DarwinTest is Test {
         assertEq(_dp(arena, 1).currentStake(), stake, "the stake was overwritten");
 
         // THE ONE THING A RETRY DOES NOT CARRY, asserted here because `settleWindow`
-        // clears `belief` on its way out (`Prophet.sol:528`) and this is the last point
+        // clears `belief` on its way out (`Prophet.sol:610`) and this is the last point
         // it can be read. Being skipped by `commitAll` does NOT skip `think`: the
         // organism was asked again and answered again, so its live belief is this
         // window's, not the one the open position was taken on.

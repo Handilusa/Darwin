@@ -45,6 +45,10 @@ export const CHROME =
  */
 export async function launch({ watchdogMs = 150_000, windowSize = "1440,900", note = console.log } = {}) {
   if (!existsSync(CHROME)) {
+    if (process.env.REQUIRE_BROWSER === "1") {
+      console.error(`FAIL — REQUIRE_BROWSER=1 but no chromium at ${CHROME}. Set CHROME=<path to chrome.exe> to run this.`);
+      process.exit(1);
+    }
     note(`SKIP — no chromium at ${CHROME}. Set CHROME=<path to chrome.exe> to run this.`);
     return null;
   }

@@ -157,7 +157,7 @@ const HEADER_CEILING = 360;
    number. Before this the harness ran at the 1440x900 default while every measurement in the docs was
    taken at 1600x1000, so nothing here shared a frame with the thing it was guarding. */
 const session = await launch({ watchdogMs: 180_000, note, windowSize: "1600,1000" });
-if (!session) process.exit(0);
+if (!session) process.exit(process.env.REQUIRE_BROWSER === "1" ? 1 : 0);
 const { evaluate, send, events, forget, close } = session;
 
 note(`target    ${URL_UNDER_TEST}`);

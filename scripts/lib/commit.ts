@@ -172,7 +172,7 @@ export function commitReadiness(i: CommitInputs): CommitReadiness {
  *  and both are worth an operator's attention; it cannot be a legitimate unanimous
  *  abstention, because an abstention IS an answer — `handleBelief` initialises `b` to
  *  `Belief.Abstain` (`Prophet.sol:271`) and writes it through on every non-Success status
- *  (`Prophet.sol:290`), so a delivered callback always moves `belief` off `None`.
+ *  (`Prophet.sol:292`), so a delivered callback always moves `belief` off `None`.
  */
 export function committedBlind(alive: number, answered: number): boolean {
   if (alive === 0) return false;

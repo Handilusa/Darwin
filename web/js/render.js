@@ -2206,4 +2206,99 @@ export function wiringPanel(cfg) {
   );
 }
 
+/*//////////////////////////////////////////////////////////////
+                           STANDINGS
+//////////////////////////////////////////////////////////////*/
+
+/**
+ *  Current season standings / podium.
+ *
+ *  Derived from `Population.sol:_topThree()` and `endSeason()`:
+ *  - Only living organisms are eligible (corpses cannot claim the prize pool)
+ *  - Score = int256(correctCount) - int256(wrongCount)
+ *  - Tie-break: lower id first (id < bestId)
+ *  - Season prize pool pays 60% / 30% / 10% to the top 3 survivors
+ */
+export function standingsPanel(rows, prizePool, cfg, ctx = {}) {
+  const living = (rows || []).filter((o) => !o.dead);
+  if (!living.length) {
+    return el(
+      "section",
+      { class: "panel panel-standings" },
+      el("div", { class: "panel-head" }, el("h2", { text: "Season Standings" })),
+      el("p", { class: "empty", text: "No living organisms eligible for season prize." }),
+    );
+  }
+
+  const ranked = [...living].sort((a, b) => {
+    const scoreA = Number(a.correctCount ?? 0) - Number(a.wrongCount ?? 0);
+    const scoreB = Number(b.correctCount ?? 0) - Number(b.wrongCount ?? 0);
+    if (scoreB !== scoreA) return scoreB - scoreA;
+    return Number(a.id) - Number(b.id);
+  });
+
+  const shares = [0.60, 0.30, 0.10];
+  const pot = prizePool != null ? BigInt(prizePool) : 0n;
+
+  return el(
+    "section",
+    { class: "panel panel-standings" },
+    el(
+      "div",
+      { class: "panel-head" },
+      el(
+        "h2",
+        {},
+        "Season Standings",
+        el("span", { class: "sub", text: "ranked by net score (correct − wrong) · endSeason pays top 3" }),
+      ),
+      el("span", { class: "muted", text: `${ranked.length} ranked` }),
+    ),
+    el(
+      "table",
+      { class: "table standings-table" },
+      el(
+        "thead",
+        {},
+        el(
+          "tr",
+          {},
+          el("th", { text: "Rank" }),
+          el("th", { text: "Organism" }),
+          el("th", { text: "Net Score" }),
+          el("th", { text: "Record" }),
+          el("th", { text: "Projected Payout" }),
+        ),
+      ),
+      el(
+        "tbody",
+        {},
+        ranked.slice(0, 10).map((o, index) => {
+          const score = Number(o.correctCount ?? 0) - Number(o.wrongCount ?? 0);
+          const scoreStr = score > 0 ? `+${score}` : `${score}`;
+          const share = index < 3 ? shares[index] : 0;
+          let payoutStr = "—";
+          if (share > 0 && pot > 0n) {
+            const cut = (pot * BigInt(Math.round(share * 10_000))) / 10_000n;
+            payoutStr = `${money2(cut, cfg)} (${share * 100}%)`;
+          }
+
+          const rankLabel = index === 0 ? "1st" : index === 1 ? "2nd" : index === 2 ? "3rd" : `#${index + 1}`;
+          const isPodium = index < 3;
+
+          return el(
+            "tr",
+            { class: isPodium ? "is-podium" : null },
+            el("td", { class: isPodium ? "mono podium-rank" : "mono", text: rankLabel }),
+            el("td", {}, chip(o.id, ctx)),
+            el("td", { class: "mono", text: scoreStr }),
+            el("td", { class: "muted", text: `${o.correctCount ?? 0}W / ${o.wrongCount ?? 0}L · ${o.abstainCount ?? 0}A` }),
+            el("td", { class: "mono", text: payoutStr }),
+          );
+        }),
+      ),
+    ),
+  );
+}
+
 export { mount, $ };

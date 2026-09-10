@@ -76,7 +76,7 @@ function _hatch(Prophet parent) internal {
     if (bytes(childGenome).length == 0) return;
 
     // NATIVE BEFORE COLLATERAL, and the order is load-bearing. `drawCognition` is
-    // the only all-or-nothing draw of the two (`Prophet.sol:691` returns 0 rather
+    // the only all-or-nothing draw of the two (`Prophet.sol:693` returns 0 rather
     // than sending a partial amount), so taking it first means the one shortfall
     // worth worrying about strands nothing: the collateral has not moved yet.
     //
@@ -373,8 +373,8 @@ folded in above. What follows is what produced **no** finding.
   therefore sound rather than lucky: `drawCognition`'s **missing `alive` modifier** cannot be
   reached with a dead parent, and `_spawn:502`'s `PopulationFull()` revert is unreachable from a
   birth, because `living.length` cannot change between `:1347` and `_spawn` inside one iteration.
-- **No reentrancy surface is added.** Both `receive()` bodies are empty — `Population.sol:1501`
-  and `Prophet.sol:626` — so neither the draw nor the refund hands control to anything. The only
+- **No reentrancy surface is added.** Both `receive()` bodies are empty — `Population.sol:2208`
+  and `Prophet.sol:757` — so neither the draw nor the refund hands control to anything. The only
   way to obtain a hostile `Prophet.receive()` is a beacon upgrade, which is `onlyOwner` and sits
   behind the same authority as `_authorizeUpgrade` and `setEconomics`; an owner who wants to
   break the population has shorter paths. Worth one line in the implementation comment and no

@@ -215,7 +215,9 @@ contract Prophet {
      */
     function noteThinking(uint256 requestId, bytes32 marketId) external onlyPopulation alive {
         pendingBeliefRequestId = requestId;
-        currentMarketId = marketId;
+        if (!positionOpen) {
+            currentMarketId = marketId;
+        }
         belief = Belief.None;
         // Clear the PREVIOUS window's rationale in the same breath as its belief.
         //
@@ -566,7 +568,7 @@ contract Prophet {
             // regression rather than a safety net. `belief` is a LIVE field, cleared at
             // the bottom of this function and rewritten by every `think`. An organism
             // whose settlement reverted keeps its position open and is skipped by the
-            // next `commitAll` (`Population.sol:1295`) — but it is NOT skipped by
+            // next `commitAll` (`Population.sol:1603`) — but it is NOT skipped by
             // `think`, so by the time the retry redeems the ORIGINAL position the live
             // belief belongs to a different window. Grading on it would book an abstain
             // over a position that won or lost real money, and the same is true of a

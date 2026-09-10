@@ -150,7 +150,7 @@ requestId 12650214, agentId matches). It decodes as
 
 1. `inferString(string prompt, string system, bool chainOfThought, string[] allowedValues)`
    is correct as declared — **arg1 is a system prompt, not a model name**, which is exactly
-   what `Population.think` passes (`p.systemPrompt()`, `Population.sol:1501`). This was the
+   what `Population.think` passes (`p.systemPrompt()`, `Population.sol:1504`). This was the
    one thing in this segment that looked like it might be a live bug in our code. It is not.
 2. `abi.encodeCall(ILLMAgent.inferString, ...)` matches the live payload encoding: the
    selector computed from our declaration, `0xfe7ca098`, is the selector live requests
@@ -1581,7 +1581,7 @@ redeems `currentOutcomeId`, a duel can only be claimed by its own holder
 (`DirectDuelVenue.redeemFor:210-263`), and `Prophet` exposes no arbitrary call. There is no rescue
 path, not even for the owner.
 
-The fix is one line in `commitAll`, today at **`Population.sol:1295`** (the audit cites `~1108`; the
+The fix is one line in `commitAll`, today at **`Population.sol:1603`** (the audit cites `~1108`; the
 `windowAnte` comment block has since pushed it down):
 
 ```solidity
@@ -1815,7 +1815,7 @@ and the third step is the one that cannot be skipped: edit `web/` → `npm run b
 With nothing listening on `:3000`, the harness attaches, navigates, and prints **sixteen lines of
 confident diagnostics about Chrome's connection-error page** — `title "localhost"`, `sheets=0`,
 `cards 0 · feed 0 · metrics 0`, all three fonts `MISSING`, `ground rgb(32,33,36)` — then dies 400 ms
-later on an unrelated `getBoundingClientRect` of null (`cdp.mjs:187` via `arena.mjs:441`). It never
+later on an unrelated `getBoundingClientRect` of null (`cdp.mjs:191` via `arena.mjs:441`). It never
 says *"no server"*. Worse, that output is **indistinguishable from "the app rendered nothing"**, which
 is a real app defect the harness exists to catch.
 

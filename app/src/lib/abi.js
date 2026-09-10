@@ -19,7 +19,7 @@
  *
  *    - `enter(string,uint256) payable returns (uint256)`   Population.sol:988
  *    - `retire(uint256)`                                    Population.sol:1341
- *    - `topUpCognition(uint256) payable`                    Population.sol:2090
+ *    - `topUpCognition(uint256) payable`                    Population.sol:2095
  *    - the four entry preconditions and their errors        Population.sol:989-1001
  *    - `faucet(uint256)` on tUSDC                           scripts/lib/darwin.ts:351
  *
@@ -62,6 +62,7 @@ export const populationReadAbi = parseAbi([
   "function prophetCount() view returns (uint256)",
   "function windowCount() view returns (uint64)",
   "function phase() view returns (uint8)",
+  "function prizePool() view returns (uint256)",
 
   // the season, so the form can say WHY the ante is what it is
   "function level() view returns (uint32)",
@@ -72,7 +73,7 @@ export const populationReadAbi = parseAbi([
   "function seasonStartWindow() view returns (uint64)",
   "function seasonWindows() view returns (uint32)",
 
-  // the whole population in one eth_call — sixteen fields, order per Population.sol:2140
+  // the whole population in one eth_call — sixteen fields, order per Population.sol:2162
   "function snapshot() view returns ((uint256 id,address addr,uint256 parentId,uint32 generation,uint256 treasury,uint32 streak,uint32 windowsLived,uint32 correctCount,uint32 wrongCount,uint32 abstainCount,uint64 birthWindow,uint64 deathWindow,bool dead,uint8 belief,uint8 thesis,bytes32 genomeHash)[])",
 ]);
 

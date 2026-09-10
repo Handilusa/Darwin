@@ -54,6 +54,7 @@ import { useEffect, useRef } from "react";
 import gsap from "gsap";
 
 import { useArenaLiveness } from "../lib/liveness.js";
+import { fmtUnits } from "../lib/quote.js";
 import { mountField } from "../motion/field.js";
 import { reducedMotion } from "../motion/hooks.js";
 import { CHAIN_ID } from "../lib/wagmi.js";
@@ -273,6 +274,11 @@ export function Hero({ onField }) {
           {live.verdict === "live" && live.seasonId !== undefined && live.seasonWindows !== undefined ? (
             <span className="pill">
               Season {String(live.seasonId)} · {String(live.seasonWindows)} windows
+            </span>
+          ) : null}
+          {live.verdict === "live" && live.prizePool !== undefined ? (
+            <span className="pill">
+              Prize pool · {fmtUnits(live.prizePool, 6)} tUSDC
             </span>
           ) : null}
         </div>

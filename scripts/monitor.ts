@@ -34,6 +34,7 @@ import {
   manifest,
   num,
   populationAbi,
+  priceSourceAbi,
   prophetAbi,
   publicClient,
   sleep,
@@ -51,7 +52,22 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import type { Address, Hex } from "viem";
+import { parseAbi, type Address, type Hex } from "viem";
+
+const failureEventsAbi = parseAbi([
+  "event ThinkFailed(uint256 indexed prophetId)",
+  "event CommitFailed(uint256 indexed prophetId)",
+  "event SettleFailed(uint256 indexed prophetId)",
+  "event ReapDeferred(uint256 indexed prophetId, uint256 residue)",
+]);
+
+const reactionFailedAbi = parseAbi([
+  "event ReactionFailed(address indexed emitter, uint256 blockNumber, bytes reason)",
+]);
+
+const beaconAbi = parseAbi([
+  "function implementation() view returns (address)",
+]);
 
 const INTERVAL = num("MONITOR_INTERVAL", 60) * 1000;
 /** Longer than one 15-minute window, so a normal window does not read as a stall. */
@@ -150,7 +166,7 @@ type Snapshot = {
   genomeHash: Hex;
 };
 
-export type Seen = { phase: number; window: bigint; at: number };
+export type Seen = { phase: number; window: bigint; at: number; block?: bigint };
 
 /*//////////////////////////////////////////////////////////////
                         PERSISTED OBSERVATION
@@ -272,7 +288,9 @@ export function parseSeen(raw: unknown): Seen | undefined {
   // succeeds and would silently reinterpret a hex window, `BigInt("")` returns 0n, and
   // `BigInt("nope")` throws inside the poll.
   if (typeof window !== "string" || !/^\d+$/.test(window)) return undefined;
-  return { phase, window: BigInt(window), at };
+  const blockRaw = o["block"];
+  const block = typeof blockRaw === "string" && /^\d+$/.test(blockRaw) ? BigInt(blockRaw) : undefined;
+  return { phase, window: BigInt(window), at, ...(block !== undefined ? { block } : {}) };
 }
 
 /** The whole file, or an empty record. Never throws — see the docblock above. */
@@ -315,6 +333,7 @@ export function saveSeen(chainId: number, population: string, seen: Seen): void 
       phase: seen.phase,
       window: seen.window.toString(),
       at: seen.at,
+      ...(seen.block !== undefined ? { block: seen.block.toString() } : {}),
     };
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, `${JSON.stringify({ ...state, observations }, null, 2)}\n`, "utf8");
@@ -502,7 +521,7 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
 
   /*
    *  THE SEASON GROUP IS SEVEN MORE READS, NOT A FIELD OF `snapshot()`. `snapshot()` is
-   *  sixteen per-ORGANISM fields (`Population.sol:2140`) and carries nothing about the
+   *  sixteen per-ORGANISM fields (`Population.sol:2162`) and carries nothing about the
    *  season, so there is no free ride here.
    *
    *  A SECOND BATCH RATHER THAN SEVEN MORE ENTRIES IN THE FIRST, and this is not style.
@@ -528,6 +547,65 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
     publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "ante" }),
     publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "level" }),
   ]);
+
+  const infraReads = await Promise.allSettled([
+    publicClient.readContract({ address: m.priceSource, abi: priceSourceAbi, functionName: "rawWindow", args: [m.symbol] }),
+    publicClient.readContract({ address: m.priceSource, abi: priceSourceAbi, functionName: "maxStaleness" }),
+    publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "venue" }),
+    publicClient.readContract({ address: m.population, abi: populationAbi, functionName: "selectionEngine" }),
+    publicClient.readContract({ address: m.prophetBeacon, abi: beaconAbi, functionName: "implementation" }),
+  ]);
+
+  const currentBlock = await publicClient.getBlockNumber().catch(() => undefined);
+  type FailureLog = { eventName: string; blockNumber: bigint; prophetId?: bigint; reason?: string };
+  const failureLogs: FailureLog[] = [];
+
+  if (currentBlock !== undefined) {
+    const fromBlock =
+      seen?.block !== undefined && seen.block < currentBlock
+        ? currentBlock - seen.block > 500n
+          ? currentBlock - 500n
+          : seen.block + 1n
+        : currentBlock > 100n
+          ? currentBlock - 100n
+          : 0n;
+
+    if (fromBlock <= currentBlock) {
+      const [popLogs, engLogs] = await Promise.all([
+        publicClient
+          .getLogs({
+            address: m.population,
+            events: failureEventsAbi,
+            fromBlock,
+            toBlock: currentBlock,
+          })
+          .catch(() => []),
+        publicClient
+          .getLogs({
+            address: m.selectionEngine,
+            events: reactionFailedAbi,
+            fromBlock,
+            toBlock: currentBlock,
+          })
+          .catch(() => []),
+      ]);
+
+      for (const l of popLogs) {
+        failureLogs.push({
+          eventName: l.eventName,
+          blockNumber: l.blockNumber,
+          prophetId: (l.args as { prophetId?: bigint }).prophetId,
+        });
+      }
+      for (const l of engLogs) {
+        failureLogs.push({
+          eventName: "ReactionFailed",
+          blockNumber: l.blockNumber,
+          reason: String((l.args as { reason?: unknown }).reason ?? ""),
+        });
+      }
+    }
+  }
 
   const phaseRaw = taken("phase", core[0], failed);
   const windowRaw = taken("windowCount", core[1], failed);
@@ -557,6 +635,14 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
   const rake = taken("rakeAccrued", seasonReads[4], failed) as bigint | undefined;
   const ante = taken("ante", seasonReads[5], failed) as bigint | undefined;
   const level = taken("level", seasonReads[6], failed) as number | undefined;
+
+  const rawWin = taken("rawWindow", infraReads[0], failed) as
+    | { marketId: Hex; openPrice: bigint; lastPrice: bigint; priceDecimals: number; updatedAt: bigint }
+    | undefined;
+  const maxStale = taken("maxStaleness", infraReads[1], failed) as bigint | undefined;
+  const onChainVenue = taken("venue", infraReads[2], failed) as Address | undefined;
+  const onChainEngine = taken("selectionEngine", infraReads[3], failed) as Address | undefined;
+  const onChainBeaconImpl = taken("beacon.implementation", infraReads[4], failed) as Address | undefined;
 
   // Windows into the season, and windows past its end. `overshoot` used to be derived here by
   // hand-mirroring both of `seasonIsOver`'s guards; since 2026-09-06 it comes from
@@ -874,6 +960,37 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
     );
   }
 
+  /* 8. Price feed staleness. Audit item #47. */
+  if (rawWin !== undefined && maxStale !== undefined) {
+    const updatedAt = Number(rawWin.updatedAt);
+    const limit = Number(maxStale);
+    const feedAge = now - updatedAt;
+    if (updatedAt > 0 && feedAge > limit) {
+      alert(
+        `price feed for "${m.symbol}" is STALE: last updated ${feedAge}s ago (limit ${limit}s). ` +
+          `The price updater has stopped pushing prices. think() and settleAll() will revert StalePrice.`,
+      );
+    }
+  }
+
+  /* 9. Infrastructure drift: venue, engine, or beacon implementation repointed. Audit item #48. */
+  const manifestVenue = (m as { venue?: Address }).venue;
+  if (onChainVenue !== undefined && manifestVenue !== undefined && onChainVenue.toLowerCase() !== manifestVenue.toLowerCase()) {
+    alert(`Population.venue on chain (${onChainVenue}) does NOT match manifest (${manifestVenue}). Repointed!`);
+  }
+  if (onChainEngine !== undefined && onChainEngine.toLowerCase() !== m.selectionEngine.toLowerCase()) {
+    alert(`Population.selectionEngine on chain (${onChainEngine}) does NOT match manifest (${m.selectionEngine}). Repointed!`);
+  }
+  if (onChainBeaconImpl !== undefined && onChainBeaconImpl.toLowerCase() !== m.prophetImpl.toLowerCase()) {
+    alert(`ProphetBeacon implementation on chain (${onChainBeaconImpl}) does NOT match manifest (${m.prophetImpl}). Upgraded!`);
+  }
+
+  /* 10. Silent failure events in logs. Audit item #45. */
+  for (const f of failureLogs) {
+    const who = f.prophetId !== undefined ? `#${f.prophetId}${label(names, f.prophetId)}` : "";
+    alert(`failure event ${f.eventName} ${who} observed at block ${f.blockNumber} — check transaction logs.`);
+  }
+
   if (alerts === 0 && snap !== undefined) roll(snap, names, m.collateralDecimals, runwayOf);
 
   /*
@@ -891,9 +1008,15 @@ async function check(m: Manifest, names: Map<number, string>, seen: Seen | undef
   if (phase === undefined || window === undefined) return { alerts, next: seen, readFailures };
 
   const advanced = seen === undefined || seen.phase !== phase || seen.window !== window;
+  const lastObservedBlock = currentBlock ?? seen?.block;
   return {
     alerts,
-    next: { phase, window, at: advanced ? now : seen.at },
+    next: {
+      phase,
+      window,
+      at: advanced ? now : seen.at,
+      ...(lastObservedBlock !== undefined ? { block: lastObservedBlock } : {}),
+    },
     readFailures,
   };
 }

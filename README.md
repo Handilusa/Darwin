@@ -374,7 +374,7 @@ darwin/
 │  │  ├─ PushedPriceSource.sol   Two pushed prices; everything else read on-chain
 │  │  ├─ interfaces/             IArenaVenue, IDreamDEX, ISomnia, IPriceSource
 │  │  └─ venues/                 DreamDEXVenue, DirectDuelVenue — swappable settlement
-│  ├─ test/Darwin.t.sol          152 tests; mocks for AgentRequester and 0x0100
+│  ├─ test/Darwin.t.sol          153 tests; mocks for AgentRequester and 0x0100
 │  ├─ script/                    Deploy.s.sol, Seed.s.sol
 │  └─ deployments/               <chainid>.json — read by every script and the frontend
 ├─ genomes/genesis.json          The eight founders. They must DISAGREE — see the file.
@@ -512,7 +512,7 @@ ever needs re-deriving, the roster UI is
 ## Verifying the claims yourself
 
 ```bash
-forge test --root contracts -vv     # 152 tests: death irreversible, void pays both sides 0.5,
+forge test --root contracts -vv     # 153 tests: death irreversible, void pays both sides 0.5,
                                     # abstain still pays, upgrade preserves lineage, and both
                                     # venues graded through one shared organism codebase
 npm test --prefix web               # the real renderer against a fixture, no network, no browser

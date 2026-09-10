@@ -107,6 +107,7 @@ export const populationAbi = parseAbi([
   "event Paired(uint256 indexed upId, uint256 indexed downId, uint256 amount)",
   "event Reaped(uint256 indexed prophetId, uint64 window, uint256 aliveRemaining)",
   "event Retired(uint256 indexed prophetId, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned)",
+  "event Evicted(uint256 indexed evictedId, uint256 indexed replacedById, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned)",
   "event ResidueForfeited(uint256 indexed prophetId, uint256 amount)",
   "event SeasonEnded(uint32 indexed season, uint256 pot, uint256 paid)",
   "event SeasonPrizePaid(uint32 indexed season, uint256 indexed prophetId, address indexed to, uint256 amount)",

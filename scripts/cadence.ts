@@ -474,7 +474,7 @@ async function doCommit(m: Manifest, client: WalletLike): Promise<boolean> {
    *  BOTH COUNTS ARE READ, not just the pending one. An empty pending set means either
    *  "everyone answered" or "the requests have not registered yet", and only `answered`
    *  separates them — `belief != None` can be written by nothing except a delivered
-   *  callback (`Prophet.sol:290`).
+   *  callback (`Prophet.sol:292`).
    */
   for (;;) {
     const now = Math.floor(Date.now() / 1000);
@@ -742,7 +742,7 @@ async function doSettle(m: Manifest, client: WalletLike): Promise<boolean> {
    *
    *  `send` asserts `receipt.status === "success"`, and on the `settleAll` branch that IS the
    *  whole story: `settleAll` writes `phase = 0` unconditionally at its end
-   *  (`Population.sol:1628`), so a successful direct call cannot leave the machine in phase 2.
+   *  (`Population.sol:1851`), so a successful direct call cannot leave the machine in phase 2.
    *  The `poke` branch is a different transaction. `SelectionEngine._handle` wraps the call in
    *  `try population.settleAll()` and swallows any revert into `ReactionFailed`
    *  (`SelectionEngine.sol:220`), deliberately — a reverting reactive callback is paid for by
@@ -1622,7 +1622,7 @@ function selfTestSeasonBoundary(): void {
 function selfTestSettleVerdict(): void {
   type Case = { phase: number; open: boolean; reacted: boolean; want: SettleVerdict; why: string };
   const cases: Case[] = [
-    // The ordinary success: settleAll wrote `phase = 0` (`Population.sol:1628`) and nothing
+    // The ordinary success: settleAll wrote `phase = 0` (`Population.sol:1851`) and nothing
     // caught anything on the way.
     { phase: 0, open: true, reacted: false, want: "settled", why: "idle after settle is a closed window" },
     { phase: 0, open: false, reacted: false, want: "settled", why: "same, with the fallback closed" },

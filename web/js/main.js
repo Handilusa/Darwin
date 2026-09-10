@@ -305,6 +305,7 @@ function paint() {
     $("#body"),
     ui.readErrors({ ...(app.cfg.failures || {}), ...(state.errors || {}) }),
     split,
+    ui.standingsPanel(rows, state.prizePool, app.cfg, c),
     ui.tree(tree, app.cfg, c),
     ui.censusPanel(lineage.census(tree), app.depth),
     ui.claimPanel(state, app.logs),

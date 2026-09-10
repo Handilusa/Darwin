@@ -29,7 +29,7 @@ const THINK = HATCH + 4600;
 const COMMIT = THINK + 4000;
 
 const session = await launch({ watchdogMs: 180_000, windowSize: "1600,1000" });
-if (!session) process.exit(0);
+if (!session) process.exit(process.env.REQUIRE_BROWSER === "1" ? 1 : 0);
 const { send, evaluate, close } = session;
 
 /* 2x so type and hairlines are judgeable rather than merely present. */

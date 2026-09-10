@@ -18,7 +18,7 @@ export const BELIEF = ["None", "Up", "Down", "Abstain"];
  *  The same four values, in words somebody who has never opened the contract can use.
  *
  *  `None` is the one that had to be translated. It is what `Prophet.settleWindow` writes at
- *  `Prophet.sol:528` and what `die` writes at `:536`, so for the whole of phase 0 it is the
+ *  `Prophet.sol:610` and what `die` writes at `:618`, so for the whole of phase 0 it is the
  *  value on EVERY living organism — and "None" reads as missing data, as though the page
  *  failed to load a field, when what it actually means is "holds no position right now".
  *

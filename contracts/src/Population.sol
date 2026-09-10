@@ -318,6 +318,16 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event Retired(
         uint256 indexed prophetId, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned
     );
+    /// @dev An incumbent was forcibly evicted to make room for a higher-generation child.
+    ///      Capital is refunded to the entrant (same as retire), not forfeited to the prize pool:
+    ///      eviction is selection pressure, not insolvency. Audit item #57.
+    event Evicted(
+        uint256 indexed evictedId,
+        uint256 indexed replacedById,
+        address indexed entrant,
+        uint256 collateralReturned,
+        uint256 cognitionReturned
+    );
     event BreedingRequested(uint256 indexed parentId, uint256 requestId);
     /// @dev A breeding request declined because this organism already has one out.
     ///      Its own line rather than a reuse of `BreedingUnaffordable`, because the
@@ -395,6 +405,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     error NoSuchProphet();
     error ProphetIsDead();
     error NotEligibleToBreed();
+    error InsufficientBreedFee(uint256 supplied, uint256 required);
     error TransferFailed();
     error NothingToHatch();
     error EndowmentTooSmall();
@@ -402,9 +413,8 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     error CognitionTooSmall();
     error NotEntrant();
     error PositionStillOpen();
-    /// @dev The second entry floor. `minEndowment` is a fixed number and the ante
-    ///      doubles every level, so a late entrant paying the fixed minimum could
-    ///      fund one window and be dead before the next.
+    /// @dev Second entry floor: `minEndowment` is fixed while ante doubles every
+    ///      level, so a late entrant could fund one window and die before the next.
     error EndowmentBelowAnte(uint256 supplied, uint256 required);
     /// @dev `withdrawRake` may only ever draw against the house's own book. The
     ///      float, the endowments and the prize pool share this balance.
@@ -1247,10 +1257,9 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /**
      *  The standings: the three living organisms with the best net record.
      *
-     *  Walks the LINEAGE rather than `living`. A season close is not a per-window
-     *  cost, and the dead have to be skipped either way — `living` exists to bound
-     *  the gas of the three functions that run inside the reactivity callback, and
-     *  this is not one of them.
+     *  Walks `living` rather than the unbounded lineage. Audit item #51: bounded gas.
+     *
+     *  Ties break to lower prophetId so swap-removal ordering does not affect podium.
      *
      *  Split out of `endSeason` rather than inlined: the search alone holds two
      *  fixed-size arrays and a signed score, and `--via-ir` is already at its stack
@@ -1263,30 +1272,31 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         bestScore[1] = type(int256).min;
         bestScore[2] = type(int256).min;
 
-        uint256 n = prophets.length;
+        uint256 n = living.length;
         for (uint256 i; i < n; ++i) {
-            Prophet p = Prophet(payable(prophets[i]));
+            uint256 id = living[i];
+            Prophet p = Prophet(payable(prophets[id - 1]));
             if (p.dead()) continue;
 
             // Signed on purpose: an organism can be net-wrong, and clamping that to
             // zero would make it indistinguishable from one that never called.
             int256 score = int256(uint256(p.correctCount())) - int256(uint256(p.wrongCount()));
 
-            if (score > bestScore[0]) {
+            if (bestId[0] == 0 || score > bestScore[0] || (score == bestScore[0] && id < bestId[0])) {
                 bestScore[2] = bestScore[1];
                 bestId[2] = bestId[1];
                 bestScore[1] = bestScore[0];
                 bestId[1] = bestId[0];
                 bestScore[0] = score;
-                bestId[0] = p.prophetId();
-            } else if (score > bestScore[1]) {
+                bestId[0] = id;
+            } else if (bestId[1] == 0 || score > bestScore[1] || (score == bestScore[1] && id < bestId[1])) {
                 bestScore[2] = bestScore[1];
                 bestId[2] = bestId[1];
                 bestScore[1] = score;
-                bestId[1] = p.prophetId();
-            } else if (score > bestScore[2]) {
+                bestId[1] = id;
+            } else if (bestId[2] == 0 || score > bestScore[2] || (score == bestScore[2] && id < bestId[2])) {
                 bestScore[2] = score;
-                bestId[2] = p.prophetId();
+                bestId[2] = id;
             }
         }
     }
@@ -1841,7 +1851,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                     _removeLiving(p.prophetId());
                     emit Reaped(p.prophetId(), windowCount, aliveCount);
                 } else if (p.streak() >= breedStreak && p.treasury() >= _breedThreshold()) {
-                    _requestMutation(p);
+                    _requestMutation(p, false);
                 }
             } catch {
                 emit SettleFailed(p.prophetId());
@@ -1895,7 +1905,7 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  it runs inside: `settleWindow` moves COLLATERAL and `drawCognition` moves
      *  NATIVE, and the two balances do not interact.
      */
-    function _requestMutation(Prophet p) internal {
+    function _requestMutation(Prophet p, bool callerFunded) internal {
         // BEFORE THE DEPOSIT, AND IT IS A RETURN RATHER THAN A REVERT. Audit item #56.
         //
         // `Prophet.noteMutating` reverts `MutationInFlight` on a duplicate, and that
@@ -1923,9 +1933,14 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         // abort an entire settlement over one organism's empty pocket. The parent
         // keeps its streak and its surplus and may breed in a later window, so the
         // merit it earned is deferred rather than destroyed.
-        if (p.drawCognition(dep) < dep) {
-            emit BreedingUnaffordable(p.prophetId());
-            return;
+        //
+        // If callerFunded is true (Audit item #56), the caller provided the deposit
+        // in msg.value to Population, so the organism's own balance is not drawn.
+        if (!callerFunded) {
+            if (p.drawCognition(dep) < dep) {
+                emit BreedingUnaffordable(p.prophetId());
+                return;
+            }
         }
 
         bytes memory payload = abi.encodeCall(
@@ -1963,19 +1978,156 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         }
     }
 
-    /// @dev Birth every child whose mutated genome has landed. Separate from
-    ///      settleAll so a slow inference never delays a settlement, and so the
-    ///      gas of a birth is never charged to the settlement callback.
-    function hatchAll() external onlyDriver {
-        // Forwards is correct here: `_spawn` APPENDS to `living`, and `n` is
-        // captured before the loop, so newborns are not iterated in the call that
-        // bore them.
+    /**
+     *  Find the worst-performing living organism eligible to be evicted for a child of `parent`.
+     *
+     *  Eligibility rules:
+     *    1. Must be living and not the parent itself.
+     *    2. Must be of a strictly lower generation than the child (`c.generation() < parent.generation() + 1`).
+     *    3. Must have strictly worse performance than the parent (lower net score, or same net score and lower treasury).
+     *    4. Must not have a pending child prompt of its own (breeding organisms are not evicted).
+     *
+     *  Among all eligible candidates, the one with the worst performance is chosen:
+     *    - Lowest net score (correctCount - wrongCount).
+     *    - Tie-break: lowest treasury.
+     *    - Tie-break: lowest generation (older generations evicted first).
+     *    - Tie-break: lowest prophetId (deterministic).
+     *
+     *  Audit item #57.
+     */
+    function _findEvictionCandidate(Prophet parent) internal view returns (uint256 worstId) {
+        uint32 childGen = parent.generation() + 1;
+        uint256 parentId = parent.prophetId();
+        int256 parentScore = int256(uint256(parent.correctCount())) - int256(uint256(parent.wrongCount()));
+        uint256 parentTreasury = parent.treasury();
+
+        int256 worstScore = type(int256).max;
+        uint256 worstTreasury = type(uint256).max;
+        uint32 worstGen = type(uint32).max;
+
         uint256 n = living.length;
+        for (uint256 i; i < n; ++i) {
+            uint256 id = living[i];
+            if (id == parentId) continue;
+            Prophet c = Prophet(payable(prophets[id - 1]));
+            if (c.dead()) continue;
+            if (bytes(c.pendingChildPrompt()).length > 0) continue;
+
+            uint32 gen = c.generation();
+            if (gen >= childGen) continue;
+
+            int256 score = int256(uint256(c.correctCount())) - int256(uint256(c.wrongCount()));
+            uint256 t = c.treasury();
+
+            // Candidate must be worse than the breeding parent
+            if (score > parentScore || (score == parentScore && t >= parentTreasury)) {
+                continue;
+            }
+
+            // Find the worst among all eligible candidates
+            if (
+                worstId == 0 || score < worstScore || (score == worstScore && t < worstTreasury)
+                    || (score == worstScore && t == worstTreasury && gen < worstGen)
+                    || (score == worstScore && t == worstTreasury && gen == worstGen && id < worstId)
+            ) {
+                worstScore = score;
+                worstTreasury = t;
+                worstGen = gen;
+                worstId = id;
+            }
+        }
+    }
+
+    /**
+     *  Forcibly evict an incumbent organism to make room for a higher-generation child.
+     *
+     *  Capital is REFUNDED to the entrant, not forfeited to the prize pool:
+     *  eviction is selection pressure making room for evolution, not insolvency.
+     *
+     *  Audit item #57.
+     */
+    function _evict(uint256 prophetId, uint256 replacedById) internal {
+        Prophet p = Prophet(payable(prophetAt(prophetId)));
+        address ent = p.entrant();
+
+        // Collateral back to entrant
+        uint256 remaining = p.treasury();
+        if (remaining > 0) {
+            try p.stakeOut(ent, remaining, collateral) returns (uint256 sent) {
+                remaining = sent;
+            } catch {
+                remaining = 0;
+            }
+        }
+
+        // Native cognition back to entrant
+        uint256 cognition = p.drawCognition(address(p).balance);
+
+        p.die(windowCount);
+        aliveCount -= 1;
+        _removeLiving(prophetId);
+
+        uint256 cognitionReturned;
+        if (cognition > 0) {
+            (bool ok,) = ent.call{value: cognition}("");
+            if (ok) {
+                cognitionReturned = cognition;
+            } else {
+                emit CognitionUnspent(prophetId, cognition);
+            }
+        }
+
+        emit Evicted(prophetId, replacedById, ent, remaining, cognitionReturned);
+    }
+
+    /**
+     *  Birth every child whose mutated genome has landed. Separate from
+     *  settleAll so a slow inference never delays a settlement, and so the
+     *  gas of a birth is never charged to the settlement callback.
+     *
+     *  EVICTION (Audit item #57): If `living.length >= maxPopulation`, an incumbent
+     *  of strictly lower generation with worse performance is evicted to make room
+     *  for the child, refunding its remaining stake to its entrant. If no eligible
+     *  candidate exists, the birth is deferred rather than reverted, preserving
+     *  the pending prompt.
+     */
+    function hatchAll() external onlyDriver {
+        // Collect parents with pending child prompts first.
+        // This decouples iteration from array modifications (swap-removes from eviction
+        // and pushes from spawns) so no parent is skipped or visited twice.
+        uint256 n = living.length;
+        uint256[] memory parentsToHatch = new uint256[](n);
+        uint256 count;
         for (uint256 i; i < n; ++i) {
             Prophet p = Prophet(payable(prophets[living[i] - 1]));
             if (p.dead()) continue;
-            if (bytes(p.pendingChildPrompt()).length == 0) continue;
-            if (living.length >= maxPopulation) break;
+            if (bytes(p.pendingChildPrompt()).length > 0) {
+                parentsToHatch[count++] = living[i];
+            }
+        }
+
+        for (uint256 j; j < count; ++j) {
+            Prophet p = Prophet(payable(prophetAt(parentsToHatch[j])));
+            if (p.dead() || bytes(p.pendingChildPrompt()).length == 0) continue;
+
+            if (living.length >= maxPopulation) {
+                // If parent cannot afford the birth, _hatch will emit BirthUnaffordable
+                // and return without consuming the prompt. Do not evict for a birth
+                // that cannot happen.
+                if (p.treasury() < endowment) {
+                    _hatch(p);
+                    continue;
+                }
+
+                uint256 victimId = _findEvictionCandidate(p);
+                if (victimId == 0) {
+                    // No candidate eligible to be evicted — leave child pending
+                    continue;
+                }
+
+                _evict(victimId, p.prophetId());
+            }
+
             _hatch(p);
         }
     }
@@ -2108,12 +2260,29 @@ contract Population is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      *  the organism a deposit that bought nothing, which is the same bleed audit item
      *  #56 exists to close.
      */
-    function breedProphet(uint256 prophetId) external {
+    function breedProphet(uint256 prophetId) external payable {
         Prophet p = Prophet(payable(prophetAt(prophetId)));
         if (p.dead()) revert ProphetIsDead();
         if (p.pendingMutationRequestId() != 0) revert Prophet.MutationInFlight();
         if (p.streak() < breedStreak || p.treasury() < _breedThreshold()) revert NotEligibleToBreed();
-        _requestMutation(p);
+
+        uint256 dep = requestDeposit();
+        bool callerFunded = false;
+
+        if (msg.value >= dep) {
+            callerFunded = true;
+            uint256 refund = msg.value - dep;
+            if (refund > 0) {
+                (bool ok,) = msg.sender.call{value: refund}("");
+                if (!ok) revert TransferFailed();
+            }
+        } else {
+            if (msg.value > 0 || (msg.sender != p.entrant() && msg.sender != owner())) {
+                revert InsufficientBreedFee(msg.value, dep);
+            }
+        }
+
+        _requestMutation(p, callerFunded);
     }
 
     /*//////////////////////////////////////////////////////////////

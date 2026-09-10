@@ -31,7 +31,7 @@ forge fmt --root contracts     # 120 cols, 4-space, no bracket spacing
 ```
 
 Single test / subset (all Solidity tests live in `contracts/test/Darwin.t.sol`, one contract
-`DarwinTest`, **152 tests as of 2026-09-07** — 152 `function test` declarations in the one file,
+`DarwinTest`, **153 tests as of 2026-09-09** — 153 `function test` declarations in the one file,
 none of them fuzzed, so the suite count and the declaration count are the same number):
 
 ```bash
@@ -474,7 +474,7 @@ EvmError: NotActivated  →  Error: script failed: <empty revert data>
 which names neither PUSH0 nor `evm_version`. **`--broadcast` simulates before sending, so this was
 never dry-run-only — the deploy itself would have failed at the first command.** The same script
 unchanged under `shanghai` simulates the full deploy clean. Tests: 56/56 under both — that is the
-suite **as it stood on 2026-08-29**, not a current count (it is 152 now), and the figure is left
+suite **as it stood on 2026-08-29**, not a current count (it is 153 now), and the figure is left
 alone deliberately: the claim is that one identical suite passed under both EVM versions, and
 substituting today's number would assert a `paris` run that never happened. Storage layout:
 byte-identical (`evm_version` does not affect it).

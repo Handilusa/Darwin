@@ -652,7 +652,7 @@ const SCRIPT = [
       window: { ...state.window, secondsRemaining: 0n },
     },
     // EVERY SETTLED ROW CLEARS ITS BELIEF, because `Prophet.settleWindow` does: `belief =
-    // Belief.None` at `Prophet.sol:528`, and `die` does the same at `:536`. `lastThesis` is
+    // Belief.None` at `Prophet.sol:610`, and `die` does the same at `:618`. `lastThesis` is
     // deliberately NOT cleared alongside it — it has exactly one writer, `:263`, in the thinking
     // path — so a settled organism carries no direction and still remembers why it last had one.
     // Without this the window-41 tags rode through settlement, through the birth, and into window

@@ -73,7 +73,9 @@ export type Manifest = {
   prophetBeacon: Address;
   prophetImpl: Address;
   priceSource: Address;
+  venue?: Address;
   selectionEngine: Address;
+  genesisTreasury?: Address;
   agentRequester: Address;
   marketsModule: Address;
   settlement: Address;
@@ -177,7 +179,7 @@ export const populationAbi = parseAbi([
   "function snapshot() view returns ((uint256 id,address addr,uint256 parentId,uint32 generation,uint256 treasury,uint32 streak,uint32 windowsLived,uint32 correctCount,uint32 wrongCount,uint32 abstainCount,uint64 birthWindow,uint64 deathWindow,bool dead,uint8 belief,uint8 thesis,bytes32 genomeHash)[])",
   // writes a human might make
   "function fundProphet(uint256 prophetId, uint256 amount)",
-  "function breedProphet(uint256 prophetId)",
+  "function breedProphet(uint256 prophetId) payable",
   // Arena entry and exit. `enter` and `topUpCognition` are both payable and the value
   // is native STT for cognition, NOT collateral — the collateral half of `enter` is
   // pulled with transferFrom, so it needs an allowance first, exactly like fundProphet.
@@ -213,6 +215,7 @@ export const populationAbi = parseAbi([
   "event Spawned(uint256 indexed prophetId, address prophet, uint256 indexed parentId, uint32 generation)",
   "event Reaped(uint256 indexed prophetId, uint64 window, uint256 aliveRemaining)",
   "event Retired(uint256 indexed prophetId, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned)",
+  "event Evicted(uint256 indexed evictedId, uint256 indexed replacedById, address indexed entrant, uint256 collateralReturned, uint256 cognitionReturned)",
   // The cognition ledger. `CognitionUnspent` is the one to alert on: it means a deposit
   // was drawn from an organism for a request that then reverted, so the native is sitting
   // in Population and `sweep(address(0), organism, amount)` is how it goes home.

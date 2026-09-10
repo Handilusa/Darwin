@@ -573,7 +573,7 @@ assert("exactly one organism dies on screen", [...ids(last).values()].filter((o)
 // The scalars the header reads have to move with the population, or the hero contradicts the grid.
 //
 // AND THE RAKE IS NOT THREE WINNERS' SKIM. `settleAll` hands every settled organism's `charged + raked`
-// to `_book` (`Population.sol:1264`), which splits each one at `prizeShareBps` and keeps integer
+// to `_book` (`Population.sol:1136`), which splits each one at `prizeShareBps` and keeps integer
 // division's remainder in the rake (`:759`). So nine organisms' metabolic rent is income too, and half
 // of all of it belongs to the PRIZE POOL. This check expected `3 x rake-on-win` until 2026-09-04 —
 // which is why `prizePool` sat still through the one frame that forfeits a corpse's residue into it,
@@ -2013,6 +2013,14 @@ assert(
   "a decoded address argument is shortened by the renderer, not printed in full",
   addrRow.includes("MarketUnreadable(") && !addrRow.includes(cfg.population) && addrRow.includes(fmt.addr(cfg.population)),
   JSON.stringify(addrRow),
+);
+
+// Standings panel: renders living forecasters ranked by net score (correct - wrong)
+const standingsNode = ui.standingsPanel(rows, state.prizePool, cfg, ctx);
+assert(
+  "standingsPanel renders with Season Standings title and podium rows",
+  standingsNode.textContent.includes("Season Standings") && standingsNode.textContent.includes("1st"),
+  JSON.stringify(standingsNode.textContent),
 );
 
 console.log("\n" + checks.join("\n"));

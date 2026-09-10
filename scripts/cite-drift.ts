@@ -625,13 +625,23 @@ function selfTest(root: string): void {
         "false false false",
     );
 
+    // 12. `collect` exercises real file walking and citation extraction. Audit item #41.
+    const gathered = collect(root);
+    checks.push({
+        name: "collect() extracts real citations across the repository",
+        ok: gathered.length > 50,
+        got: `${gathered.length} citations`,
+        want: "> 50 citations",
+    });
+
     const failed = checks.filter((c) => !c.ok);
     for (const c of checks) {
         console.log(`  ${c.ok ? "ok  " : "FAIL"}  ${c.name}${c.ok ? "" : `  (got ${c.got}, want ${c.want})`}`);
     }
-    // #4 (a correct citation must NOT be flagged), the passing half of #6, and #11 (a bucket
-    // that must not fail the build). Each one is a check that fires on the healthy state.
-    const controls = 3;
+    // #4 (a correct citation must NOT be flagged), the passing half of #6, #11 (a bucket
+    // that must not fail the build), and #12 (real collect extraction). Each one is a check
+    // that fires on the healthy state.
+    const controls = 4;
     if (failed.length > 0) {
         console.log(`\nFAIL — ${failed.length} of ${checks.length} self-checks failed.`);
         process.exitCode = 1;

@@ -499,7 +499,7 @@ The blocking seven, in order of damage:
    (tUSDC) pays metabolism and the ante. It is the only above-fold claim about cognition, and the
    landing already says it correctly (*"answers through on-chain inference"*,
    `app/src/sections/Hero.jsx:171-176`), so the two surfaces contradict each other today.
-2. **One no-cfg card serves three different situations.** `main.js:445` paints with `app.cfg` still
+2. **One no-cfg card serves three different situations.** `main.js:446` paints with `app.cfg` still
    null, so on a **live** deploy the card whose sub-head reads *"Nothing is deployed yet"*
    (`render.js:1352`) is the first frame of a working arena, and it stays up for the whole of
    `chain.connect` + `chain.discover` — a cold cross-origin viem fetch plus ~19 reads. The brief's
@@ -537,7 +537,7 @@ Each of these was re-checked against the code before being recorded. They are sa
   renders a bare `ABSTAIN` — the correct and the impossible form of one state sit on the same
   screen. **Fix is two characters**, and it makes the fixture obey the rule it states about itself
   at `fixture.js:16-33`.
-- **Beliefs never clear at settlement.** `Prophet.sol:528` (and `:215` on a new request) writes
+- **Beliefs never clear at settlement.** `Prophet.sol:610` (and `:215` on a new request) writes
   `Belief.None`; the scripted `settleAll` frame (`fixture.js:511-527`) updates ten treasuries,
   streaks and counters and clears no belief, so window 41's tags ride through settlement, through
   the birth, and into window 42. Combined with the demo names (`main.js:308-316`) six of seven
@@ -1788,7 +1788,7 @@ would conclude from the old label.
 
 **`BELIEF_HUMAN = ["no call", "Up", "Down", "Abstain"]`.** `None` was the one that had to be
 translated, and the reason is a timing fact rather than a style preference: `None` is what
-`Prophet.settleWindow` writes at `Prophet.sol:528` and what `die` writes at `:536`, so **for the whole
+`Prophet.settleWindow` writes at `Prophet.sol:610` and what `die` writes at `:618`, so **for the whole
 of phase 0 it is the value on every living organism**. "None" reads as *missing data* — as though the
 page failed to load a field — when what it means is "holds no position right now". A dashboard whose
 idle state looks like a loading failure is broken even though every value on it is correct.
@@ -1884,7 +1884,7 @@ not `127.0.0.1` — `vite preview` binds `::1` only on this machine (`arena.mjs:
 `:3000` the harness attaches, navigates, and prints **sixteen lines of confident diagnostics about
 Chrome's connection-error page** — `title "localhost"`, `sheets=0`, `cards 0 · feed 0 · metrics 0`, all
 three fonts `MISSING`, `ground rgb(32,33,36)` — then dies 400 ms later on an unrelated
-`getBoundingClientRect` of null (`cdp.mjs:187` via `arena.mjs:441`). It never says *"no server"*, and
+`getBoundingClientRect` of null (`cdp.mjs:191` via `arena.mjs:441`). It never says *"no server"*, and
 that output is indistinguishable from *"the app rendered nothing"*, which is a real defect the harness
 exists to catch. Until someone adds a reachability probe: **read `ground` and `cards` before anything
 else.** A real run is `cards 13` on the app's own ground; `rgb(32,33,36)` with 0 cards is Chrome.

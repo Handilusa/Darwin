@@ -41,6 +41,7 @@ contract DreamDEXVenue is IArenaVenue {
     error NotTradeable();
     error TransferFailed();
     error UnknownPosition(uint256 positionId);
+    error NotHolder();
 
     constructor(
         IPriceSource priceSource_,
@@ -97,6 +98,8 @@ contract DreamDEXVenue is IArenaVenue {
         external
         returns (uint256 collateralOut)
     {
+        if (msg.sender != organism) revert NotHolder();
+
         address pool = poolOf[positionId];
         if (pool == address(0)) revert UnknownPosition(positionId);
 

@@ -57,6 +57,7 @@ export function useArenaLiveness() {
       ? [
           { address, abi: populationReadAbi, functionName: "seasonId" },
           { address, abi: populationReadAbi, functionName: "seasonWindows" },
+          { address, abi: populationReadAbi, functionName: "prizePool" },
         ]
       : [],
     // Slower than the entry form's twenty seconds on purpose: nothing here is quoted
@@ -73,5 +74,6 @@ export function useArenaLiveness() {
     address,
     seasonId: batch.data?.[0]?.result,
     seasonWindows: batch.data?.[1]?.result,
+    prizePool: batch.data?.[2]?.result,
   };
 }

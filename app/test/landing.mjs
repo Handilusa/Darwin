@@ -52,7 +52,7 @@ const URL_UNDER_TEST = process.argv[2] ?? "http://localhost:3000/";
 const fail = [];
 
 const session = await launch({ watchdogMs: 240_000, windowSize: "1440,900" });
-if (!session) process.exit(0);
+if (!session) process.exit(process.env.REQUIRE_BROWSER === "1" ? 1 : 0);
 const { send, evaluate, events, note, forget, close } = session;
 
 note(`target    ${URL_UNDER_TEST}`);
