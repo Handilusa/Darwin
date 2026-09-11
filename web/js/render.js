@@ -1,4 +1,4 @@
-/**
+﻿/**
  *  Every pixel. Pure functions from data to DOM nodes — no chain access, no polling, no state.
  *
  *  Three rules hold throughout, and each one is load-bearing rather than stylistic:
@@ -286,7 +286,12 @@ export function masthead() {
  */
 export function header(state, cfg, ctx = {}) {
   const phase = state.phase == null ? null : Number(state.phase);
-  const w = state.window;
+  // `currentWindow()` reverts once the 1-hour window closes, so `state.window` is null during the
+  // COMMITTED phase (settle pending). Fall back to `state.rawWindow`, which the price-source always
+  // returns, so the settle hint can still show the last observed price and direction.
+  const w = state.window ?? (state.rawWindow
+    ? { openPrice: state.rawWindow.openPrice, lastPrice: state.rawWindow.lastPrice, priceDecimals: Number(state.rawWindow.priceDecimals) }
+    : null);
   const depth = depthOf(state, ctx);
 
   const seasonProgress =
@@ -373,7 +378,7 @@ export function header(state, cfg, ctx = {}) {
         ),
       ),
 
-      el("div", { class: "hero-readout" }, priceBlock(state, w), phaseTrack(phase, ctx)),
+      el("div", { class: "hero-readout" }, priceBlock(state, w), phaseTrack(phase, ctx, w)),
     ),
 
     el(
@@ -469,8 +474,12 @@ function metric(label, value, note = "", extra) {
  *  The cadence, as the state machine it is: three nodes on a track, the live one lit, the call that
  *  advances it named at the end. Position carries the state and the label carries the next action,
  *  which is the only arrangement in which the off-by-one between them cannot be misread.
+ *
+ *  When the next call is `settleAll()` (phase === 2) and a window `w` is available, the last
+ *  observed price is shown beside the call so the operator can see at a glance whether the price
+ *  went up or down since the window opened.
  */
-function phaseTrack(phase, ctx) {
+function phaseTrack(phase, ctx, w) {
   const parts = [];
   for (let i = 0; i < PHASE_STATE.length; i += 1) {
     const live = phase === i;
@@ -488,6 +497,20 @@ function phaseTrack(phase, ctx) {
     );
     if (i < PHASE_STATE.length - 1) parts.push(el("span", { class: ["phase-rail", past && "is-past"] }));
   }
+
+  // When settleAll() is next and price data is available, show the last price and its direction
+  // so the operator can see at a glance whether the price moved up or down this window.
+  const settleHint = phase === 2 && w
+    ? (() => {
+        const move = movePct(w.openPrice, w.lastPrice);
+        const dir = move.sign > 0 ? "up" : move.sign < 0 ? "down" : "flat";
+        return frag(
+          el("span", { class: "phase-settle-price", text: money(w.lastPrice, w.priceDecimals, 2) }),
+          el("span", { class: ["price-move", dir], text: move.text }),
+        );
+      })()
+    : null;
+
   return el(
     "div",
     { class: "phase-track", role: "group", "aria-label": "cadence phase" },
@@ -501,6 +524,7 @@ function phaseTrack(phase, ctx) {
       // against the contract needs, and exactly the wrong thing to lead with for a reader who is
       // still working out what this page is — so the sentence goes first and the call follows it.
       phase == null ? null : el("code", { class: "phase-call", text: idx(PHASE_NEXT, phase, "?") }),
+      settleHint,
     ),
   );
 }
@@ -956,7 +980,7 @@ function card(o, cfg, ctx) {
       el("span", { class: "card-gen", title: "generation", text: `G${o.generation}` }),
       ctx.topOrgId != null && Number(o.id) === Number(ctx.topOrgId) && !o.dead
         ? el("span", {
-            class: "card-gen card-rank-1",
+            class: "card-rank-1",
             title: "Rank #1 living organism by balance and survival",
           }, iconLabel(iconCrown, "#1 LEADER"))
         : null,
@@ -995,9 +1019,9 @@ function card(o, cfg, ctx) {
       { class: "card-stats" },
       el("span", { class: "card-record", title: "Wins (correct) / Losses (wrong) / Abstains" }, `${o.correctCount}W · ${o.wrongCount}L · ${o.abstainCount}A`),
       el("span", { class: "dot" }),
-      el("span", { title: `${wr.decided} decided ${plural(wr.decided, "window")}`, text: wr.text }),
+      el("span", { class: "card-wr", title: `${wr.decided} decided ${plural(wr.decided, "window")}`, text: wr.text }),
       el("span", { class: "dot" }),
-      el("span", { title: "windows lived", text: `${o.windowsLived}w` }),
+      el("span", { class: "card-lived", title: "windows lived", text: `${o.windowsLived}w` }),
       Number(o.streak) > 0
         ? frag(
             el("span", { class: "dot" }),
@@ -1006,7 +1030,7 @@ function card(o, cfg, ctx) {
               title: breed
                 ? `${o.streak} of ${breed.needStreak} consecutive correct calls — streak bar for breeding a child organism`
                 : "consecutive correct calls",
-            }, breed ? `${o.streak}/${breed.needStreak}` : `${o.streak}`, iconFire()),
+            }, el("span", { class: "streak-count", text: breed ? `${o.streak}/${breed.needStreak}` : `${o.streak}` }), iconFire()),
           )
         : null,
     ),

@@ -834,6 +834,21 @@ code {
   color: var(--text-4);
 }
 
+/* Last price + direction badge shown beside settleAll() so the operator can see at a glance
+   whether the price went up or down before calling the function. Shares the same hue system
+   as .price-move.up / .down / .flat but is sized to sit inline with the phase-next sentence. */
+.phase-settle-price {
+  margin-left: 0.6em;
+  font-size: 0.85em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-3);
+}
+
+.phase-next .price-move {
+  margin-left: 0.25em;
+  font-size: 0.8em;
+}
+
 /* ── the strip of season arithmetic ────────────────────────────────────────── */
 
 .stats {
@@ -1140,9 +1155,10 @@ code {
 
 .card-top {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--s-2);
   flex-wrap: wrap;
+  min-height: 24px;
 }
 
 .card-id {
@@ -1185,9 +1201,11 @@ code {
 
 .card-treasury {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--s-2);
+  margin-top: 2px;
+  margin-bottom: 2px;
 }
 
 .amount {
@@ -1208,15 +1226,31 @@ code {
 .card-stats {
   display: flex;
   align-items: center;
-  gap: var(--s-2);
+  gap: 6px;
   flex-wrap: wrap;
   font-family: var(--f-mono);
   font-size: var(--t-xs);
   color: var(--text-3);
+  line-height: 1.4;
 }
 
 .streak {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   color: var(--heat);
+  white-space: nowrap;
+}
+
+.streak .icon-fire {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+
+.streak .icon-fire svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* The streak bar for breeding is read from the chain (`breedStreak`), so a streak that has cleared
@@ -3458,11 +3492,34 @@ code {
 
 /* ── Card Refinements ──────────────────────────────────────── */
 .card-rank-1 {
-  background: rgba(95, 227, 192, 0.12) !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  padding: 2px 7px !important;
+  margin-left: 6px !important;
+  border-radius: var(--r-1, 4px) !important;
+  background: rgba(95, 227, 192, 0.1) !important;
   border: 1px solid var(--life) !important;
   color: var(--life) !important;
+  font-family: var(--f-mono) !important;
+  font-size: 10px !important;
   font-weight: 700 !important;
-  letter-spacing: 0.04em !important;
+  letter-spacing: 0.05em !important;
+  line-height: 1 !important;
+  white-space: nowrap !important;
+  box-shadow: 0 0 8px rgba(95, 227, 192, 0.2) !important;
+}
+
+.card-rank-1 .icon-crown {
+  color: var(--life) !important;
+  display: inline-flex;
+  align-items: center;
+}
+
+.card-rank-1 .icon-crown svg {
+  width: 12px;
+  height: 12px;
+  opacity: 1;
 }
 
 .card-record {
@@ -3470,6 +3527,12 @@ code {
   font-size: 11px;
   color: var(--text-2);
   font-weight: 500;
+  white-space: nowrap;
+}
+
+.card-wr,
+.card-lived {
+  white-space: nowrap;
 }
 
 .card-hint {
@@ -3532,7 +3595,7 @@ code {
 }
 
 .icon-crown {
-  color: var(--heat, #f59e0b);
+  color: var(--life, #5fe3c0);
 }
 
 .icon-fire {
