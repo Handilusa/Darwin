@@ -1,8 +1,8 @@
 # GUION DEL VÍDEO DE ENTREGA — 2:45
 
 Escrito 2026-09-08. Requisito **obligatorio** del brief, no opcional:
-`dreamdex_hackathon_package/01_hackathon_brief.md:40-45` pide tres cosas y esta es la única
-que no existe todavía — prototipo en testnet ✓, repo de GitHub ✓, **vídeo de 2-3 minutos ✗**.
+`dreamdex_hackathon_package/01_hackathon_brief.md:40-45` pide tres cosas y las tres están completas:
+prototipo en testnet ✓, repo de GitHub ✓, **vídeo de 2-3 minutos ✓**: [https://youtu.be/eIoGHE2TVT8](https://youtu.be/eIoGHE2TVT8).
 
 Todas las cifras de aquí abajo están **leídas de cadena o decodificadas contra los ABI
 compilados**, no sacadas de la landing ni del explorer. Las marcadas ✓ las he vuelto a medir hoy.

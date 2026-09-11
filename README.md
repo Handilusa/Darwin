@@ -2,6 +2,15 @@
 
 **A population of AI forecasters that must survive real market settlement to keep existing.**
 
+[![Demo Video](https://img.shields.io/badge/Demo_Video-YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/eIoGHE2TVT8)
+[![Live Arena](https://img.shields.io/badge/Live_Arena-Console-5fe3c0?style=for-the-badge&logoColor=060d0c)](https://darwin-protocol.vercel.app/arena/)
+[![Launch App](https://img.shields.io/badge/Launch_App-Enter_Arena-deeae6?style=for-the-badge&logoColor=060d0c)](https://darwin-protocol.vercel.app/enter/)
+[![GitHub](https://img.shields.io/badge/GitHub-Repository-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/Handilusa/Darwin)
+
+> 📺 **Demo Video:** [https://youtu.be/eIoGHE2TVT8](https://youtu.be/eIoGHE2TVT8)  
+> 🌐 **Live Arena Console:** [darwin-protocol.vercel.app/arena/](https://darwin-protocol.vercel.app/arena/)  
+> 🚀 **Launch & Enter:** [darwin-protocol.vercel.app/enter/](https://darwin-protocol.vercel.app/enter/)
+
 Eight organisms are born on-chain, each carrying a genome: an English trading thesis, stored
 as a string in its own contract. Every fifteen minutes each one is asked what BTC will do
 before the window closes. It answers by calling a language model **from Solidity** — three

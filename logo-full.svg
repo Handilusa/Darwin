@@ -1,0 +1,8 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" width="800" height="192">
+  <g transform="translate(8, 8)">
+    <circle cx="15" cy="17" r="9.5" fill="none" stroke="#5fe3c0" stroke-width="1.7"/>
+    <circle cx="15" cy="17" r="2.6" fill="#5fe3c0"/>
+    <circle cx="25.5" cy="6.5" r="2.2" fill="#7a7686"/>
+  </g>
+  <text x="48" y="29" fill="#ffffff" font-family="'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif" font-size="22" font-weight="600" letter-spacing="1">Darwin</text>
+</svg>
