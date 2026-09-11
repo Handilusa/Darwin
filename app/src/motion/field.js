@@ -43,7 +43,12 @@ const ASH = [122, 118, 134];
  *  any viewport; radii are in the field's own scale. Two are already ash at load —
  *  a population that has never lost anyone would misrepresent the mechanism.
  */
-const SPEC = [
+/**
+ *  Twelve specimens. Positions are fractions of the field, so the composition survives
+ *  any viewport; radii are in the field's own scale. Two are already ash at load —
+ *  a population that has never lost anyone would misrepresent the mechanism.
+ */
+export const SPEC = [
   { x: 0.6, y: 0.3, r: 30, k: "life", bpm: 52, dead: false },
   { x: 0.73, y: 0.46, r: 22, k: "life", bpm: 61, dead: false },
   { x: 0.86, y: 0.27, r: 17, k: "life", bpm: 74, dead: false },
@@ -59,7 +64,7 @@ const SPEC = [
 ];
 
 /** Parent → child. Order matters: threads draw outward from ancestors. */
-const EDGES = [
+export const EDGES = [
   [0, 1],
   [0, 6],
   [0, 9],
@@ -141,37 +146,79 @@ export function mountField(
     drift: 0,
     px: 0,
     py: 0,
+    // Interactive and organic physics states
+    mDx: 0,
+    mDy: 0,
+    mouseExcitement: 0,
+    ripple: 0,
+    phase: i * 1.37 + Math.random(),
   }));
 
   const paths = edges.map(([a, b], i) => {
     const el = document.createElementNS(SVGNS, "path");
-    el.setAttribute("stroke", "rgba(95,227,192,0.14)");
+    el.setAttribute("stroke", "rgba(95,227,192,0.16)");
     el.setAttribute("stroke-width", "1");
     el.setAttribute("fill", "none");
     svg.appendChild(el);
     return { el, a, b, i, len: 0, drawn: animate ? 0 : 1 };
   });
 
+  // Synaptic action-potential data pulses along the lineage curves
+  const pulses = animate
+    ? edges.flatMap(([a, b], edgeIdx) => [
+        {
+          a,
+          b,
+          edgeIdx,
+          t: (edgeIdx * 0.23) % 1,
+          speed: 0.003 + ((edgeIdx * 7) % 5) * 0.0008,
+          size: 2.2,
+        },
+        {
+          a,
+          b,
+          edgeIdx,
+          t: (edgeIdx * 0.23 + 0.5) % 1,
+          speed: 0.0026 + ((edgeIdx * 3) % 4) * 0.0007,
+          size: 1.6,
+        },
+      ])
+    : [];
+
+  // Ambient bioluminescent spores drifting through the nutrient fluid medium
+  const SPORE_COUNT = animate ? 34 : 0;
+  const spores = Array.from({ length: SPORE_COUNT }, (_, idx) => ({
+    x: Math.random(),
+    y: Math.random(),
+    r: 0.8 + Math.random() * 1.6,
+    baseAlpha: 0.12 + Math.random() * 0.24,
+    speedX: (Math.random() - 0.5) * 0.0003,
+    speedY: -0.00025 - Math.random() * 0.00045,
+    k: idx % 4 === 0 ? "heat" : "life",
+    phase: Math.random() * Math.PI * 2,
+    depth: 0.35 + Math.random() * 0.65,
+  }));
+
+  // Burst embers when an organism expires
+  const deathParticles = [];
+
   /* ── 1. heartbeat + vital-signal jitter ─────────────────────────────────── */
   function vitals(c) {
     if (c.dead) return;
     const period = 60 / c.bpm;
 
-    // A real pulse is a double thump, not a sine wave: sharp systole, a smaller
-    // second beat, then a long diastolic rest. The per-organism bpm (52-88) is what
-    // stops twelve cells reading as one looping animation played twelve times.
+    // Biological double-thump pulse with diastole
     gsap
       .timeline({ repeat: -1, delay: Math.random() * period })
-      .to(c, { beat: 1.16, duration: 0.11, ease: "power3.out" })
+      .to(c, { beat: 1.18, duration: 0.11, ease: "power3.out" })
       .to(c, { beat: 1.0, duration: 0.17, ease: "power1.in" })
-      .to(c, { beat: 1.07, duration: 0.09, ease: "power2.out" })
+      .to(c, { beat: 1.08, duration: 0.09, ease: "power2.out" })
       .to(c, { beat: 1.0, duration: 0.22, ease: "power1.inOut" })
       .to(c, { beat: 1.0, duration: Math.max(0.05, period - 0.59) });
 
-    // repeatRefresh re-rolls the random target each cycle, so the glow wanders like a
-    // signal being read rather than oscillating like an animation.
+    // Wanderings of cellular signal activity
     gsap.to(c, {
-      glow: () => 0.34 + Math.random() * 0.66,
+      glow: () => 0.36 + Math.random() * 0.64,
       duration: () => 0.22 + Math.random() * 0.5,
       repeat: -1,
       repeatRefresh: true,
@@ -179,7 +226,7 @@ export function mountField(
     });
 
     gsap.to(c, {
-      drift: () => (Math.random() - 0.5) * 11,
+      drift: () => (Math.random() - 0.5) * 12,
       duration: () => 5 + Math.random() * 4,
       repeat: -1,
       repeatRefresh: true,
@@ -187,55 +234,73 @@ export function mountField(
     });
   }
 
-  /* ── 3. death: one slow extinguish, never recycled ──────────────────────── */
+  /* ── 2. death: one slow extinguish, never recycled ──────────────────────── */
   function die(index) {
     const c = cells[index];
     if (!c || c.dead) return;
     c.dead = true; // stops vitals() from ever re-arming
-    gsap.killTweensOf(c); // the heartbeat stops mid-beat, as it would
+    gsap.killTweensOf(c);
 
-    gsap
-      .timeline()
-      .to(c, { beat: 1.34, glow: 1, duration: 0.5, ease: "power2.out" }) // a last flare
-      .to(c, { glow: 0.06, nucleus: 0, duration: 1.15, ease: "power2.in" })
-      .to(c, { life: 0, beat: 0.74, duration: 1.5, ease: "power1.inOut" }, "<0.1");
+    // Spawn a burst of ash embers at the moment of extinction
+    const col = c.k === "heat" ? HEAT : LIFE;
+    for (let k = 0; k < 24; k++) {
+      const ang = Math.random() * Math.PI * 2;
+      const spd = (0.8 + Math.random() * 3.2) * scale;
+      deathParticles.push({
+        x: c.px,
+        y: c.py + c.drift,
+        vx: Math.cos(ang) * spd,
+        vy: Math.sin(ang) * spd,
+        alpha: 0.85,
+        r: 1 + Math.random() * 2,
+        decay: 0.012 + Math.random() * 0.016,
+        color: Math.random() > 0.4 ? col : ASH,
+      });
+    }
 
-    // The threads it hung on go ash with it, at the same slow rate. Lineage is not
-    // erased by death — the edge stays, drained. That is what the tree shows too.
+    gsap.to(c, {
+      life: 0,
+      glow: 0,
+      nucleus: 0,
+      beat: 0.72,
+      duration: 1.2,
+      ease: "power2.out",
+    });
+
+    // The threads it hung on go ash with it, at the same slow rate. Lineage stays.
     for (const p of paths) {
       if (p.a === c.i || p.b === c.i) {
         gsap.to(p.el, {
-          stroke: "rgba(122,118,134,0.07)",
-          duration: 1.6,
+          stroke: "rgba(122,118,134,0.08)",
+          duration: 1.4,
           ease: "power1.inOut",
         });
       }
     }
   }
 
-  /* ── 4. lineage threads, drawn rather than revealed ─────────────────────── */
+  /* ── 3. lineage threads, drawn outward ──────────────────────────────────── */
   function routeThreads() {
     for (const p of paths) {
       const A = cells[p.a];
       const B = cells[p.b];
-      // Quadratic arc: a straight line reads like a network diagram.
-      const d = `M ${A.px} ${A.py} Q ${(A.px + B.px) / 2} ${
-        (A.py + B.py) / 2 - 26 * scale
-      } ${B.px} ${B.py}`;
+      const ax = A.px + A.mDx;
+      const ay = A.py + A.drift + A.mDy;
+      const bx = B.px + B.mDx;
+      const by = B.py + B.drift + B.mDy;
+      const ctrlY = (ay + by) / 2 - 26 * scale;
+      const d = `M ${ax} ${ay} Q ${(ax + bx) / 2} ${ctrlY} ${bx} ${by}`;
       p.el.setAttribute("d", d);
       const len = p.el.getTotalLength();
       if (p.len !== len) {
         p.len = len;
         p.el.style.strokeDasharray = len;
-        // Preserve however much is currently drawn across a resize.
         p.el.style.strokeDashoffset = len * (1 - p.drawn);
       }
     }
   }
 
   function drawThreads() {
-    // Staggered parent → child: lineage grows outward from ancestors, so the order
-    // the threads appear in is itself the claim.
     paths.forEach((p, i) => {
       p.drawn = 0;
       gsap.to(p, {
@@ -250,11 +315,39 @@ export function mountField(
     });
   }
 
-  /* ── paint ──────────────────────────────────────────────────────────────── */
+  /* ── 4. interactive mouse tracking (magnetic bio-response) ──────────────── */
+  const mouse = { x: -9999, y: -9999, active: false };
+  const onPointerMove = (e) => {
+    const rect = cv.getBoundingClientRect();
+    if (
+      e.clientX >= rect.left &&
+      e.clientX <= rect.right &&
+      e.clientY >= rect.top &&
+      e.clientY <= rect.bottom
+    ) {
+      mouse.x = e.clientX - rect.left;
+      mouse.y = e.clientY - rect.top;
+      mouse.active = true;
+    } else {
+      mouse.active = false;
+    }
+  };
+  const onPointerLeave = () => {
+    mouse.active = false;
+    mouse.x = -9999;
+    mouse.y = -9999;
+  };
+  if (animate) {
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+    window.addEventListener("pointerleave", onPointerLeave, { passive: true });
+  }
+
+  /* ── 5. paint ───────────────────────────────────────────────────────────── */
   let W = 0;
   let H = 0;
   let dpr = 1;
   let scale = 1;
+  let startTime = performance.now();
 
   function size() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -274,52 +367,278 @@ export function mountField(
   }
 
   function draw() {
+    const now = performance.now();
+    const time = (now - startTime) * 0.001;
     ctx.clearRect(0, 0, W, H);
 
-    for (const c of cells) {
-      const col = mix(c.k === "heat" ? HEAT : LIFE, ASH, 1 - c.life);
-      const py = c.py + c.drift;
-      const pr = c.r * scale * (0.9 + 0.12 * c.beat) * (0.74 + 0.26 * c.life);
-      const a = (0.13 + c.glow * 0.15) * (0.42 + 0.58 * c.life);
+    // ── Layer 1: Ambient bioluminescent fluid spores (Depth atmosphere) ─────
+    if (animate) {
+      for (const s of spores) {
+        s.x += s.speedX + Math.sin(time * 0.6 + s.phase) * 0.0002 * s.depth;
+        s.y += s.speedY;
+        if (s.y < -0.04) s.y = 1.04;
+        if (s.x < -0.04) s.x = 1.04;
+        if (s.x > 1.04) s.x = -0.04;
 
-      const g = ctx.createRadialGradient(c.px, py, 0, c.px, py, pr * 4.4);
-      g.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${a})`);
-      g.addColorStop(0.42, `rgba(${col[0]},${col[1]},${col[2]},${a * 0.22})`);
-      g.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(c.px, py, pr * 4.4, 0, Math.PI * 2);
-      ctx.fill();
+        if (cells[DOOMED]?.dead && Math.hypot(s.x - 0.55, s.y - 0.52) < 0.04) continue;
+        const sx = s.x * W;
+        const sy = s.y * H;
+        const pulse = 0.65 + 0.35 * Math.sin(time * 1.4 + s.phase);
+        const col = s.k === "heat" ? HEAT : LIFE;
+        const a = s.baseAlpha * pulse * s.depth;
 
-      // Membrane — a ring, so a cell reads as a cell and not a blur.
-      ctx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${
-        (0.34 + c.glow * 0.4) * (0.5 + 0.5 * c.life)
-      })`;
-      ctx.lineWidth = 1 + 0.35 * c.life;
-      ctx.beginPath();
-      ctx.arc(c.px, py, pr, 0, Math.PI * 2);
-      ctx.stroke();
-
-      if (c.nucleus > 0.01) {
-        ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${
-          (0.45 + c.glow * 0.45) * c.nucleus
-        })`;
+        const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, s.r * 2.6 * scale);
+        sg.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${a})`);
+        sg.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
+        ctx.fillStyle = sg;
         ctx.beginPath();
-        ctx.arc(c.px, py, Math.max(1.2, pr * 0.15), 0, Math.PI * 2);
+        ctx.arc(sx, sy, s.r * 2.6 * scale, 0, Math.PI * 2);
         ctx.fill();
       }
     }
 
-    // Threads follow their cells' drift.
+    // ── Layer 2: Extinction / death ember burst ─────────────────────────────
+    for (let k = deathParticles.length - 1; k >= 0; k--) {
+      const p = deathParticles[k];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.vx *= 0.96;
+      p.vy *= 0.96;
+      p.alpha -= p.decay;
+      if (p.alpha <= 0.01) {
+        deathParticles.splice(k, 1);
+        continue;
+      }
+      ctx.fillStyle = `rgba(${p.color[0]},${p.color[1]},${p.color[2]},${p.alpha})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * scale, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Layer 3: Living Organisms (Cells) ───────────────────────────────────
+    for (const c of cells) {
+      // Interactive mouse physics: gentle magnetic drift & luminous excitation
+      if (animate) {
+        let targetMx = 0;
+        let targetMy = 0;
+        let targetEx = 0;
+        if (mouse.active) {
+          const dX = c.px - mouse.x;
+          const dY = c.py + c.drift - mouse.y;
+          const dist = Math.hypot(dX, dY);
+          const influence = 160 * scale;
+          if (dist < influence && dist > 0) {
+            const force = 1 - dist / influence;
+            targetEx = force;
+            targetMx = (dX / dist) * force * 15 * scale;
+            targetMy = (dY / dist) * force * 15 * scale;
+          }
+        }
+        c.mDx += (targetMx - c.mDx) * 0.08;
+        c.mDy += (targetMy - c.mDy) * 0.08;
+        c.mouseExcitement += (targetEx - c.mouseExcitement) * 0.1;
+      }
+
+      const col = mix(c.k === "heat" ? HEAT : LIFE, ASH, 1 - c.life);
+      const cx = c.px + c.mDx;
+      const cy = c.py + c.drift + c.mDy;
+      const pr = c.r * scale * (0.9 + 0.12 * c.beat) * (0.74 + 0.26 * c.life);
+      const effectiveGlow = Math.min(1.2, c.glow + c.mouseExcitement * 0.35);
+      const a = (0.14 + effectiveGlow * 0.16) * (0.42 + 0.58 * c.life);
+
+      // 3.1 Deep Bioluminescent Atmospheric Halo
+      const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, pr * 4.6);
+      g.addColorStop(0, `rgba(${col[0]},${col[1]},${col[2]},${a})`);
+      g.addColorStop(0.38, `rgba(${col[0]},${col[1]},${col[2]},${a * 0.28})`);
+      g.addColorStop(0.72, `rgba(${col[0]},${col[1]},${col[2]},${a * 0.06})`);
+      g.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(cx, cy, pr * 4.6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 3.2 Cytoplasm & Harmonic Undulating Cellular Membrane
+      const segments = 36;
+      const step = (Math.PI * 2) / segments;
+      ctx.beginPath();
+      for (let j = 0; j <= segments; j++) {
+        const angle = j * step;
+        const wave = animate
+          ? (Math.sin(angle * 3 + time * 2.2 + c.phase) * 0.036 +
+              Math.cos(angle * 5 - time * 1.7 + c.phase * 0.5) * 0.02 +
+              Math.sin(angle * 7 + time * 3.1) * 0.012) *
+            c.life
+          : 0;
+        const curR = pr * (1 + wave);
+        const vx = cx + Math.cos(angle) * curR;
+        const vy = cy + Math.sin(angle) * curR;
+        if (j === 0) ctx.moveTo(vx, vy);
+        else ctx.lineTo(vx, vy);
+      }
+      ctx.closePath();
+
+      // Inner cytoplasm fluid wash
+      const cytoGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, pr);
+      cytoGrad.addColorStop(
+        0,
+        `rgba(${col[0]},${col[1]},${col[2]},${(0.12 + effectiveGlow * 0.16) * c.life})`,
+      );
+      cytoGrad.addColorStop(
+        0.8,
+        `rgba(${col[0]},${col[1]},${col[2]},${(0.04 + effectiveGlow * 0.06) * c.life})`,
+      );
+      cytoGrad.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
+      ctx.fillStyle = cytoGrad;
+      ctx.fill();
+
+      // Primary undulating membrane boundary
+      ctx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${
+        (0.38 + effectiveGlow * 0.42) * (0.5 + 0.5 * c.life)
+      })`;
+      ctx.lineWidth = (1 + 0.45 * c.life) * (1 + c.mouseExcitement * 0.25);
+      ctx.stroke();
+
+      // 3.3 Concentric inner refraction ring (biological cell-wall depth)
+      if (c.life > 0.1 && pr > 12) {
+        ctx.beginPath();
+        for (let j = 0; j <= segments; j++) {
+          const angle = j * step;
+          const innerWave = animate
+            ? (Math.sin(angle * 4 - time * 1.8 + c.phase) * 0.025 +
+                Math.cos(angle * 2 + time * 2.5) * 0.015) *
+              c.life
+            : 0;
+          const innerR = pr * 0.86 * (1 + innerWave);
+          const vx = cx + Math.cos(angle) * innerR;
+          const vy = cy + Math.sin(angle) * innerR;
+          if (j === 0) ctx.moveTo(vx, vy);
+          else ctx.lineTo(vx, vy);
+        }
+        ctx.closePath();
+        ctx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${
+          (0.14 + effectiveGlow * 0.18) * c.life
+        })`;
+        ctx.lineWidth = 0.85;
+        ctx.stroke();
+      }
+
+      // 3.4 Orbiting cytoplasmic organelles / micro-sparks (Active internal life)
+      if (animate && c.life > 0.2 && c.r >= 14) {
+        const organelleCount = c.r >= 22 ? 3 : 2;
+        for (let k = 0; k < organelleCount; k++) {
+          const rotDir = k % 2 === 0 ? 1 : -1;
+          const orbSpeed = (0.7 + k * 0.35) * rotDir;
+          const orbAngle = time * orbSpeed + (k * Math.PI * 2) / organelleCount + c.phase;
+          const orbDist = pr * (0.42 + 0.14 * Math.sin(time * 1.5 + k));
+          const ox = cx + Math.cos(orbAngle) * orbDist;
+          const oy = cy + Math.sin(orbAngle) * orbDist;
+          const orbAlpha = (0.35 + effectiveGlow * 0.45) * c.nucleus * c.life;
+          if (orbAlpha > 0.02) {
+            ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${orbAlpha})`;
+            ctx.beginPath();
+            ctx.arc(ox, oy, Math.max(1, pr * 0.06), 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+
+      // 3.5 High-energy Nucleus Core (Genome / Computational Soul)
+      if (c.nucleus > 0.01) {
+        const nR = Math.max(1.5, pr * 0.16);
+        // Soft aura around nucleus
+        const nG = ctx.createRadialGradient(cx, cy, 0, cx, cy, nR * 2.8);
+        nG.addColorStop(
+          0,
+          `rgba(${col[0]},${col[1]},${col[2]},${(0.85 + effectiveGlow * 0.15) * c.nucleus})`,
+        );
+        nG.addColorStop(
+          0.6,
+          `rgba(${col[0]},${col[1]},${col[2]},${(0.35 + effectiveGlow * 0.2) * c.nucleus})`,
+        );
+        nG.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
+        ctx.fillStyle = nG;
+        ctx.beginPath();
+        ctx.arc(cx, cy, nR * 2.8, 0, Math.PI * 2);
+        ctx.fill();
+
+        // High-contrast bright inner core
+        const coreWhite = mix(col, [255, 255, 255], 0.65);
+        ctx.fillStyle = `rgba(${coreWhite[0]},${coreWhite[1]},${coreWhite[2]},${
+          (0.9 + effectiveGlow * 0.1) * c.nucleus
+        })`;
+        ctx.beginPath();
+        ctx.arc(cx, cy, nR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // ── Layer 4: Synaptic Energy Pulses (Action potentials on lineage edges) ─
+    if (animate) {
+      for (const pulse of pulses) {
+        const A = cells[pulse.a];
+        const B = cells[pulse.b];
+        // Only fire if both nodes are alive
+        if (A.dead || B.dead) continue;
+        const transmissionLife = Math.min(A.life, B.life);
+        if (transmissionLife < 0.15) continue;
+
+        pulse.t += pulse.speed;
+        if (pulse.t > 1) pulse.t -= 1;
+
+        const p0x = A.px + A.mDx;
+        const p0y = A.py + A.drift + A.mDy;
+        const p2x = B.px + B.mDx;
+        const p2y = B.py + B.drift + B.mDy;
+        const p1x = (p0x + p2x) / 2;
+        const p1y = (p0y + p2y) / 2 - 26 * scale;
+
+        // Quadratic Bezier interpolation: B(t) = (1-t)^2 P0 + 2(1-t)t P1 + t^2 P2
+        const t = pulse.t;
+        const it = 1 - t;
+        const px = it * it * p0x + 2 * it * t * p1x + t * t * p2x;
+        const py = it * it * p0y + 2 * it * t * p1y + t * t * p2y;
+
+        const col = A.k === "heat" ? HEAT : LIFE;
+        const pulseAlpha = Math.sin(t * Math.PI) * 0.85 * transmissionLife;
+        if (pulseAlpha > 0.02) {
+          // Glowing head
+          const pulseGrad = ctx.createRadialGradient(px, py, 0, px, py, pulse.size * 2.8 * scale);
+          pulseGrad.addColorStop(0, `rgba(255,255,255,${pulseAlpha})`);
+          pulseGrad.addColorStop(
+            0.4,
+            `rgba(${col[0]},${col[1]},${col[2]},${pulseAlpha * 0.8})`,
+          );
+          pulseGrad.addColorStop(1, `rgba(${col[0]},${col[1]},${col[2]},0)`);
+          ctx.fillStyle = pulseGrad;
+          ctx.beginPath();
+          ctx.arc(px, py, pulse.size * 2.8 * scale, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Trailing comet segment
+          const trailT = Math.max(0, t - 0.045);
+          const itT = 1 - trailT;
+          const tx = itT * itT * p0x + 2 * itT * trailT * p1x + trailT * trailT * p2x;
+          const ty = itT * itT * p0y + 2 * itT * trailT * p1y + trailT * trailT * p2y;
+          ctx.strokeStyle = `rgba(${col[0]},${col[1]},${col[2]},${pulseAlpha * 0.35})`;
+          ctx.lineWidth = 1.6 * scale;
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(px, py);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Threads follow their cells' drift and magnetic response
     for (const p of paths) {
       const A = cells[p.a];
       const B = cells[p.b];
-      p.el.setAttribute(
-        "d",
-        `M ${A.px} ${A.py + A.drift} Q ${(A.px + B.px) / 2} ${
-          (A.py + A.drift + B.py + B.drift) / 2 - 26 * scale
-        } ${B.px} ${B.py + B.drift}`,
-      );
+      const ax = A.px + A.mDx;
+      const ay = A.py + A.drift + A.mDy;
+      const bx = B.px + B.mDx;
+      const by = B.py + B.drift + B.mDy;
+      const ctrlY = (ay + by) / 2 - 26 * scale;
+      p.el.setAttribute("d", `M ${ax} ${ay} Q ${(ax + bx) / 2} ${ctrlY} ${bx} ${by}`);
     }
   }
 
@@ -348,9 +667,7 @@ export function mountField(
     drawThreads();
     startPaint();
 
-    // Stop painting when the field leaves the viewport. Twelve radial gradients a
-    // frame is cheap; twelve radial gradients a frame for a canvas nobody can see is
-    // a laptop fan spinning up while a judge reads the rest of the page.
+    // Stop painting when the field leaves the viewport to preserve CPU/battery
     triggers.push(
       ScrollTrigger.create({
         trigger: cv,
@@ -382,6 +699,10 @@ export function mountField(
     destroy() {
       clearTimeout(rt);
       window.removeEventListener("resize", onResize);
+      if (animate) {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerleave", onPointerLeave);
+      }
       stopPaint();
       for (const t of triggers) t.kill();
       for (const c of cells) gsap.killTweensOf(c);

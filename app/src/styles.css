@@ -41,9 +41,23 @@ html {
 
 body {
   margin: 0;
-  /* Explicit, always: the page is composited over a ground the host paints, and a
-     transparent body would borrow it. */
-  background: var(--ink);
+  background-color: #040908;
+  /* Document-wide chromatic depth topography: soft ambient light reservoirs mapped to narrative beats */
+  background-image:
+    /* Hero: Upper-right bio-luminescent constellation glow */
+    radial-gradient(ellipse 75% 55% at 80% 6%, rgba(95, 227, 192, 0.08) 0%, transparent 65%),
+    /* Beat 1 & 2: Genome & Window deep oceanic culture broth */
+    radial-gradient(ellipse 65% 50% at 15% 24%, rgba(35, 115, 98, 0.07) 0%, transparent 60%),
+    /* Beat 3: Cognition metabolic energy pocket behind the live price meters */
+    radial-gradient(ellipse 70% 50% at 85% 44%, rgba(230, 168, 71, 0.05) 0%, transparent 60%),
+    /* Beat 4: Irreversible Death solemn sunken oceanic abyss */
+    radial-gradient(ellipse 60% 45% at 20% 62%, rgba(25, 48, 44, 0.06) 0%, transparent 60%),
+    /* Beat 5: Lineage genealogical tree bio-electric pool */
+    radial-gradient(ellipse 75% 55% at 80% 78%, rgba(95, 227, 192, 0.075) 0%, transparent 65%),
+    /* Beat 6 & Footer: Protocol entrance horizon glow */
+    radial-gradient(ellipse 85% 50% at 50% 96%, rgba(38, 128, 110, 0.08) 0%, transparent 65%);
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
   color: var(--text);
   font-family: var(--f-sans);
   font-size: var(--t-base);
@@ -51,6 +65,68 @@ body {
   font-weight: 400;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+  position: relative;
+}
+
+/* Living volumetric atmospheric aura: harmonic fluid light fields */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -25%;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 48% 42% at 72% 28%, rgba(95, 227, 192, 0.085) 0%, rgba(95, 227, 192, 0.015) 45%, transparent 70%),
+    radial-gradient(ellipse 44% 38% at 22% 72%, rgba(38, 128, 112, 0.075) 0%, rgba(38, 128, 112, 0.015) 50%, transparent 70%),
+    radial-gradient(ellipse 38% 34% at 68% 76%, rgba(230, 168, 71, 0.035) 0%, transparent 65%);
+  filter: blur(90px);
+  animation: aura-undulate 26s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+/* Deep optical chamber vignette: curves spatial depth toward the lens edges */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse 92% 86% at 50% 50%,
+    transparent 54%,
+    rgba(3, 7, 6, 0.4) 82%,
+    rgba(2, 5, 4, 0.8) 100%
+  );
+}
+
+@keyframes aura-undulate {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.85;
+  }
+  33% {
+    transform: translate3d(-3%, 2%, 0) scale(1.05);
+    opacity: 0.95;
+  }
+  66% {
+    transform: translate3d(2%, -3%, 0) scale(0.97);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translate3d(4%, 3%, 0) scale(1.04);
+    opacity: 0.92;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::before {
+    animation: none;
+  }
+}
+
+main {
+  position: relative;
+  z-index: 1;
 }
 
 h1,
@@ -171,12 +247,13 @@ a:hover {
 .prose code,
 code {
   font-family: var(--f-mono);
-  font-size: 0.9em;
+  font-size: 0.88em;
   color: var(--life);
-  background: var(--ink-3);
-  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--ink-3) 78%, var(--life-deep) 22%);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-1);
-  padding: 0.1em 0.34em;
+  padding: 0.12em 0.38em;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
 
 .hl {
@@ -209,20 +286,36 @@ code {
   text-transform: uppercase;
   text-decoration: none;
   color: var(--text);
-  background: var(--ink-3);
+  background: linear-gradient(180deg, rgba(28, 48, 45, 0.85) 0%, rgba(16, 29, 27, 0.95) 100%);
   border: 1px solid var(--line-2);
   border-radius: var(--r-2);
+  box-shadow:
+    0 4px 12px -2px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(8px);
   transition:
     background var(--d-fast) var(--e-out),
     border-color var(--d-fast) var(--e-out),
     color var(--d-fast) var(--e-out),
-    box-shadow var(--d-fast) var(--e-out);
+    box-shadow var(--d-fast) var(--e-out),
+    transform var(--d-fast) var(--e-out);
 }
 
 .btn:hover:not(:disabled) {
-  background: var(--ink-4);
+  background: linear-gradient(180deg, rgba(34, 58, 54, 0.9) 0%, rgba(20, 36, 34, 0.98) 100%);
   border-color: var(--line-3);
   color: var(--text);
+  box-shadow:
+    0 6px 16px -2px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow:
+    0 2px 6px -1px rgba(0, 0, 0, 0.5),
+    inset 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .btn:disabled {
@@ -230,20 +323,37 @@ code {
   border-color: var(--line);
   background: var(--ink-2);
   cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
 .btn-primary {
-  color: var(--ink);
-  background: var(--life);
-  border-color: var(--life);
-  box-shadow: 0 0 0 0 var(--life-deep);
+  color: #06110f;
+  background: linear-gradient(180deg, #6ef2cd 0%, #4bd1ae 100%);
+  border-color: #5fe3c0;
+  font-weight: 600;
+  box-shadow:
+    0 0 20px -4px rgba(95, 227, 192, 0.45),
+    0 4px 12px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.45);
 }
 
 .btn-primary:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--life);
-  border-color: var(--life);
-  box-shadow: 0 0 26px -6px var(--life-dim);
+  color: #06110f;
+  background: linear-gradient(180deg, #84f8d7 0%, #5fe3c0 100%);
+  border-color: #84f8d7;
+  box-shadow:
+    0 0 28px -2px rgba(95, 227, 192, 0.65),
+    0 6px 18px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow:
+    0 0 14px rgba(95, 227, 192, 0.4),
+    0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 .btn-primary:disabled {
@@ -251,6 +361,7 @@ code {
   background: var(--ink-3);
   border-color: var(--line-2);
   box-shadow: none;
+  transform: none;
 }
 
 .btn-tiny {
@@ -265,41 +376,46 @@ code {
   display: inline-flex;
   align-items: center;
   gap: var(--s-2);
-  padding: 0.24rem 0.6rem;
+  padding: 0.26rem 0.65rem;
   font-family: var(--f-mono);
   font-size: var(--t-xs);
   font-weight: 500;
   letter-spacing: var(--ls-label);
   text-transform: uppercase;
   color: var(--text-2);
-  background: var(--ink-3);
+  background: rgba(18, 33, 31, 0.7);
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
   white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(6px);
 }
 
 .pill-ok {
   color: var(--ok);
-  border-color: var(--life-dim);
-  background: var(--life-deep);
+  border-color: rgba(95, 227, 192, 0.35);
+  background: rgba(95, 227, 192, 0.08);
+  box-shadow: inset 0 1px 0 rgba(95, 227, 192, 0.2), 0 0 12px -4px rgba(95, 227, 192, 0.25);
 }
 
 .pill-warn {
   color: var(--warn);
-  border-color: var(--heat-dim);
-  background: var(--heat-deep);
+  border-color: rgba(230, 168, 71, 0.35);
+  background: rgba(230, 168, 71, 0.08);
+  box-shadow: inset 0 1px 0 rgba(230, 168, 71, 0.2), 0 0 12px -4px rgba(230, 168, 71, 0.25);
 }
 
 .pill-bad {
   color: var(--bad);
-  border-color: var(--bad-dim);
-  background: var(--bad-deep);
+  border-color: rgba(224, 94, 94, 0.35);
+  background: rgba(224, 94, 94, 0.08);
+  box-shadow: inset 0 1px 0 rgba(224, 94, 94, 0.2), 0 0 12px -4px rgba(224, 94, 94, 0.25);
 }
 
 .pill-dead {
   color: var(--ash);
-  border-color: var(--ash-dim);
-  background: var(--ash-deep);
+  border-color: rgba(140, 155, 150, 0.25);
+  background: rgba(40, 48, 46, 0.4);
 }
 
 .dot {
@@ -331,10 +447,24 @@ code {
 /* ── panels ──────────────────────────────────────────────────────────────── */
 
 .panel {
-  background: var(--ink-2);
-  border: 1px solid var(--line);
+  background: linear-gradient(155deg, rgba(16, 31, 29, 0.75) 0%, rgba(10, 20, 19, 0.92) 100%);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
   padding: var(--s-5);
+  box-shadow:
+    0 16px 36px -12px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    inset 0 0 24px rgba(95, 227, 192, 0.015);
+  backdrop-filter: blur(14px);
+  transition: border-color var(--d-base) var(--e-out), box-shadow var(--d-base) var(--e-out);
+}
+
+.panel:hover {
+  border-color: var(--line-3);
+  box-shadow:
+    0 20px 42px -12px rgba(0, 0, 0, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    inset 0 0 28px rgba(95, 227, 192, 0.025);
 }
 
 .panel-head {
@@ -486,6 +616,7 @@ code {
 .hero-thesis em {
   font-style: italic;
   color: var(--life);
+  text-shadow: 0 0 28px rgba(95, 227, 192, 0.35);
 }
 
 .hero-lede {
@@ -500,8 +631,11 @@ code {
 .genome-frame {
   margin-top: var(--s-6);
   max-width: 60ch;
-  border-inline-start: 2px solid var(--life-dim);
-  padding: var(--s-2) 0 var(--s-2) var(--s-4);
+  border-inline-start: 2px solid var(--life);
+  padding: var(--s-3) 0 var(--s-3) var(--s-4);
+  background: linear-gradient(90deg, rgba(95, 227, 192, 0.05) 0%, transparent 100%);
+  border-radius: 0 var(--r-2) var(--r-2) 0;
+  box-shadow: inset 2px 0 12px rgba(95, 227, 192, 0.08);
 }
 
 .genome-frame .label {
@@ -554,15 +688,24 @@ code {
   gap: 1px;
   margin-top: var(--s-7);
   max-width: 760px;
-  background: var(--line);
-  border: 1px solid var(--line);
+  background: var(--line-2);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
   overflow: hidden;
+  box-shadow:
+    0 16px 36px -12px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
 }
 
 .vital {
   padding: var(--s-4);
-  background: var(--ink-2);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.82) 0%, rgba(10, 20, 19, 0.92) 100%);
+  transition: background var(--d-base) var(--e-out);
+}
+
+.vital:hover {
+  background: linear-gradient(160deg, rgba(22, 41, 38, 0.92) 0%, rgba(16, 31, 29, 0.96) 100%);
 }
 
 .vital-label {
@@ -656,6 +799,18 @@ code {
   border-top: 1px solid var(--line);
 }
 
+.beat::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 6%;
+  right: 6%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--life-dim), transparent);
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 .beat-in {
   display: grid;
   grid-template-columns: minmax(0, 4fr) minmax(0, 5fr);
@@ -682,16 +837,18 @@ code {
 .beat-num {
   font-family: var(--f-mono);
   font-size: var(--t-xs);
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: var(--ls-label);
   color: var(--life);
+  text-shadow: 0 0 10px rgba(95, 227, 192, 0.3);
 }
 
 .beat-rule {
   flex: 1;
   height: 1px;
-  background: linear-gradient(90deg, var(--line-2), transparent);
-  max-width: 120px;
+  background: linear-gradient(90deg, var(--life-dim), transparent);
+  max-width: 140px;
+  opacity: 0.7;
 }
 
 .beat-title {
@@ -705,6 +862,7 @@ code {
 .beat-title em {
   font-style: italic;
   color: var(--life);
+  text-shadow: 0 0 24px rgba(95, 227, 192, 0.28);
 }
 
 .beat-body {
@@ -726,10 +884,24 @@ code {
 /* ── beat 1: the genome as prose ─────────────────────────────────────────── */
 
 .genome-card {
-  background: var(--ink-2);
-  border: 1px solid var(--line);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.85) 0%, rgba(10, 20, 19, 0.95) 100%);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
   overflow: hidden;
+  box-shadow:
+    0 20px 48px -12px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    inset 0 0 28px rgba(95, 227, 192, 0.015);
+  backdrop-filter: blur(14px);
+  transition: border-color var(--d-base) var(--e-out), box-shadow var(--d-base) var(--e-out);
+}
+
+.genome-card:hover {
+  border-color: var(--line-3);
+  box-shadow:
+    0 24px 54px -12px rgba(0, 0, 0, 0.75),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 0 32px rgba(95, 227, 192, 0.025);
 }
 
 .genome-card-top {
@@ -738,8 +910,8 @@ code {
   justify-content: space-between;
   gap: var(--s-3);
   padding: var(--s-3) var(--s-4);
-  border-bottom: 1px solid var(--line);
-  background: var(--ink-3);
+  border-bottom: 1px solid var(--line-2);
+  background: linear-gradient(180deg, rgba(22, 42, 39, 0.6) 0%, rgba(14, 28, 26, 0.7) 100%);
 }
 
 .genome-card-body {
@@ -749,19 +921,25 @@ code {
   font-size: var(--t-md);
   line-height: var(--lh-snug);
   color: var(--text);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
 }
 
 .genome-card-foot {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 1px;
-  background: var(--line);
-  border-top: 1px solid var(--line);
+  background: var(--line-2);
+  border-top: 1px solid var(--line-2);
 }
 
 .genome-card-foot > div {
   padding: var(--s-3) var(--s-4);
-  background: var(--ink-2);
+  background: linear-gradient(160deg, rgba(14, 27, 25, 0.9) 0%, rgba(10, 20, 19, 0.96) 100%);
+  transition: background var(--d-fast) var(--e-out);
+}
+
+.genome-card-foot > div:hover {
+  background: linear-gradient(160deg, rgba(20, 38, 35, 0.95) 0%, rgba(14, 27, 25, 0.98) 100%);
 }
 
 /* ── beat 2: the phase machine ───────────────────────────────────────────── */
@@ -769,31 +947,40 @@ code {
 .phases {
   display: grid;
   gap: 1px;
-  background: var(--line);
-  border: 1px solid var(--line);
+  background: var(--line-2);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
   overflow: hidden;
+  box-shadow:
+    0 16px 36px -12px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
 }
 
 .phase {
+  position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: var(--s-4);
   align-items: start;
   padding: var(--s-4);
-  background: var(--ink-2);
-  transition: background var(--d-base) var(--e-out);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.85) 0%, rgba(10, 20, 19, 0.95) 100%);
+  border-left: 3px solid transparent;
+  transition:
+    background var(--d-base) var(--e-out),
+    border-color var(--d-base) var(--e-out);
 }
 
 .phase.is-on {
-  background: var(--ink-3);
+  background: linear-gradient(90deg, rgba(95, 227, 192, 0.09) 0%, rgba(18, 36, 34, 0.95) 100%);
+  border-left: 3px solid var(--life);
 }
 
 .phase-badge {
   display: grid;
   place-items: center;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   flex: none;
   font-family: var(--f-mono);
   font-size: var(--t-xs);
@@ -801,17 +988,22 @@ code {
   color: var(--text-3);
   border: 1px solid var(--line-2);
   border-radius: var(--r-1);
-  background: var(--ink);
+  background: rgba(10, 20, 19, 0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
   transition:
     color var(--d-base) var(--e-out),
     border-color var(--d-base) var(--e-out),
-    box-shadow var(--d-base) var(--e-out);
+    box-shadow var(--d-base) var(--e-out),
+    background var(--d-base) var(--e-out);
 }
 
 .phase.is-on .phase-badge {
   color: var(--life);
   border-color: var(--life-dim);
-  box-shadow: 0 0 18px -4px var(--life-dim);
+  background: rgba(16, 34, 31, 0.95);
+  box-shadow:
+    0 0 20px -2px rgba(95, 227, 192, 0.35),
+    inset 0 1px 0 rgba(95, 227, 192, 0.3);
 }
 
 .phase-call {
@@ -819,10 +1011,12 @@ code {
   font-size: var(--t-sm);
   font-weight: 500;
   color: var(--text);
+  transition: color var(--d-base) var(--e-out);
 }
 
 .phase.is-on .phase-call {
   color: var(--life);
+  text-shadow: 0 0 12px rgba(95, 227, 192, 0.3);
 }
 
 .phase-what {
@@ -885,15 +1079,22 @@ code {
 /* The treasury bar: one length, drained by metabolism. */
 .drain {
   margin-top: var(--s-5);
+  padding: var(--s-4);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.6) 0%, rgba(10, 20, 19, 0.8) 100%);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-2);
+  box-shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(10px);
 }
 
 .drain-track {
   position: relative;
-  height: 6px;
-  margin-top: var(--s-2);
-  background: var(--ink-3);
-  border: 1px solid var(--line);
+  height: 8px;
+  margin-top: var(--s-3);
+  background: rgba(6, 13, 12, 0.95);
+  border: 1px solid rgba(95, 227, 192, 0.15);
   border-radius: var(--r-pill);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.85), inset 0 0 2px rgba(0, 0, 0, 0.5);
   overflow: hidden;
 }
 
@@ -901,11 +1102,15 @@ code {
   position: absolute;
   inset: 0;
   transform-origin: left center;
-  background: linear-gradient(90deg, var(--life-dim), var(--life));
+  background: linear-gradient(90deg, #2fa385 0%, #5fe3c0 70%, #9cffea 100%);
+  box-shadow:
+    0 0 16px rgba(95, 227, 192, 0.6),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 
 .drain-fill.is-empty {
   background: var(--ash-dim);
+  box-shadow: none;
 }
 
 .drain-scale {
@@ -927,9 +1132,16 @@ code {
 .stage {
   position: relative;
   aspect-ratio: 16 / 10;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
-  background: radial-gradient(120% 110% at 26% 48%, var(--ink-2) 0%, var(--ink) 72%);
+  background:
+    radial-gradient(120% 110% at 26% 48%, rgba(20, 38, 36, 0.85) 0%, rgba(9, 18, 17, 0.98) 72%),
+    linear-gradient(rgba(95, 227, 192, 0.02) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, rgba(95, 227, 192, 0.02) 1px, transparent 1px) 0 0 / 24px 24px;
+  box-shadow:
+    0 20px 48px -12px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 0 48px rgba(0, 0, 0, 0.85);
   overflow: hidden;
 }
 
@@ -952,21 +1164,27 @@ code {
   font-size: var(--t-xs);
   letter-spacing: var(--ls-label);
   text-transform: uppercase;
-  color: var(--text-4);
+  color: var(--text-3);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
 
 .stage-cap .is-going {
   color: var(--heat);
+  text-shadow: 0 0 12px rgba(230, 168, 71, 0.5);
 }
 
 /* The state table. Two columns, and the point is that only one row has an escape. */
 .states {
   display: grid;
   gap: 1px;
-  background: var(--line);
-  border: 1px solid var(--line);
+  background: var(--line-2);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
   overflow: hidden;
+  box-shadow:
+    0 16px 36px -12px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
 }
 
 .state {
@@ -975,13 +1193,23 @@ code {
   gap: var(--s-4);
   align-items: center;
   padding: var(--s-4);
-  background: var(--ink-2);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.85) 0%, rgba(10, 20, 19, 0.95) 100%);
   font-size: var(--t-sm);
+  transition: background var(--d-fast) var(--e-out);
+}
+
+.state:hover {
+  background: linear-gradient(160deg, rgba(20, 38, 35, 0.92) 0%, rgba(12, 24, 22, 0.97) 100%);
 }
 
 .state-dead {
-  background: var(--ash-deep);
+  background: linear-gradient(90deg, rgba(38, 22, 22, 0.85) 0%, rgba(22, 13, 13, 0.95) 100%);
+  border-left: 3px solid rgba(140, 155, 150, 0.4);
   color: var(--ash);
+}
+
+.state-dead:hover {
+  background: linear-gradient(90deg, rgba(46, 26, 26, 0.9) 0%, rgba(28, 16, 16, 0.98) 100%);
 }
 
 .state-name {
@@ -1049,9 +1277,26 @@ code {
 .gen {
   padding: var(--s-3);
   text-align: center;
-  background: var(--ink-2);
-  border: 1px solid var(--line);
+  background: linear-gradient(150deg, rgba(18, 36, 33, 0.8) 0%, rgba(10, 20, 19, 0.94) 100%);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
+  box-shadow:
+    0 8px 20px -6px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(10px);
+  transition:
+    transform var(--d-fast) var(--e-out),
+    border-color var(--d-fast) var(--e-out),
+    box-shadow var(--d-fast) var(--e-out);
+}
+
+.gen:hover {
+  transform: translateY(-2px);
+  border-color: var(--life-dim);
+  box-shadow:
+    0 12px 28px -6px rgba(0, 0, 0, 0.65),
+    0 0 18px -4px rgba(95, 227, 192, 0.2),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .gen-n {
@@ -1062,6 +1307,7 @@ code {
   font-variant-numeric: tabular-nums;
   line-height: 1;
   color: var(--life);
+  text-shadow: 0 0 14px rgba(95, 227, 192, 0.35);
 }
 
 .gen-l {
@@ -1071,7 +1317,7 @@ code {
   font-size: var(--t-xs);
   letter-spacing: var(--ls-label);
   text-transform: uppercase;
-  color: var(--text-4);
+  color: var(--text-3);
 }
 
 /* ══ enter ═══════════════════════════════════════════════════════════════════ */
@@ -1079,9 +1325,7 @@ code {
 .enter {
   padding-block: var(--s-8);
   border-top: 1px solid var(--line);
-  background:
-    radial-gradient(1200px 420px at 50% 0%, var(--ink-2), transparent 70%),
-    var(--ink);
+  background: radial-gradient(1200px 420px at 50% 0%, rgba(95, 227, 192, 0.05) 0%, transparent 70%);
 }
 
 .enter-head {
@@ -1183,10 +1427,14 @@ code {
 .steps {
   display: grid;
   gap: 1px;
-  background: var(--line);
-  border: 1px solid var(--line);
+  background: var(--line-2);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-2);
   overflow: hidden;
+  box-shadow:
+    0 16px 36px -12px rgba(0, 0, 0, 0.65),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(14px);
 }
 
 .step {
@@ -1195,45 +1443,61 @@ code {
   gap: var(--s-4);
   align-items: center;
   padding: var(--s-4);
-  background: var(--ink-2);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.85) 0%, rgba(10, 20, 19, 0.95) 100%);
   transition: background var(--d-base) var(--e-out);
 }
 
+.step:hover {
+  background: linear-gradient(160deg, rgba(22, 42, 39, 0.9) 0%, rgba(13, 26, 24, 0.96) 100%);
+}
+
 .step.is-now {
-  background: var(--ink-3);
+  background: linear-gradient(90deg, rgba(95, 227, 192, 0.08) 0%, rgba(16, 31, 29, 0.95) 100%);
 }
 
 .step.is-done {
-  background: var(--ink-2);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.85) 0%, rgba(10, 20, 19, 0.95) 100%);
 }
 
 .step-n {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   font-family: var(--f-mono);
   font-size: var(--t-xs);
   font-weight: 500;
-  color: var(--text-4);
-  border: 1px solid var(--line);
+  color: var(--text-3);
+  border: 1px solid var(--line-2);
   border-radius: var(--r-pill);
+  background: rgba(10, 20, 19, 0.85);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition:
+    color var(--d-fast) var(--e-out),
+    border-color var(--d-fast) var(--e-out),
+    box-shadow var(--d-fast) var(--e-out),
+    background var(--d-fast) var(--e-out);
 }
 
 .step.is-now .step-n {
   color: var(--life);
   border-color: var(--life);
-  box-shadow: 0 0 16px -4px var(--life-dim);
+  background: rgba(16, 34, 31, 0.95);
+  box-shadow:
+    0 0 18px -2px rgba(95, 227, 192, 0.4),
+    inset 0 1px 0 rgba(95, 227, 192, 0.3);
 }
 
 .step.is-done .step-n {
   color: var(--ink);
-  background: var(--life-dim);
-  border-color: var(--life-dim);
+  background: var(--life);
+  border-color: var(--life);
+  box-shadow: 0 0 14px -2px rgba(95, 227, 192, 0.5);
 }
 
 .step-what {
   font-size: var(--t-sm);
+  line-height: 1.5;
   color: var(--text-2);
   min-width: 0;
 }
@@ -1244,6 +1508,7 @@ code {
   font-size: var(--t-sm);
   font-weight: 500;
   color: var(--text);
+  margin-bottom: var(--s-1);
 }
 
 .step.is-done .step-what b {
@@ -1523,29 +1788,49 @@ code {
   gap: var(--s-3);
   padding: var(--s-4);
   border: 1px solid var(--line-2);
+  border-left: 3px solid var(--life);
   border-radius: var(--r-2);
-  background: var(--ink-2);
+  background: linear-gradient(160deg, rgba(16, 31, 29, 0.8) 0%, rgba(10, 20, 19, 0.94) 100%);
   font-size: var(--t-sm);
   line-height: 1.55;
   color: var(--text-2);
+  box-shadow:
+    0 12px 30px -8px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(12px);
 }
 
 .notice-warn {
   border-color: var(--heat-dim);
-  background: var(--heat-deep);
+  border-left: 3px solid var(--heat);
+  background: linear-gradient(160deg, rgba(34, 26, 14, 0.85) 0%, rgba(20, 16, 9, 0.95) 100%);
   color: var(--text);
+  box-shadow:
+    0 12px 30px -8px rgba(0, 0, 0, 0.55),
+    0 0 20px -6px rgba(230, 168, 71, 0.15),
+    inset 0 1px 0 rgba(230, 168, 71, 0.15);
 }
 
 .notice-bad {
   border-color: var(--bad-dim);
-  background: var(--bad-deep);
+  border-left: 3px solid var(--bad);
+  background: linear-gradient(160deg, rgba(34, 16, 16, 0.85) 0%, rgba(20, 10, 10, 0.95) 100%);
   color: var(--text);
+  box-shadow:
+    0 12px 30px -8px rgba(0, 0, 0, 0.55),
+    0 0 20px -6px rgba(224, 94, 94, 0.15),
+    inset 0 1px 0 rgba(224, 94, 94, 0.15);
 }
 
 .notice-ok {
   border-color: var(--life-dim);
-  background: var(--life-deep);
+  border-left: 3px solid var(--life);
+  background: linear-gradient(160deg, rgba(16, 34, 30, 0.85) 0%, rgba(10, 22, 19, 0.95) 100%);
   color: var(--text);
+  box-shadow:
+    0 12px 30px -8px rgba(0, 0, 0, 0.55),
+    0 0 20px -6px rgba(95, 227, 192, 0.15),
+    inset 0 1px 0 rgba(95, 227, 192, 0.15);
 }
 
 .notice b {
@@ -1558,6 +1843,7 @@ code {
   font-size: var(--t-sm);
   font-weight: 500;
   line-height: 1.55;
+  color: var(--life);
 }
 
 .notice-warn .notice-mark {
@@ -2100,9 +2386,21 @@ code {
 /* ══ footer ══════════════════════════════════════════════════════════════════ */
 
 .foot {
+  position: relative;
+  z-index: 1;
   padding-block: var(--s-7);
   border-top: 1px solid var(--line);
-  background: var(--ink);
+  background: radial-gradient(ellipse at 50% 0%, rgba(95, 227, 192, 0.04) 0%, transparent 60%), rgba(8, 16, 15, 0.85);
+}
+
+.foot::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(95, 227, 192, 0.25) 50%, transparent 100%);
 }
 
 .foot-in {

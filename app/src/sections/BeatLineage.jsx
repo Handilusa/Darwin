@@ -26,6 +26,7 @@
  *  hard-coding a second set.
  */
 
+import { useState } from "react";
 import { useCounter, useDrawPaths, useReveal } from "../motion/hooks.js";
 
 const int = (v) => String(Math.round(v));
@@ -43,6 +44,19 @@ const NODES = [
   { id: "J", x: 552, y: 84, r: 7, k: "life" },
   { id: "K", x: 552, y: 210, r: 7, k: "life" },
 ];
+
+const NODE_META = {
+  A: { status: "Founder · Gen 0" },
+  B: { status: "Child of A · Gen 1" },
+  C: { status: "Child of A · Gen 1" },
+  D: { status: "Child of A · Gen 1" },
+  E: { status: "Child of B · Gen 2" },
+  F: { status: "Child of B · Gen 2" },
+  G: { status: "Child of C · DEAD (Ash)" },
+  H: { status: "Child of D · Gen 2" },
+  J: { status: "Child of F · Gen 3" },
+  K: { status: "Child of G · Gen 3 (Alive)" },
+};
 
 /** Parent index → child index. Order is the draw order: outward from the founder. */
 const LINKS = [
@@ -86,9 +100,13 @@ function edge(a, b) {
 export function BeatLineage() {
   const ref = useReveal();
   const treeRef = useDrawPaths(0.13);
+  const [hovered, setHovered] = useState(null);
+
   // Counts to 0, i.e. does not move. `generation()` is 0 in all eight — see the note on
   // GENS. A tween to 3 here was the animated half of the same overclaim.
   const deepest = useCounter({ from: 0, to: 0, duration: 1.1, format: int });
+
+  const activeNodeObj = hovered ? NODES.find((n) => n.id === hovered) : null;
 
   return (
     <section className="beat" id="lineage" ref={ref}>
@@ -154,50 +172,262 @@ export function BeatLineage() {
                 organism&rsquo;s edge stays in the graph
               </title>
 
-              {LINKS.map(([a, b]) => {
-                // An edge into an ash node is drained, not deleted. Death removes an
-                // organism from the population, never from the ancestry graph.
-                const drained = NODES[a].k === "ash" || NODES[b].k === "ash";
+              <defs>
+                {/* Bioluminescent soft glow */}
+                <filter id="tree-glow" x="-50%" y="-50%" width="200%" height="200%">
+                  <feGaussianBlur in="SourceGraphic" stdDeviation="2.4" result="blur" />
+                  <feMerge>
+                    <feMergeNode in="blur" />
+                    <feMergeNode in="SourceGraphic" />
+                  </feMerge>
+                </filter>
+
+                {/* Living radial aura */}
+                <radialGradient id="tree-living-aura" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="var(--life)" stopOpacity="0.42" />
+                  <stop offset="45%" stopColor="var(--life)" stopOpacity="0.14" />
+                  <stop offset="100%" stopColor="var(--life)" stopOpacity="0" />
+                </radialGradient>
+
+                {/* Living nucleus gradient with bright core */}
+                <radialGradient id="tree-nucleus-core" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stopColor="#ffffff" stopOpacity="0.95" />
+                  <stop offset="40%" stopColor="var(--life)" stopOpacity="0.9" />
+                  <stop offset="100%" stopColor="var(--life)" stopOpacity="0.3" />
+                </radialGradient>
+              </defs>
+
+              {/* Lineage curves with synaptic inheritance pulses */}
+              {LINKS.map(([a, b], idx) => {
+                const nodeA = NODES[a];
+                const nodeB = NODES[b];
+                const isDrained = nodeA.k === "ash" || nodeB.k === "ash";
+                const pathD = edge(nodeA, nodeB);
+                const isConnected =
+                  hovered && (nodeA.id === hovered || nodeB.id === hovered);
+
+                const strokeColor = hovered
+                  ? isConnected
+                    ? isDrained
+                      ? "var(--ash)"
+                      : "var(--life)"
+                    : isDrained
+                      ? "rgba(122,118,134,0.12)"
+                      : "rgba(95,227,192,0.12)"
+                  : isDrained
+                    ? "var(--ash-dim)"
+                    : "var(--life-dim)";
+
+                const pulseDur = `${2.4 + (idx % 3) * 0.45}s`;
+                const pulseDelay = `${idx * 0.22}s`;
+
                 return (
-                  <path
-                    key={`${a}-${b}`}
-                    d={edge(NODES[a], NODES[b])}
-                    data-draw=""
-                    fill="none"
-                    stroke={drained ? "var(--ash-dim)" : "var(--life-dim)"}
-                    strokeWidth="1.25"
-                  />
+                  <g key={`${a}-${b}`}>
+                    <path
+                      d={pathD}
+                      data-draw=""
+                      fill="none"
+                      stroke={strokeColor}
+                      strokeWidth={isConnected ? "2" : "1.25"}
+                      style={{ transition: "stroke 0.22s ease, stroke-width 0.22s ease" }}
+                    />
+
+                    {/* Animated transmission pulse */}
+                    <circle
+                      r={isDrained ? "1.8" : "2.4"}
+                      fill={isDrained ? "var(--ash)" : "var(--life)"}
+                      filter="url(#tree-glow)"
+                      style={{ pointerEvents: "none" }}
+                    >
+                      <animateMotion
+                        dur={pulseDur}
+                        repeatCount="indefinite"
+                        path={pathD}
+                        begin={pulseDelay}
+                      />
+                      <animate
+                        attributeName="opacity"
+                        values={isDrained ? "0;0.5;0.3;0" : "0;0.95;0.95;0"}
+                        dur={pulseDur}
+                        repeatCount="indefinite"
+                        begin={pulseDelay}
+                      />
+                      <animate
+                        attributeName="r"
+                        values={isDrained ? "1.4;2.1;1.4" : "1.8;3.2;1.8"}
+                        dur={pulseDur}
+                        repeatCount="indefinite"
+                        begin={pulseDelay}
+                      />
+                    </circle>
+                  </g>
                 );
               })}
 
-              {NODES.map((n) => (
-                <g key={n.id}>
-                  <circle
-                    cx={n.x}
-                    cy={n.y}
-                    r={n.r}
-                    fill="none"
-                    stroke={n.k === "ash" ? "var(--ash)" : "var(--life)"}
-                    strokeWidth="1.4"
-                  />
-                  <circle
-                    cx={n.x}
-                    cy={n.y}
-                    r={n.r * 0.3}
-                    fill={n.k === "ash" ? "var(--ash-dim)" : "var(--life)"}
+              {/* Living & dead nodes */}
+              {NODES.map((n) => {
+                const isAsh = n.k === "ash";
+                const isHovered = hovered === n.id;
+                const isDimmed =
+                  hovered &&
+                  !isHovered &&
+                  !LINKS.some(
+                    ([a, b]) =>
+                      (NODES[a].id === hovered && NODES[b].id === n.id) ||
+                      (NODES[b].id === hovered && NODES[a].id === n.id),
+                  );
+
+                return (
+                  <g
+                    key={n.id}
+                    style={{
+                      cursor: "pointer",
+                      opacity: isDimmed ? 0.35 : 1,
+                      transition: "opacity 0.22s ease",
+                    }}
+                    onPointerEnter={() => setHovered(n.id)}
+                    onPointerLeave={() => setHovered(null)}
+                  >
+                    {/* Living atmospheric aura */}
+                    {!isAsh && (
+                      <circle
+                        cx={n.x}
+                        cy={n.y}
+                        r={n.r * 2.8}
+                        fill="url(#tree-living-aura)"
+                        style={{ pointerEvents: "none" }}
+                      />
+                    )}
+
+                    {/* Concentric breathing resonant ring */}
+                    {!isAsh && (
+                      <circle
+                        cx={n.x}
+                        cy={n.y}
+                        r={n.r * 1.55}
+                        fill="none"
+                        stroke="var(--life)"
+                        strokeWidth="0.8"
+                        opacity={isHovered ? "0.6" : "0.22"}
+                        style={{ pointerEvents: "none" }}
+                      >
+                        <animate
+                          attributeName="r"
+                          values={`${n.r * 1.35};${n.r * 1.7};${n.r * 1.35}`}
+                          dur="3.4s"
+                          repeatCount="indefinite"
+                        />
+                        <animate
+                          attributeName="opacity"
+                          values={isHovered ? "0.4;0.7;0.4" : "0.15;0.35;0.15"}
+                          dur="3.4s"
+                          repeatCount="indefinite"
+                        />
+                      </circle>
+                    )}
+
+                    {/* Primary membrane */}
+                    <circle
+                      cx={n.x}
+                      cy={n.y}
+                      r={isHovered ? n.r * 1.2 : n.r}
+                      fill={isAsh ? "rgba(122,118,134,0.06)" : "rgba(95,227,192,0.08)"}
+                      stroke={
+                        isAsh
+                          ? "var(--ash)"
+                          : isHovered
+                            ? "#ffffff"
+                            : "var(--life)"
+                      }
+                      strokeWidth={isHovered ? "2" : isAsh ? "1.2" : "1.5"}
+                      filter={!isAsh ? "url(#tree-glow)" : undefined}
+                      style={{ transition: "all 0.2s ease" }}
+                    />
+
+                    {/* Nucleus core */}
+                    <circle
+                      cx={n.x}
+                      cy={n.y}
+                      r={isHovered ? n.r * 0.45 : n.r * 0.35}
+                      fill={isAsh ? "var(--ash-dim)" : "url(#tree-nucleus-core)"}
+                      filter={!isAsh ? "url(#tree-glow)" : undefined}
+                      style={{ transition: "all 0.2s ease" }}
+                    />
+
+                    {/* Center spark for living cells */}
+                    {!isAsh && (
+                      <circle
+                        cx={n.x}
+                        cy={n.y}
+                        r={Math.max(1.2, n.r * 0.16)}
+                        fill="#ffffff"
+                        opacity="0.9"
+                      />
+                    )}
+
+                    {/* Label */}
+                    <text
+                      x={n.x}
+                      y={n.y + n.r + 15}
+                      textAnchor="middle"
+                      fill={
+                        isAsh
+                          ? "var(--ash-dim)"
+                          : isHovered
+                            ? "var(--text)"
+                            : "var(--text-3)"
+                      }
+                      fontFamily="var(--f-mono)"
+                      fontSize={isHovered ? "11.5" : "10"}
+                      fontWeight={isHovered ? "600" : "500"}
+                      style={{ transition: "all 0.2s ease", userSelect: "none" }}
+                    >
+                      {n.id}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Floating informative HUD on node hover */}
+              {activeNodeObj && NODE_META[hovered] && (
+                <g
+                  transform={`translate(${Math.max(
+                    65,
+                    Math.min(555, activeNodeObj.x),
+                  )}, ${Math.max(22, activeNodeObj.y - activeNodeObj.r - 12)})`}
+                  style={{ pointerEvents: "none" }}
+                >
+                  <rect
+                    x="-68"
+                    y="-16"
+                    width="136"
+                    height="20"
+                    rx="3"
+                    fill="var(--ink-2)"
+                    stroke={
+                      activeNodeObj.k === "ash"
+                        ? "var(--ash)"
+                        : "var(--life)"
+                    }
+                    strokeWidth="1"
+                    opacity="0.95"
                   />
                   <text
-                    x={n.x}
-                    y={n.y + n.r + 14}
                     textAnchor="middle"
-                    fill={n.k === "ash" ? "var(--ash-dim)" : "var(--text-3)"}
+                    y="-3"
+                    fill={
+                      activeNodeObj.k === "ash"
+                        ? "var(--ash)"
+                        : "var(--life)"
+                    }
                     fontFamily="var(--f-mono)"
-                    fontSize="10"
+                    fontSize="9"
+                    letterSpacing="0.04em"
                   >
-                    {n.id}
+                    {NODE_META[hovered].status}
                   </text>
                 </g>
-              ))}
+              )}
             </svg>
           </div>
 
