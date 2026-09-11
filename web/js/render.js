@@ -1377,12 +1377,153 @@ export function detail(row, info, cfg, ctx = {}) {
                            LINEAGE TREE
 //////////////////////////////////////////////////////////////*/
 
-const COL = 190;
+const COL = 220;
 const ROW = 32;
 const PAD_X = 32;
 const PAD_TOP = 42;
 const PAD_BOTTOM = 24;
 const R = 7;
+
+/**
+ *  Bio-cybernetic ambient background: renders floating primordial DNA spores,
+ *  synaptic energy filaments between nearby particles, generational column light
+ *  washes, and an energetic amber incubation beacon zone behind G1.
+ */
+function initTreeAmbientCanvas(canvas, width, height, t, topBreeder, COL = 220) {
+  if (!canvas || typeof canvas.getContext !== "function") return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const reduced = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // Particle configuration: DNA spores / primordial broth sparks
+  const count = Math.min(Math.max(Math.round((width * height) / 22000), 30), 75);
+  const particles = [];
+  const palette = [
+    "rgba(95, 227, 192, ",  // --life mint
+    "rgba(47, 141, 120, ",  // --life-dim
+    "rgba(255, 157, 66, ",  // --heat amber
+    "rgba(122, 118, 134, ", // --ash neutral
+  ];
+
+  for (let i = 0; i < count; i++) {
+    particles.push({
+      x: Math.random() * width,
+      y: 28 + Math.random() * (height - 36),
+      vx: (Math.random() - 0.35) * 0.45, // slight rightward descent drift
+      vy: (Math.random() - 0.5) * 0.3,
+      r: 1 + Math.random() * 2.2,
+      baseAlpha: 0.15 + Math.random() * 0.35,
+      pulseSpeed: 0.015 + Math.random() * 0.03,
+      pulsePhase: Math.random() * Math.PI * 2,
+      color: palette[i % palette.length],
+    });
+  }
+
+  let animId = null;
+
+  function draw(now) {
+    if (!canvas.isConnected && canvas.parentNode == null) {
+      if (animId) cancelAnimationFrame(animId);
+      return;
+    }
+
+    ctx.clearRect(0, 0, width, height);
+
+    // 1. Generational Column Ambient Glow & Light Beams
+    // G0 Founders subtle column wash
+    const g0Grad = ctx.createLinearGradient(0, 0, 0, height);
+    g0Grad.addColorStop(0, "rgba(95, 227, 192, 0.035)");
+    g0Grad.addColorStop(0.5, "rgba(95, 227, 192, 0.012)");
+    g0Grad.addColorStop(1, "rgba(95, 227, 192, 0)");
+    ctx.fillStyle = g0Grad;
+    ctx.fillRect(PAD_X - 25, 26, COL - 10, height - 26);
+
+    // G1 Incubation zone warm amber glow if candidate exists
+    if (topBreeder) {
+      const g1Pulse = 0.035 + Math.sin(now * 0.002) * 0.018;
+      const targetY = PAD_TOP + topBreeder.row * ROW;
+      const targetX = PAD_X + 1 * COL;
+      const g1Grad = ctx.createRadialGradient(targetX, targetY, 10, targetX, targetY, 180);
+      g1Grad.addColorStop(0, `rgba(255, 157, 66, ${g1Pulse * 2.8})`);
+      g1Grad.addColorStop(0.5, `rgba(255, 157, 66, ${g1Pulse})`);
+      g1Grad.addColorStop(1, "rgba(255, 157, 66, 0)");
+      ctx.fillStyle = g1Grad;
+      ctx.fillRect(targetX - 180, targetY - 180, 360, 360);
+    }
+
+    // 2. Synaptic connections between close particles (bio-neural filaments)
+    for (let i = 0; i < particles.length; i++) {
+      const p1 = particles[i];
+      for (let j = i + 1; j < particles.length; j++) {
+        const p2 = particles[j];
+        const dx = p1.x - p2.x;
+        const dy = p1.y - p2.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 65) {
+          const alpha = (1 - dist / 65) * 0.15;
+          ctx.beginPath();
+          ctx.strokeStyle = `rgba(95, 227, 192, ${alpha})`;
+          ctx.lineWidth = 0.6;
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
+        }
+      }
+    }
+
+    // 3. Render and update floating primordial particles
+    for (let i = 0; i < particles.length; i++) {
+      const p = particles[i];
+      if (!reduced) {
+        p.x += p.vx;
+        p.y += p.vy;
+
+        if (p.x < 0) p.x = width;
+        else if (p.x > width) p.x = 0;
+        if (p.y < 28) p.y = height - 8;
+        else if (p.y > height - 8) p.y = 28;
+
+        p.pulsePhase += p.pulseSpeed;
+      }
+
+      const pulseAlpha = p.baseAlpha + Math.sin(p.pulsePhase) * 0.15;
+      const curAlpha = Math.max(0.04, Math.min(0.85, pulseAlpha));
+
+      const radGrad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, p.r * 2.5);
+      radGrad.addColorStop(0, `${p.color}${curAlpha})`);
+      radGrad.addColorStop(0.5, `${p.color}${curAlpha * 0.5})`);
+      radGrad.addColorStop(1, `${p.color}0)`);
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = radGrad;
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(0.7, p.r * 0.6), 0, Math.PI * 2);
+      ctx.fillStyle = `${p.color}${Math.min(1, curAlpha * 1.6)})`;
+      ctx.fill();
+    }
+
+    if (!reduced) {
+      animId = requestAnimationFrame(draw);
+    }
+  }
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible" && !reduced) {
+        if (!animId) animId = requestAnimationFrame(draw);
+      } else if (animId) {
+        cancelAnimationFrame(animId);
+        animId = null;
+      }
+    });
+  }
+
+  animId = requestAnimationFrame(draw);
+}
 
 /**
  *  The dendrogram. Generation is the x axis, so descent reads left to right and a long lineage
@@ -1402,10 +1543,35 @@ export function tree(t, cfg, ctx = {}) {
   // Display at least 4 generations (G0 to G3) so the generational grid is clearly readable as a timeline
   // even when all current organisms are at generation 0 before breeding begins.
   const displayGens = Math.max(t.generations, 3);
-  const width = Math.max(PAD_X * 2 + (displayGens + 1) * COL, 820);
+  const colCount = displayGens + 1;
+
+  let containerWidth = 0;
+  if (typeof document !== "undefined") {
+    const mainBody = typeof document.getElementById === "function"
+      ? document.getElementById("body")
+      : (typeof document.querySelector === "function" ? document.querySelector("#body") : null);
+    if (mainBody && mainBody.clientWidth) {
+      containerWidth = mainBody.clientWidth - 48; // Account for panel padding
+    } else if (typeof window !== "undefined" && window.innerWidth) {
+      containerWidth = Math.min(window.innerWidth - 64, 1520);
+    }
+  }
+
+  // Dynamically size column width so generations stretch all the way across the panel width on wide displays,
+  // while preserving a minimum 220px column width for smaller viewports or deeper trees.
+  const baseCol = 220;
+  const dynamicCol = containerWidth > 0 ? Math.floor((containerWidth - PAD_X * 2) / colCount) : baseCol;
+  const COL = Math.max(dynamicCol, baseCol);
+  const width = Math.max(PAD_X * 2 + colCount * COL, containerWidth || 820);
   const height = PAD_TOP + Math.max(t.rows - 1, 0) * ROW + PAD_BOTTOM;
   const x = (n) => PAD_X + n.generation * COL;
   const y = (n) => PAD_TOP + n.row * ROW;
+
+  // Find leading breeding candidate (closest to spawning G1)
+  const contenders = (t.nodes || [])
+    .filter((n) => !n.dead && Number(n.streak) > 0)
+    .sort((a, b) => Number(b.streak) - Number(a.streak));
+  const topBreeder = contenders[0] || null;
 
   const canvas = svg("svg", {
     class: "tree",
@@ -1415,6 +1581,32 @@ export function tree(t, cfg, ctx = {}) {
     role: "img",
     "aria-label": "lineage tree",
   });
+
+  // SVG Filters and Definitions for Bio-Luminescence
+  const defs = svg("defs", {});
+  const filterHeat = svg("filter", { id: "tree-glow-heat", x: "-40%", y: "-40%", width: "180%", height: "180%" });
+  filterHeat.appendChild(svg("feGaussianBlur", { stdDeviation: "3.5", result: "blur" }));
+  const mergeHeat = svg("feMerge", {});
+  mergeHeat.appendChild(svg("feMergeNode", { in: "blur" }));
+  mergeHeat.appendChild(svg("feMergeNode", { in: "SourceGraphic" }));
+  filterHeat.appendChild(mergeHeat);
+  defs.appendChild(filterHeat);
+
+  const filterLife = svg("filter", { id: "tree-glow-life", x: "-40%", y: "-40%", width: "180%", height: "180%" });
+  filterLife.appendChild(svg("feGaussianBlur", { stdDeviation: "3", result: "blur" }));
+  const mergeLife = svg("feMerge", {});
+  mergeLife.appendChild(svg("feMergeNode", { in: "blur" }));
+  mergeLife.appendChild(svg("feMergeNode", { in: "SourceGraphic" }));
+  filterLife.appendChild(mergeLife);
+  defs.appendChild(filterLife);
+
+  const ghostGrad = svg("linearGradient", { id: "tree-ghost-grad", x1: "0%", y1: "0%", x2: "100%", y2: "0%" });
+  ghostGrad.appendChild(svg("stop", { offset: "0%", "stop-color": "#f0a055", "stop-opacity": "0.9" }));
+  ghostGrad.appendChild(svg("stop", { offset: "50%", "stop-color": "#ffb342", "stop-opacity": "0.95" }));
+  ghostGrad.appendChild(svg("stop", { offset: "100%", "stop-color": "#5fe3c0", "stop-opacity": "0.9" }));
+  defs.appendChild(ghostGrad);
+
+  canvas.appendChild(defs);
 
   // Top header rule separating generation labels from tree nodes
   canvas.appendChild(
@@ -1431,21 +1623,48 @@ export function tree(t, cfg, ctx = {}) {
   for (let g = 0; g <= displayGens; g += 1) {
     const gx = PAD_X + g * COL;
 
+    // Subtle vertical column chamber backdrop
+    canvas.appendChild(
+      svg("rect", {
+        class: `tree-col-band tree-col-band-${g}`,
+        x: gx - 20,
+        y: 28,
+        width: COL - 8,
+        height: height - 36,
+        rx: 6,
+      }),
+    );
+
+    // Generation badge pill at header
+    const labelText = g === 0 ? "G0 · FOUNDERS" : `G${g}`;
+    const badgeW = g === 0 ? 140 : 44;
+    const badgeX = gx - R - 8;
+    canvas.appendChild(
+      svg("rect", {
+        class: `tree-gen-badge ${g === 0 ? "is-founders" : ""}`,
+        x: badgeX,
+        y: 6,
+        width: badgeW,
+        height: 18,
+        rx: 4,
+      }),
+    );
+
     // Column header label at top
     canvas.appendChild(
       svg(
         "text",
         {
           class: "tree-gen",
-          x: gx - R,
-          y: 18,
-          "text-anchor": "start",
+          x: badgeX + badgeW / 2,
+          y: 18.5,
+          "text-anchor": "middle",
         },
-        g === 0 ? "G0 · FOUNDERS" : `G${g}`,
+        labelText,
       ),
     );
 
-    // Subtle vertical column divider between generations (does not cut through nodes)
+    // Vertical column divider between generations
     if (g < displayGens) {
       const divX = gx + COL - 24;
       canvas.appendChild(
@@ -1455,6 +1674,14 @@ export function tree(t, cfg, ctx = {}) {
           y1: 8,
           x2: divX,
           y2: height - 8,
+        }),
+      );
+      canvas.appendChild(
+        svg("circle", {
+          class: "tree-divider-tick",
+          cx: divX,
+          cy: 8,
+          r: 1.5,
         }),
       );
     }
@@ -1469,8 +1696,9 @@ export function tree(t, cfg, ctx = {}) {
 
     const aName = ctx.labels?.get(a.id);
     const aLabel = `#${a.id}${aName ? ` ${aName}` : ""}`;
-    const aTextW = Math.round(aLabel.length * 6.5);
-    const startX = x(a) + R + 7 + aTextW + 8;
+    const aTextW = Math.ceil(aLabel.length * 6.8);
+    const aStreakW = !a.dead && Number(a.streak) > 0 ? 54 : 0;
+    const startX = x(a) + R + 7 + aTextW + aStreakW + 12;
     const endX = x(b) - R - 1;
     const startY = y(a);
     const endY = y(b);
@@ -1478,6 +1706,16 @@ export function tree(t, cfg, ctx = {}) {
     const span = Math.max(endX - startX, 20);
     const cp1x = startX + span * 0.5;
     const cp2x = endX - span * 0.5;
+
+    // Glowing underlay for live branches
+    if (!e.dead) {
+      canvas.appendChild(
+        svg("path", {
+          class: "tree-edge-glow",
+          d: `M ${startX} ${startY} C ${cp1x} ${startY}, ${cp2x} ${endY}, ${endX} ${endY}`,
+        }),
+      );
+    }
 
     canvas.appendChild(
       svg("path", {
@@ -1495,8 +1733,15 @@ export function tree(t, cfg, ctx = {}) {
   for (const n of t.nodes) {
     const name = ctx.labels?.get(n.id);
     const selected = ctx.selected != null && Number(ctx.selected) === n.id;
+    const isTopBreeder = topBreeder && n.id === topBreeder.id;
+
     const g = svg("g", {
-      class: ["tree-node", n.dead && "is-dead", selected && "is-selected"].filter(Boolean).join(" "),
+      class: [
+        "tree-node",
+        n.dead && "is-dead",
+        selected && "is-selected",
+        isTopBreeder && "is-top-breeder",
+      ].filter(Boolean).join(" "),
       tabindex: "0",
       role: "button",
       "aria-label": `organism ${n.id}`,
@@ -1510,6 +1755,27 @@ export function tree(t, cfg, ctx = {}) {
           }
         : null,
     });
+
+    // Radiant halo around candidate
+    if (isTopBreeder) {
+      g.appendChild(
+        svg("circle", {
+          class: "tree-candidate-halo",
+          cx: x(n),
+          cy: y(n),
+          r: R + 5,
+        }),
+      );
+      g.appendChild(
+        svg("circle", {
+          class: "tree-candidate-pulse",
+          cx: x(n),
+          cy: y(n),
+          r: R + 2,
+        }),
+      );
+    }
+
     g.appendChild(
       svg("circle", {
         class: `belief-${idx(BELIEF_TONE, n.belief, "none")}`,
@@ -1524,21 +1790,31 @@ export function tree(t, cfg, ctx = {}) {
     );
     if (!n.dead && Number(n.streak) > 0) {
       const fullLabel = `#${n.id}${name ? ` ${name}` : ""}`;
-      const textW = Math.round(fullLabel.length * 6.5);
+      const textW = Math.ceil(fullLabel.length * 6.8);
       const tagX = x(n) + R + 7 + textW + 6;
       const streakG = svg("g", { class: "tree-streak-tag" });
+      streakG.appendChild(
+        svg("rect", {
+          class: "tree-streak-pill",
+          x: tagX - 3,
+          y: y(n) - 8,
+          width: 40,
+          height: 14,
+          rx: 3,
+        }),
+      );
       streakG.appendChild(
         svg("path", {
           d: "M5 13.5c-2.4 0-4-1.8-4-4 0-1.5 1-3.2 2.1-4.3L5 3.5l1.9 1.7C8 6.3 9 8 9 9.5c0 2.2-1.6 4-4 4z",
           fill: "#ff9d42",
-          transform: `translate(${tagX}, ${y(n) - 8}) scale(0.85)`,
-          opacity: "0.85",
+          transform: `translate(${tagX + 2}, ${y(n) - 7}) scale(0.8)`,
+          opacity: "0.9",
         }),
       );
       streakG.appendChild(
         svg(
           "text",
-          { x: tagX + 11, y: y(n) + 4 },
+          { class: "tree-streak-text", x: tagX + 13, y: y(n) + 3 },
           `${n.streak}/4`,
         ),
       );
@@ -1551,31 +1827,63 @@ export function tree(t, cfg, ctx = {}) {
   const genCount = t.generations + 1;
   const genText = `${genCount} ${genCount === 1 ? "generation" : "generations"}`;
 
-  // Find leading breeding candidate (closest to spawning G1)
-  const contenders = (t.nodes || [])
-    .filter((n) => !n.dead && Number(n.streak) > 0)
-    .sort((a, b) => Number(b.streak) - Number(a.streak));
-  const topBreeder = contenders[0] || null;
-
   // If no descendants have bred yet, draw an incubation projection from the top contender into G1
   if (!hasEdges && topBreeder) {
     const aName = ctx.labels?.get(topBreeder.id);
     const aLabel = `#${topBreeder.id}${aName ? ` ${aName}` : ""}`;
-    const aTextW = Math.round(aLabel.length * 6.5) + (topBreeder.streak ? 44 : 0);
-    const startX = x(topBreeder) + R + 7 + aTextW + 8;
+    const aTextW = Math.ceil(aLabel.length * 6.8);
+    const aStreakW = !topBreeder.dead && Number(topBreeder.streak) > 0 ? 54 : 0;
+    const startX = x(topBreeder) + R + 7 + aTextW + aStreakW + 12;
     const targetX = PAD_X + 1 * COL;
     const targetY = y(topBreeder);
+    const pathD = `M ${startX} ${targetY} C ${startX + 35} ${targetY}, ${targetX - 25} ${targetY}, ${targetX} ${targetY}`;
 
+    // Glow underlay
     canvas.appendChild(
       svg("path", {
-        class: "tree-edge-ghost",
-        d: `M ${startX} ${targetY} C ${startX + 35} ${targetY}, ${targetX - 25} ${targetY}, ${targetX} ${targetY}`,
+        class: "tree-edge-ghost-glow",
+        d: pathD,
       }),
     );
 
+    // Animated dashed line
+    canvas.appendChild(
+      svg("path", {
+        class: "tree-edge-ghost",
+        d: pathD,
+      }),
+    );
+
+    // Traveling comet particle
+    const cometG = svg("g", { class: "tree-pulse-comet-layer" });
+    const comet = svg("circle", {
+      class: "tree-pulse-comet",
+      r: 3,
+      cx: 0,
+      cy: 0,
+    });
+    comet.appendChild(
+      svg("animateMotion", {
+        path: pathD,
+        dur: "2.4s",
+        repeatCount: "indefinite",
+        keyPoints: "0;1",
+        keyTimes: "0;1",
+        calcMode: "linear",
+      }),
+    );
+    cometG.appendChild(comet);
+    canvas.appendChild(cometG);
+
+    // Ghost node with Sonar Radar Ripples
     const ghostG = svg("g", { class: "tree-ghost-node" });
+    ghostG.appendChild(svg("circle", { class: "tree-radar-ring ring-1", cx: targetX, cy: targetY, r: R }));
+    ghostG.appendChild(svg("circle", { class: "tree-radar-ring ring-2", cx: targetX, cy: targetY, r: R }));
+    ghostG.appendChild(svg("circle", { class: "tree-radar-ring ring-3", cx: targetX, cy: targetY, r: R }));
+
     ghostG.appendChild(
       svg("circle", {
+        class: "tree-ghost-core",
         cx: targetX,
         cy: targetY,
         r: R,
@@ -1611,7 +1919,7 @@ export function tree(t, cfg, ctx = {}) {
       el(
         "div",
         { class: "incubator-badge-row" },
-        el("span", { class: "incubator-badge", text: "G1 INCUBATION RADAR" }),
+        el("span", { class: "incubator-badge" }, el("span", { class: "radar-live-blip" }), "G1 INCUBATION RADAR"),
         topBreeder
           ? el(
               "span",
@@ -1652,6 +1960,28 @@ export function tree(t, cfg, ctx = {}) {
     ),
   );
 
+  const ambientCanvas = el("canvas", {
+    class: "tree-ambient-canvas",
+    width: String(width),
+    height: String(height),
+    "aria-hidden": "true",
+  });
+  initTreeAmbientCanvas(ambientCanvas, width, height, t, topBreeder, COL);
+
+  const stage = el(
+    "div",
+    {
+      class: "tree-stage",
+      style: {
+        width: "100%",
+        minWidth: `${width}px`,
+        height: `${height}px`,
+      },
+    },
+    ambientCanvas,
+    canvas,
+  );
+
   return el(
     "section",
     { class: "panel" },
@@ -1667,7 +1997,7 @@ export function tree(t, cfg, ctx = {}) {
       }),
     ),
     incubatorCard,
-    el("div", { class: "tree-scroll" }, canvas),
+    el("div", { class: "tree-scroll" }, stage),
     el(
       "p",
       { class: "legend" },

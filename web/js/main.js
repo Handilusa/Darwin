@@ -608,7 +608,14 @@ async function boot() {
 
   const s = settings();
   app.poll = s.poll;
+  const hashTab = (globalThis.location?.hash || "").replace("#", "").toLowerCase();
+  if (hashTab === "standings" || hashTab === "feed" || hashTab === "arena") {
+    app.activeTab = hashTab;
+  }
   app.selected = selectionFromHash();
+  if (app.selected != null) {
+    app.activeTab = "arena";
+  }
 
   if (s.demo) return bootDemo();
 
@@ -810,6 +817,14 @@ globalThis.addEventListener("hashchange", () => {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) clearTimeout(app.timer);
   else if (app.cfg && !app.demo) refresh(false);
+});
+
+let resizeTimer;
+globalThis.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (app.painted && app.activeTab === "standings") paint();
+  }, 150);
 });
 
 boot();

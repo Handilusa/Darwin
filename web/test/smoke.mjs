@@ -2023,6 +2023,18 @@ assert(
   JSON.stringify(standingsNode.textContent),
 );
 
+// Lineage tree panel: renders bio-cybernetic tree stage, ambient canvas, and G1 Incubation Radar
+const treeLayout = lineage.layout(rows);
+const treeNode = ui.tree(treeLayout, cfg, ctx);
+assert(
+  "tree panel renders with Lineage title, G1 INCUBATION RADAR, and tree stage",
+  treeNode.textContent.includes("Lineage") &&
+    treeNode.textContent.includes("G1 INCUBATION RADAR") &&
+    treeNode.classes.includes("tree-stage") &&
+    treeNode.classes.includes("tree-ambient-canvas"),
+  JSON.stringify(treeNode.classes),
+);
+
 console.log("\n" + checks.join("\n"));
 console.log(`\n${fails === 0 ? "ALL GREEN" : fails + " FAILURE(S)"}`);
 process.exit(fails === 0 ? 0 : 1);

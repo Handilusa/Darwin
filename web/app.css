@@ -1460,23 +1460,56 @@ code {
   overflow-x: auto;
   overscroll-behavior-x: contain;
   padding-bottom: var(--s-2);
+  width: 100%;
+}
+
+.tree-stage {
+  position: relative;
+  width: 100%;
+  border-radius: var(--r-md);
+  background: radial-gradient(ellipse at 15% 30%, rgba(95, 227, 192, 0.04), transparent 70%),
+              radial-gradient(ellipse at 85% 60%, rgba(255, 157, 66, 0.03), transparent 70%),
+              rgba(6, 13, 12, 0.65);
+  border: 1px solid rgba(38, 64, 60, 0.45);
+  box-shadow: inset 0 0 50px rgba(0, 0, 0, 0.7);
+  overflow: hidden;
+}
+
+.tree-ambient-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .tree {
+  position: relative;
+  z-index: 1;
   display: block;
+  width: 100%;
   height: auto;
 }
 
 .tree-header-line {
-  stroke: var(--line);
+  stroke: var(--line-2);
   stroke-width: 1;
+  opacity: 0.6;
 }
 
 .tree-divider {
   stroke: var(--line-2);
   stroke-width: 1;
   stroke-dasharray: 2 6;
-  opacity: 0.5;
+  opacity: 0.45;
+}
+
+.tree-divider-tick {
+  fill: var(--life-dim);
+  opacity: 0.7;
+  filter: drop-shadow(0 0 2px var(--life));
 }
 
 .tree-grid {
@@ -1485,11 +1518,38 @@ code {
   stroke-dasharray: 2 6;
 }
 
+.tree-col-band {
+  fill: rgba(95, 227, 192, 0.012);
+  transition: fill var(--d-fast) var(--e-out);
+  pointer-events: none;
+}
+
+.tree-col-band:hover {
+  fill: rgba(95, 227, 192, 0.03);
+}
+
+.tree-col-band-1 {
+  fill: rgba(255, 157, 66, 0.018);
+}
+
+.tree-gen-badge {
+  fill: rgba(255, 255, 255, 0.03);
+  stroke: rgba(255, 255, 255, 0.08);
+  stroke-width: 1;
+}
+
+.tree-gen-badge.is-founders {
+  fill: rgba(95, 227, 192, 0.08);
+  stroke: rgba(95, 227, 192, 0.25);
+}
+
 .tree-gen {
   font-family: var(--f-mono);
   font-size: 10px;
+  font-weight: 500;
   letter-spacing: var(--ls-label);
-  fill: var(--text-4);
+  fill: var(--text-3);
+  text-anchor: middle;
 }
 
 /* Descent, drawn parent to child. `motion.js` animates `stroke-dashoffset` on a new edge, so no
@@ -1499,7 +1559,7 @@ code {
   stroke: var(--life-dim);
   stroke-width: 1.5;
   stroke-linecap: round;
-  filter: drop-shadow(0 0 3px rgba(95, 227, 192, 0.3));
+  filter: drop-shadow(0 0 3px rgba(95, 227, 192, 0.35));
   transition:
     stroke var(--d-fast) var(--e-out),
     stroke-width var(--d-fast) var(--e-out),
@@ -1508,8 +1568,17 @@ code {
 
 .tree-edge:hover {
   stroke: var(--life);
-  stroke-width: 2;
-  filter: drop-shadow(0 0 6px rgba(95, 227, 192, 0.6));
+  stroke-width: 2.2;
+  filter: drop-shadow(0 0 8px rgba(95, 227, 192, 0.8));
+}
+
+.tree-edge-glow {
+  fill: none;
+  stroke: rgba(95, 227, 192, 0.2);
+  stroke-width: 4;
+  stroke-linecap: round;
+  filter: blur(2px);
+  pointer-events: none;
 }
 
 .tree-edge.is-dead {
@@ -1518,41 +1587,153 @@ code {
   filter: none;
 }
 
-.tree-edge-ghost {
+.tree-candidate-halo {
   fill: none;
-  stroke: var(--heat);
+  stroke: #ff9d42;
   stroke-width: 1.5;
-  stroke-dasharray: 4 4;
-  opacity: 0.75;
-  filter: drop-shadow(0 0 4px rgba(255, 120, 80, 0.4));
+  stroke-dasharray: 4 3;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: spin-candidate-halo 12s linear infinite, breathe-candidate-halo 2.4s ease-in-out infinite alternate;
+  filter: drop-shadow(0 0 6px rgba(255, 157, 66, 0.85));
+  pointer-events: none;
 }
 
-.tree-ghost-node circle {
+@keyframes spin-candidate-halo {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes breathe-candidate-halo {
+  0% { opacity: 0.55; stroke-width: 1.2; }
+  100% { opacity: 1; stroke-width: 2; }
+}
+
+.tree-candidate-pulse {
+  fill: rgba(255, 157, 66, 0.2);
+  stroke: #ff9d42;
+  stroke-width: 1;
+  animation: candidate-pulse 2.2s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes candidate-pulse {
+  0% { r: 8px; opacity: 0.85; }
+  100% { r: 22px; opacity: 0; }
+}
+
+.tree-edge-ghost-glow {
   fill: none;
+  stroke: rgba(255, 157, 66, 0.35);
+  stroke-width: 5;
+  filter: blur(3px);
+  pointer-events: none;
+}
+
+.tree-edge-ghost {
+  fill: none;
+  stroke: url(#tree-ghost-grad);
+  stroke-width: 1.8;
+  stroke-dasharray: 6 5;
+  animation: tree-dash-flow 1.5s linear infinite;
+  filter: drop-shadow(0 0 6px rgba(255, 157, 66, 0.65));
+}
+
+@keyframes tree-dash-flow {
+  from { stroke-dashoffset: 22; }
+  to { stroke-dashoffset: 0; }
+}
+
+.tree-pulse-comet-layer {
+  pointer-events: none;
+}
+
+.tree-pulse-comet {
+  fill: #ffcb52;
+  filter: drop-shadow(0 0 5px #ff9d42);
+}
+
+.tree-ghost-node {
+  cursor: default;
+}
+
+.tree-radar-ring {
+  fill: none;
+  stroke: #ff9d42;
+  pointer-events: none;
+  animation: radar-sonar 3s cubic-bezier(0.12, 0.4, 0.2, 1) infinite;
+}
+
+.tree-radar-ring.ring-1 { animation-delay: 0s; }
+.tree-radar-ring.ring-2 { animation-delay: 1s; }
+.tree-radar-ring.ring-3 { animation-delay: 2s; }
+
+@keyframes radar-sonar {
+  0% {
+    r: 7px;
+    opacity: 0.9;
+    stroke-width: 1.5px;
+  }
+  100% {
+    r: 32px;
+    opacity: 0;
+    stroke-width: 0.5px;
+  }
+}
+
+.tree-ghost-core {
+  fill: rgba(255, 157, 66, 0.15);
   stroke: var(--heat);
   stroke-width: 1.5;
   stroke-dasharray: 3 3;
+  animation: pulse-ghost-core 2.4s ease-in-out infinite alternate;
+}
+
+@keyframes pulse-ghost-core {
+  0% { fill: rgba(255, 157, 66, 0.1); stroke-width: 1.2; }
+  100% { fill: rgba(255, 157, 66, 0.28); stroke-width: 1.8; filter: drop-shadow(0 0 5px rgba(255, 157, 66, 0.6)); }
 }
 
 .tree-ghost-label {
   font-family: var(--f-mono);
   font-size: 10px;
-  fill: var(--heat);
+  fill: #ffb342;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.03em;
+  filter: drop-shadow(0 0 4px rgba(255, 157, 66, 0.4));
 }
 
 .tree-streak-tag {
+  cursor: default;
+  filter: drop-shadow(0 0 3px rgba(255, 157, 66, 0.6));
+  animation: streak-flicker 3s ease-in-out infinite alternate;
+}
+
+.tree-streak-pill {
+  fill: rgba(255, 157, 66, 0.12);
+  stroke: rgba(255, 157, 66, 0.4);
+  stroke-width: 0.8;
+  rx: 3px;
+}
+
+.tree-streak-text {
   font-family: var(--f-mono);
   font-size: 9px;
   font-weight: 700;
   fill: #ff9d42;
-  filter: drop-shadow(0 0 2px rgba(255, 157, 66, 0.5));
+  letter-spacing: 0.02em;
+}
+
+@keyframes streak-flicker {
+  0% { opacity: 0.88; }
+  100% { opacity: 1; filter: drop-shadow(0 0 5px rgba(255, 157, 66, 0.9)); }
 }
 
 .lineage-incubator {
-  background: rgba(18, 26, 24, 0.85);
-  border: 1px solid rgba(95, 227, 192, 0.2);
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, rgba(16, 26, 24, 0.95), rgba(10, 18, 16, 0.98));
+  border: 1px solid rgba(95, 227, 192, 0.22);
   border-left: 3px solid #ff9d42;
   border-radius: var(--r-md);
   padding: var(--s-3) var(--s-4);
@@ -1560,6 +1741,24 @@ code {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
+  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.45), 0 0 16px -4px rgba(255, 157, 66, 0.15);
+}
+
+.lineage-incubator::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -120%;
+  width: 80%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(95, 227, 192, 0.04), rgba(255, 157, 66, 0.08), transparent);
+  animation: radar-sweep 5.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes radar-sweep {
+  0% { transform: translateX(0); }
+  40%, 100% { transform: translateX(290%); }
 }
 
 .incubator-top {
@@ -1586,6 +1785,25 @@ code {
   border: 1px solid rgba(255, 157, 66, 0.35);
   color: #ff9d42;
   border-radius: var(--r-sm);
+  display: flex;
+  align-items: center;
+}
+
+.radar-live-blip {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ff9d42;
+  margin-right: 6px;
+  vertical-align: middle;
+  box-shadow: 0 0 6px #ff9d42;
+  animation: blip-blink 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes blip-blink {
+  0% { opacity: 0.4; transform: scale(0.85); }
+  100% { opacity: 1; transform: scale(1.2); }
 }
 
 .incubator-leader-text {
@@ -1604,18 +1822,37 @@ code {
 
 .incubator-bar-rail {
   width: 100%;
-  height: 6px;
-  background: rgba(255, 255, 255, 0.06);
-  border-radius: 3px;
+  height: 7px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
   overflow: hidden;
+  position: relative;
 }
 
 .incubator-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #ff7850, #ffb342);
+  background: linear-gradient(90deg, #ff7850, #ff9d42, #ffcb52);
   border-radius: 3px;
   transition: width var(--d-norm) var(--e-out);
-  box-shadow: 0 0 8px rgba(255, 157, 66, 0.4);
+  box-shadow: 0 0 12px rgba(255, 157, 66, 0.55);
+  position: relative;
+}
+
+.incubator-bar-fill::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  animation: rail-shimmer 2.5s infinite linear;
+}
+
+@keyframes rail-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
 .incubator-rule {
@@ -1630,6 +1867,12 @@ code {
 .tree-node circle {
   stroke: var(--ink);
   stroke-width: 1.5;
+  transition: transform 0.2s var(--e-out), filter 0.2s var(--e-out);
+}
+
+.tree-node:hover circle {
+  filter: drop-shadow(0 0 7px var(--life));
+  stroke: var(--text);
 }
 
 .tree-node circle.belief-up {
@@ -1656,9 +1899,14 @@ code {
   stroke-width: 1.25;
 }
 
+.tree-node.is-dead:hover circle {
+  filter: drop-shadow(0 0 4px var(--ash));
+}
+
 .tree-node.is-selected circle {
   stroke: var(--life);
   stroke-width: 2;
+  filter: drop-shadow(0 0 9px var(--life));
 }
 
 /* The same source-order collision the labels below had, and the same resolution — but on the ring,
@@ -1674,6 +1922,23 @@ code {
    resurrection. (0,3,1), so this no longer depends on source order at all. */
 .tree-node.is-dead.is-selected circle {
   stroke: var(--ash);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-candidate-halo,
+  .tree-candidate-pulse,
+  .tree-edge-ghost,
+  .tree-radar-ring,
+  .tree-ghost-core,
+  .lineage-incubator::before,
+  .radar-live-blip,
+  .incubator-bar-fill::after,
+  .tree-streak-tag {
+    animation: none !important;
+  }
+  .tree-ambient-canvas {
+    opacity: 0.4;
+  }
 }
 
 .tree-label {
