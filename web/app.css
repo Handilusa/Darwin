@@ -3284,6 +3284,14 @@ code {
   font-size: 22px;
   line-height: 1;
   padding-top: 2px;
+  color: var(--life, #5fe3c0);
+}
+
+.judge-step-icon .icon,
+.judge-step-icon .icon-brain,
+.judge-step-icon .icon-lightning,
+.judge-step-icon .icon-skull {
+  color: var(--life, #5fe3c0);
 }
 
 .judge-step-content {
@@ -3637,6 +3645,7 @@ code {
 .judge-step-icon .icon svg {
   width: 1.4em;
   height: 1.4em;
+  opacity: 1;
 }
 
 .op-diag-icon .icon svg {
