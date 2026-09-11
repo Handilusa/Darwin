@@ -1518,12 +1518,112 @@ export function tree(t, cfg, ctx = {}) {
     g.appendChild(
       svg("text", { class: "tree-label", x: x(n) + R + 7, y: y(n) + 4 }, `#${n.id}${name ? ` ${name}` : ""}`),
     );
+    if (!n.dead && Number(n.streak) > 0) {
+      const fullLabel = `#${n.id}${name ? ` ${name}` : ""}`;
+      const textW = Math.round(fullLabel.length * 6.5);
+      g.appendChild(
+        svg(
+          "text",
+          { class: "tree-streak-tag", x: x(n) + R + 7 + textW + 6, y: y(n) + 4 },
+          `🔥 ${n.streak}/4`,
+        ),
+      );
+    }
     canvas.appendChild(g);
   }
 
   const hasEdges = t.edges.length > 0;
   const genCount = t.generations + 1;
   const genText = `${genCount} ${genCount === 1 ? "generation" : "generations"}`;
+
+  // Find leading breeding candidate (closest to spawning G1)
+  const contenders = (t.nodes || [])
+    .filter((n) => !n.dead && Number(n.streak) > 0)
+    .sort((a, b) => Number(b.streak) - Number(a.streak));
+  const topBreeder = contenders[0] || null;
+
+  // If no descendants have bred yet, draw an incubation projection from the top contender into G1
+  if (!hasEdges && topBreeder) {
+    const aName = ctx.labels?.get(topBreeder.id);
+    const aLabel = `#${topBreeder.id}${aName ? ` ${aName}` : ""}`;
+    const aTextW = Math.round(aLabel.length * 6.5) + (topBreeder.streak ? 44 : 0);
+    const startX = x(topBreeder) + R + 7 + aTextW + 8;
+    const targetX = PAD_X + 1 * COL;
+    const targetY = y(topBreeder);
+
+    canvas.appendChild(
+      svg("path", {
+        class: "tree-edge-ghost",
+        d: `M ${startX} ${targetY} C ${startX + 35} ${targetY}, ${targetX - 25} ${targetY}, ${targetX} ${targetY}`,
+      }),
+    );
+
+    const ghostG = svg("g", { class: "tree-ghost-node" });
+    ghostG.appendChild(
+      svg("circle", {
+        cx: targetX,
+        cy: targetY,
+        r: R,
+      }),
+    );
+    ghostG.appendChild(
+      svg(
+        "text",
+        { class: "tree-ghost-label", x: targetX + R + 7, y: targetY + 4 },
+        `🌱 G1 Incubation (${topBreeder.streak}/4 🔥 · #${topBreeder.id})`,
+      ),
+    );
+    canvas.appendChild(ghostG);
+  }
+
+  const incubatorCard = el(
+    "div",
+    { class: "lineage-incubator" },
+    el(
+      "div",
+      { class: "incubator-top" },
+      el(
+        "div",
+        { class: "incubator-badge-row" },
+        el("span", { class: "incubator-badge", text: "G1 INCUBATION RADAR" }),
+        topBreeder
+          ? el(
+              "span",
+              { class: "incubator-leader-text" },
+              `Leading Candidate: #${topBreeder.id} ${ctx.labels?.get(topBreeder.id) || ""}`,
+            )
+          : el("span", { class: "incubator-leader-text" }, "All organisms at 0/4 streak"),
+      ),
+      el(
+        "div",
+        { class: "incubator-progress-info" },
+        topBreeder
+          ? el(
+              "span",
+              { class: "incubator-pct" },
+              `🔥 ${topBreeder.streak} / 4 consecutive wins (${Math.round((topBreeder.streak / 4) * 100)}% to G1 birth)`,
+            )
+          : el("span", { class: "incubator-pct", text: "Awaiting first win streak" }),
+      ),
+    ),
+    el(
+      "div",
+      { class: "incubator-bar-rail" },
+      el("div", {
+        class: "incubator-bar-fill",
+        style: `width: ${topBreeder ? Math.min(100, Math.round((topBreeder.streak / 4) * 100)) : 0}%`,
+      }),
+    ),
+    el(
+      "div",
+      { class: "incubator-rule" },
+      el(
+        "span",
+        {},
+        "Breeding condition: 4 consecutive correct calls + 15 tUSDC treasury. Branches sprout automatically to G1.",
+      ),
+    ),
+  );
 
   return el(
     "section",
@@ -1539,6 +1639,7 @@ export function tree(t, cfg, ctx = {}) {
           : `${t.nodes.length} organisms · ${genText}`,
       }),
     ),
+    incubatorCard,
     el("div", { class: "tree-scroll" }, canvas),
     el(
       "p",

@@ -1518,6 +1518,111 @@ code {
   filter: none;
 }
 
+.tree-edge-ghost {
+  fill: none;
+  stroke: var(--heat);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+  opacity: 0.75;
+  filter: drop-shadow(0 0 4px rgba(255, 120, 80, 0.4));
+}
+
+.tree-ghost-node circle {
+  fill: none;
+  stroke: var(--heat);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+}
+
+.tree-ghost-label {
+  font-family: var(--f-mono);
+  font-size: 10px;
+  fill: var(--heat);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.tree-streak-tag {
+  font-family: var(--f-mono);
+  font-size: 9px;
+  font-weight: 700;
+  fill: #ff9d42;
+  filter: drop-shadow(0 0 2px rgba(255, 157, 66, 0.5));
+}
+
+.lineage-incubator {
+  background: rgba(18, 26, 24, 0.85);
+  border: 1px solid rgba(95, 227, 192, 0.2);
+  border-left: 3px solid #ff9d42;
+  border-radius: var(--r-md);
+  padding: var(--s-3) var(--s-4);
+  margin-bottom: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.incubator-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+
+.incubator-badge-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+.incubator-badge {
+  font-family: var(--f-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  background: rgba(255, 157, 66, 0.15);
+  border: 1px solid rgba(255, 157, 66, 0.35);
+  color: #ff9d42;
+  border-radius: var(--r-sm);
+}
+
+.incubator-leader-text {
+  font-family: var(--f-sans);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.incubator-progress-info {
+  font-family: var(--f-mono);
+  font-size: var(--t-xs);
+  color: #ff9d42;
+  font-weight: 600;
+}
+
+.incubator-bar-rail {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.incubator-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #ff7850, #ffb342);
+  border-radius: 3px;
+  transition: width var(--d-norm) var(--e-out);
+  box-shadow: 0 0 8px rgba(255, 157, 66, 0.4);
+}
+
+.incubator-rule {
+  font-size: var(--t-xs);
+  color: var(--text-4);
+}
+
 .tree-node {
   cursor: pointer;
 }
