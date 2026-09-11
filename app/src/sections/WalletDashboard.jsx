@@ -14,6 +14,7 @@ import { shannon } from "../lib/wagmi.js";
 import { usePopulation } from "../lib/population.js";
 import { collateralAbi, populationAbi, populationReadAbi, prophetAbi } from "../lib/abi.js";
 import { THESIS } from "../../../web/js/labels.js";
+import { IconRocket } from "../icons.jsx";
 
 const EXPLORER_URL = "https://shannon-explorer.somnia.network";
 const FAUCET_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24 hours per wallet
@@ -436,7 +437,8 @@ export function WalletDashboard({ onGoToLaunch }) {
                 </h3>
                 <div className="section-actions">
                   <button className="btn btn-tiny" type="button" onClick={onGoToLaunch}>
-                    🚀 Launch Another
+                    <IconRocket size={13} className="btn-icon" />
+                    <span>Launch Another</span>
                   </button>
                   <a className="btn btn-tiny" href="/arena/">
                     Open Colosseum ↗
@@ -461,7 +463,8 @@ export function WalletDashboard({ onGoToLaunch }) {
                     onClick={onGoToLaunch}
                     style={{ marginTop: "var(--s-3)" }}
                   >
-                    🚀 Enter the Population
+                    <IconRocket size={16} className="btn-icon" />
+                    <span>Enter the Population</span>
                   </button>
                 </div>
               ) : (

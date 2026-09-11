@@ -111,6 +111,9 @@ export const populationErrorsAbi = parseAbi([
   "error ProphetIsDead()",
   "error PositionStillOpen()",
   "error WrongPhase(uint8 expected, uint8 actual)",
+  // OpenZeppelin ERC-20 error — `transferFrom` inside `enter()` can revert with this
+  // when the approval is short or was consumed by a prior call.  Signature: 0xfb8f41b2
+  "error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)",
 ]);
 
 /** What `useSimulateContract`/`writeContract` should be handed for a write. */

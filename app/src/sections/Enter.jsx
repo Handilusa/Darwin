@@ -160,6 +160,8 @@ function explain(err, fmt) {
           return "The collateral transfer failed — the approval is short, or the balance moved between the approval and this call.";
         case "PopulationFull":
           return "The population is at maxPopulation. Wait for an organism to die or retire; nothing is queued.";
+        case "ERC20InsufficientAllowance":
+          return `The collateral token's allowance is short — the contract needs ${fmt(args[2])} but only ${fmt(args[1])} is approved. Re-approve and try again.`;
         default:
           return name ? `Reverted with ${name}.` : (err.shortMessage ?? err.message);
       }

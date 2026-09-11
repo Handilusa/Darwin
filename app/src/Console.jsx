@@ -28,6 +28,7 @@ import { Nav } from "./sections/Nav.jsx";
 import { WalletDashboard } from "./sections/WalletDashboard.jsx";
 import { Enter } from "./sections/Enter.jsx";
 import { AdvancedArena } from "./sections/AdvancedArena.jsx";
+import { IconChart, IconRocket, IconGear } from "./icons.jsx";
 import { Footer } from "./sections/Footer.jsx";
 
 /** Two ways out, both absolute: this document is not the one the anchors belong to. */
@@ -111,7 +112,7 @@ export default function Console() {
               type="button"
               onClick={() => handleGoTo("dashboard")}
             >
-              <span className="tab-icon">📊</span>
+              <span className="tab-icon"><IconChart size={15} /></span>
               <span>Wallet Dashboard</span>
             </button>
             <button
@@ -119,7 +120,7 @@ export default function Console() {
               type="button"
               onClick={() => handleGoTo("launch")}
             >
-              <span className="tab-icon">🚀</span>
+              <span className="tab-icon"><IconRocket size={15} /></span>
               <span>Launch Organism</span>
             </button>
             <button
@@ -127,7 +128,7 @@ export default function Console() {
               type="button"
               onClick={() => handleGoTo("advanced")}
             >
-              <span className="tab-icon">⚙️</span>
+              <span className="tab-icon"><IconGear size={15} /></span>
               <span>Rules &amp; Advanced</span>
             </button>
           </div>

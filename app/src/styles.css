@@ -1962,7 +1962,34 @@ code {
 }
 
 .tab-icon {
-  font-size: 1.1em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  height: 1.15em;
+  opacity: 0.85;
+  transition: opacity var(--d-fast) var(--e-out), color var(--d-fast) var(--e-out);
+}
+
+.tab-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.console-tab:hover .tab-icon {
+  opacity: 1;
+}
+
+.console-tab.is-active .tab-icon {
+  opacity: 1;
+  color: var(--life);
+}
+
+.btn-icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
 }
 
 /* ══ wallet dashboard ════════════════════════════════════════════════════════ */
