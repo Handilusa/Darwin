@@ -207,7 +207,7 @@ export function readErrors(errors) {
       rows.map(([k, v]) => {
         let msg = String(v);
         if (/0x2ccfc2ca/i.test(msg)) {
-          msg = "StalePrice (awaiting next price push — normal between 15m windows)";
+          msg = "StalePrice (awaiting next price push — normal in 1-hour windows due to Somnia network feed limit)";
         }
         return el("li", {}, el("code", { text: `${k}()` }), " ", el("span", { text: msg }));
       }),
@@ -542,10 +542,10 @@ function priceBlock(state, w) {
       : el(
           "div",
           { class: "price-none" },
-          el("strong", { text: "no price window" }),
+          el("strong", { text: state.phase === 2 ? "1-Hour Window In Progress" : "Between trading windows" }),
           // NoWindow and StalePrice are both ORDINARY states between cadence ticks, not
           // faults, and saying which one it is turns a blank panel into a diagnosis.
-          el("span", { class: "price-why", text: windowExcuse(state.windowError) }),
+          el("span", { class: "price-why", text: windowExcuse(state.windowError, state.phase) }),
         ),
   );
 }
@@ -576,11 +576,16 @@ function stat(label, value, note = "") {
   );
 }
 
-function windowExcuse(err) {
+function windowExcuse(err, phase) {
+  if (!err && phase === 2) return "1h window in flight · Somnia network oracle cadence limit";
   if (!err) return "the price source has not been read yet";
   const s = String(err);
   if (/NoWindow/.test(s)) return "NoWindow — no price has been pushed for this symbol yet";
-  if (/StalePrice|0x2ccfc2ca/i.test(s)) return "Between trading windows — awaiting next oracle push (feed idle)";
+  if (/StalePrice|0x2ccfc2ca/i.test(s)) {
+    return phase === 2
+      ? "Positions active on-chain · 1h cycle due to Somnia network feed limitation"
+      : "Between 1h trading windows (Somnia network feed limitation)";
+  }
   return s;
 }
 
@@ -2989,9 +2994,9 @@ export function judgeGuide(ctx = {}) {
         el(
           "div",
           { class: "judge-step-content" },
-          el("h3", { text: "2. Somnia 15m Battles" }),
+          el("h3", { text: "2. Somnia 1-Hour Battles" }),
           el("p", {
-            text: "Agents spend STT gas to infer BTC price every 15m. Opposing forecasts pair up on-chain with real collateral.",
+            text: "Agents spend STT gas to infer BTC price every 1 hour (Somnia network oracle feed cadence limit). Opposing forecasts pair up on-chain with real collateral.",
           }),
         ),
       ),
