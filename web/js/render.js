@@ -203,7 +203,13 @@ export function readErrors(errors) {
     el(
       "ul",
       { class: "error-list" },
-      rows.map(([k, v]) => el("li", {}, el("code", { text: `${k}()` }), " ", el("span", { text: String(v) }))),
+      rows.map(([k, v]) => {
+        let msg = String(v);
+        if (/0x2ccfc2ca/i.test(msg)) {
+          msg = "StalePrice (awaiting next price push — normal between 15m windows)";
+        }
+        return el("li", {}, el("code", { text: `${k}()` }), " ", el("span", { text: msg }));
+      }),
     ),
   );
 }
@@ -573,7 +579,7 @@ function windowExcuse(err) {
   if (!err) return "the price source has not been read yet";
   const s = String(err);
   if (/NoWindow/.test(s)) return "NoWindow — no price has been pushed for this symbol yet";
-  if (/StalePrice/.test(s)) return "StalePrice — the last push is older than maxStaleness (180s)";
+  if (/StalePrice|0x2ccfc2ca/i.test(s)) return "Between trading windows — awaiting next oracle push (feed idle)";
   return s;
 }
 
@@ -774,7 +780,7 @@ export function grid(rows, cfg, ctx = {}) {
       : el(
           "div",
           { class: "grid" },
-          living.map((o) => card(o, cfg, ctx)),
+          living.map((o) => card(o, cfg, { ...ctx, topOrgId: allLiving[0] ? Number(allLiving[0].id) : null })),
         ),
   );
 }
@@ -942,15 +948,13 @@ function card(o, cfg, ctx) {
       el("span", { class: "card-id", text: `#${o.id}` }),
       name ? el("span", { class: "card-name", text: name }) : null,
       el("span", { class: "card-gen", title: "generation", text: `G${o.generation}` }),
-      // Only entrants get a badge. Founders are the common G0 case and labelling them would be
-      // noise, but a stranger who paid the ante is the whole point of a permissionless arena and
-      // is otherwise invisible in a grid where every root looks alike.
-      //
-      // The badge reads "paid in", not "entrant", even though that is what `rootKind` calls it:
-      // `detail()` already has a field labelled `entrant` holding the OWNER ADDRESS, because that
-      // is the name `Prophet.entrant()` gives it. Two different meanings of one word on the same
-      // screen would read as a cross-reference between them. The chain's word wins for the field
-      // it names, and this badge says what actually happened instead.
+      ctx.topOrgId != null && Number(o.id) === Number(ctx.topOrgId) && !o.dead
+        ? el("span", {
+            class: "card-gen card-rank-1",
+            title: "Rank #1 living organism by balance and survival",
+            text: "👑 #1 LEADER",
+          })
+        : null,
       isMine
         ? el("span", {
             class: "card-gen card-yours",
@@ -967,22 +971,12 @@ function card(o, cfg, ctx) {
     ),
 
     // THE TAG SITS WITH THE BALANCE, not in the header above it.
-    //
-    // It used to close the identity row, where `.tag`'s `margin-left: auto` pushed it to the right
-    // edge — and on any card whose label was long enough it wrapped to a second line instead. That
-    // made the header one row tall on some cards and two on others, so the treasuries fell out of
-    // alignment across the grid and the one number a viewer scans down a column of could not be
-    // scanned down a column. Beside the balance it also reads better: this is what the organism
-    // has, and this is what it is saying to do with it.
     el(
       "div",
       { class: "card-treasury" },
       el("span", {
         class: "amount",
         text: moneyFixed(o.treasury ?? 0n, dec, 2),
-        // Both endpoints are the exact BigInt-derived strings. `motion.js` counts between them on
-        // a display-only float and writes `data-fx-to` back on the final frame, so the resting
-        // value on screen is never a rounded float. See the note above `grouped()` there.
         dataset:
           moved && !o.dead
             ? { fx: "treasury", fxFrom: moneyFixed(prev, dec, 2), fxTo: moneyFixed(now, dec, 2) }
@@ -994,23 +988,18 @@ function card(o, cfg, ctx) {
     el(
       "div",
       { class: "card-stats" },
-      el("span", { title: "correct / wrong / abstain" }, `${o.correctCount}·${o.wrongCount}·${o.abstainCount}`),
+      el("span", { class: "card-record", title: "Wins (correct) / Losses (wrong) / Abstains" }, `${o.correctCount}W · ${o.wrongCount}L · ${o.abstainCount}A`),
       el("span", { class: "dot" }),
       el("span", { title: `${wr.decided} decided ${plural(wr.decided, "window")}`, text: wr.text }),
       el("span", { class: "dot" }),
       el("span", { title: "windows lived", text: `${o.windowsLived}w` }),
-      // A STREAK IS ONLY A NUMBER IF YOU KNOW WHAT IT IS COUNTING TOWARDS. `breedStreak` is read
-      // from the chain, so when it is known this reads `3/4🔥` and the card says how close the
-      // organism is to a child; when discovery could not get it, it falls back to the bare count
-      // rather than inventing a denominator. It stays hidden at streak 0 either way — a grid of
-      // `0/4` on every card would make the bar look like the population's main event.
       Number(o.streak) > 0
         ? frag(
             el("span", { class: "dot" }),
             el("span", {
               class: ["streak", breed?.streakOk && "streak-ready"],
               title: breed
-                ? `${o.streak} of ${breed.needStreak} consecutive correct calls — the streak bar for breeding`
+                ? `${o.streak} of ${breed.needStreak} consecutive correct calls — streak bar for breeding a child organism`
                 : "consecutive correct calls",
               text: breed ? `${o.streak}/${breed.needStreak}🔥` : `${o.streak}🔥`,
             }),
@@ -1023,6 +1012,13 @@ function card(o, cfg, ctx) {
     o.dead
       ? el("div", { class: "card-foot", text: `died at window ${o.deathWindow}` })
       : el("div", { class: "card-foot" }, runway(o.treasury, cfg)),
+
+    el(
+      "div",
+      { class: "card-hint" },
+      el("span", { text: o.dead ? "View autopsy & prompt" : "Inspect thesis & brain" }),
+      el("span", { class: "card-hint-arrow", text: "→" }),
+    ),
 
     // `drains || moved` for the same reason `tomb()` uses it: a death drains the bar whatever the
     // treasury did, and `moved` alone made `data-was` depend on the balance having changed.
@@ -1092,8 +1088,8 @@ function runway(treasury, cfg) {
   const windows = BigInt(treasury) / cost;
   return el("span", {
     class: windows < 5n ? "bad" : windows < 20n ? "warn" : "muted",
-    title: `treasury ÷ metabolicCost (${units(cost, cfg.decimals ?? 6, 4)})`,
-    text: `${windows} ${plural(windows, "window")} of metabolism`,
+    title: `treasury ÷ metabolicCost (${units(cost, cfg.decimals ?? 6, 4)}) — survival runway without winning new pots`,
+    text: `${windows}w survival runway (${windows} ${plural(windows, "window")})`,
   });
 }
 
@@ -2799,5 +2795,223 @@ export function operationsPanel(rows, cfg, ctx = {}) {
   );
 }
 
+/*//////////////////////////////////////////////////////////////
+                     JUDGE UX & FAST-TRACK
+//////////////////////////////////////////////////////////////*/
+
+/**
+ * The 15-second fast-track guide for hackathon judges.
+ * Explains the 3 core pillars visually with immediate interactive actions.
+ */
+export function judgeGuide(ctx = {}) {
+  return el(
+    "section",
+    { class: "judge-guide" },
+    el(
+      "div",
+      { class: "judge-guide-header" },
+      el(
+        "div",
+        { class: "judge-guide-title-wrap" },
+        el("span", { class: "judge-badge", text: "JUDGE FAST-TRACK" }),
+        el("h2", { class: "judge-guide-title", text: "How DARWIN Works on Somnia" }),
+      ),
+      el(
+        "div",
+        { class: "judge-guide-actions" },
+        el(
+          "button",
+          {
+            class: "btn btn-sm btn-primary",
+            type: "button",
+            title: "Inspect the top-ranked organism on the leaderboard",
+            click: () => {
+              if (ctx.onSelectLeader) ctx.onSelectLeader();
+              else if (ctx.onSelect) ctx.onSelect(1);
+            },
+          },
+          "👑 Inspect Leader (#1)",
+        ),
+        el(
+          "a",
+          {
+            class: "btn btn-sm btn-secondary",
+            href: "?demo=1",
+            title: "Switch to offline synthetic demo fixture to see populated battles",
+          },
+          "🧪 Launch Demo Mode",
+        ),
+      ),
+    ),
+    el(
+      "div",
+      { class: "judge-guide-grid" },
+      el(
+        "div",
+        { class: "judge-step" },
+        el("div", { class: "judge-step-icon", text: "🧠" }),
+        el(
+          "div",
+          { class: "judge-step-content" },
+          el("h3", { text: "1. Prompts as Genomes" }),
+          el("p", {
+            text: "Each organism is an autonomous contract carrying an English trading thesis. That prompt is its DNA.",
+          }),
+        ),
+      ),
+      el(
+        "div",
+        { class: "judge-step" },
+        el("div", { class: "judge-step-icon", text: "⚡" }),
+        el(
+          "div",
+          { class: "judge-step-content" },
+          el("h3", { text: "2. Somnia 15m Battles" }),
+          el("p", {
+            text: "Agents spend STT gas to infer BTC price every 15m. Opposing forecasts pair up on-chain with real collateral.",
+          }),
+        ),
+      ),
+      el(
+        "div",
+        { class: "judge-step" },
+        el("div", { class: "judge-step-icon", text: "💀" }),
+        el(
+          "div",
+          { class: "judge-step-content" },
+          el("h3", { text: "3. Darwinian Selection" }),
+          el("p", {
+            text: "Losers starve & die permanently (balance = 0). Organisms with 4 consecutive wins breed children (G1, G2).",
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * Featured Duel: Spotlight the active pairing between opposing agents (Bulls vs Bears).
+ */
+export function featuredDuel(logs = [], rows = [], cfg = {}, ctx = {}) {
+  const pairedLog = (logs || []).find(
+    (l) => l.eventName === "Paired" && l.args?.upId != null && l.args?.downId != null,
+  );
+
+  let upOrg = null;
+  let downOrg = null;
+  let stake = null;
+
+  if (pairedLog) {
+    const upId = Number(pairedLog.args.upId);
+    const downId = Number(pairedLog.args.downId);
+    upOrg = (rows || []).find((o) => Number(o.id) === upId) || { id: upId };
+    downOrg = (rows || []).find((o) => Number(o.id) === downId) || { id: downId };
+    stake = pairedLog.args.amount;
+  } else {
+    const living = (rows || []).filter((o) => !o.dead);
+    const bull = living.find(
+      (o) =>
+        Number(o.belief) === 1 ||
+        String(ctx.labels?.get(Number(o.id)) || "").toLowerCase().includes("bull"),
+    );
+    const bear = living.find(
+      (o) =>
+        Number(o.belief) === 2 ||
+        String(ctx.labels?.get(Number(o.id)) || "").toLowerCase().includes("momentum"),
+    );
+    if (bull && bear && Number(bull.id) !== Number(bear.id)) {
+      upOrg = bull;
+      downOrg = bear;
+    }
+  }
+
+  if (!upOrg || !downOrg) return null;
+
+  const upId = Number(upOrg.id);
+  const downId = Number(downOrg.id);
+  const upName = ctx.labels?.get(upId) || `Organism #${upId}`;
+  const downName = ctx.labels?.get(downId) || `Organism #${downId}`;
+
+  return el(
+    "section",
+    { class: "featured-duel" },
+    el(
+      "div",
+      { class: "duel-header" },
+      el(
+        "div",
+        { class: "duel-status-wrap" },
+        el("span", { class: "duel-pulse-dot" }),
+        el("span", { class: "duel-title", text: pairedLog ? "ACTIVE ON-CHAIN DUEL" : "FEATURED MATCHUP" }),
+      ),
+      stake ? el("span", { class: "duel-stake", text: `Collateral: ${money2(stake, cfg)}` }) : null,
+    ),
+    el(
+      "div",
+      { class: "duel-arena-grid" },
+      el(
+        "div",
+        {
+          class: "duel-card duel-card-bull",
+          role: "button",
+          tabindex: "0",
+          title: `Inspect #${upId} ${upName}`,
+          click: ctx.onSelect ? () => ctx.onSelect(upId) : null,
+        },
+        el("div", { class: "duel-card-role", text: "LONG / BULL" }),
+        el("div", { class: "duel-card-name" }, chip(upId, ctx)),
+        el("div", { class: "duel-card-action", text: "Inspect Brain →" }),
+      ),
+      el(
+        "div",
+        { class: "duel-clash" },
+        el("span", { class: "duel-vs", text: "VS" }),
+      ),
+      el(
+        "div",
+        {
+          class: "duel-card duel-card-bear",
+          role: "button",
+          tabindex: "0",
+          title: `Inspect #${downId} ${downName}`,
+          click: ctx.onSelect ? () => ctx.onSelect(downId) : null,
+        },
+        el("div", { class: "duel-card-role", text: "SHORT / BEAR" }),
+        el("div", { class: "duel-card-name" }, chip(downId, ctx)),
+        el("div", { class: "duel-card-action", text: "Inspect Brain →" }),
+      ),
+    ),
+  );
+}
+
+/**
+ * Navigation tabs to de-clutter the arena into 3 focused views.
+ */
+export function arenaTabs(activeTab, onSelectTab, counts = {}) {
+  const tabs = [
+    { id: "arena", label: "⚔️ Live Arena", badge: counts.living != null ? `${counts.living} alive` : null },
+    { id: "standings", label: "🏆 Standings & Evolution", badge: counts.ranked != null ? `${counts.ranked} ranked` : null },
+    { id: "feed", label: "📡 Chain Feed & System", badge: counts.events != null ? `${counts.events} events` : null },
+  ];
+
+  return el(
+    "nav",
+    { class: "arena-tabs-nav", "aria-label": "Arena sections" },
+    tabs.map((t) =>
+      el(
+        "button",
+        {
+          class: ["arena-tab-btn", activeTab === t.id && "is-active"],
+          type: "button",
+          click: () => onSelectTab(t.id),
+        },
+        el("span", { class: "arena-tab-label", text: t.label }),
+        t.badge ? el("span", { class: "arena-tab-badge", text: t.badge }) : null,
+      ),
+    ),
+  );
+}
+
 export { mount, $ };
+
 

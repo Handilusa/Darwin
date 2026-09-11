@@ -1,16 +1,132 @@
 {
   "organisms": [
-    {"id": 1, "name": "MOMENTUM", "address": "0x22fC3Ab08F20391300fC1Fe194FdB5577a6DD4f8", "genomeHash": "0x8ae06d7c2f4c4f11fc9ec12f89b8675a6ccea3fdaf3ecc8de41a10e6aeb1cad2", "generation": 0, "birthWindow": 0},
-    {"id": 2, "name": "REVERSION", "address": "0x5a9Cb1Dc3982BBCA44B7A870031bA1202B53eC4C", "genomeHash": "0x91ea2f7b59f32df17a576b5cb062e5fb83fe233901b78f2fc4ee26678dac81ac", "generation": 0, "birthWindow": 0},
-    {"id": 3, "name": "BREAKOUT", "address": "0xdaDF4c57a9c56D0a9722201CFb07a0A9FAA92cb8", "genomeHash": "0xbb71751b2044dadc8236ad60f9a77b963c577ac74359daf0d34fabe8d93888ed", "generation": 0, "birthWindow": 0},
-    {"id": 4, "name": "PINNED", "address": "0x4fA4a8c05255178b4CD5Cf9255f032519B61fd95", "genomeHash": "0x8e22e831fae7aae81e49d4f57790aabb269f3d7e0dabc15b59f28ead5016cd00", "generation": 0, "birthWindow": 0},
-    {"id": 5, "name": "SKEPTIC", "address": "0xc700b2D090D7C2C764c54f017A30F543fE5917B4", "genomeHash": "0xf52ed49ea2db7f86192b4adc6b9a6a194ac9d4e746f938b890206d66e8c219e6", "generation": 0, "birthWindow": 0},
-    {"id": 6, "name": "GAMBLER", "address": "0x66Ce14B73532bDBa52caD8cE84B6484910CF83b6", "genomeHash": "0xf25695da6c9e27a3de10294618b5150f8b168cbba6ddc2d67e86c3855f791221", "generation": 0, "birthWindow": 0},
-    {"id": 7, "name": "PATIENT", "address": "0x8F3a3DD0315Ea30Ca7eFa1dC142146d907f68B1c", "genomeHash": "0x89f2667b5a185170aaab52a6e14aacdcd70f905034ef81c62b5409bbfcdd08ed", "generation": 0, "birthWindow": 0},
-    {"id": 8, "name": "SCALPER", "address": "0x0e64b2a06829aaB56Bc443837b1d4ac53FBf2CEa", "genomeHash": "0x089e89fbdca5cbf16215c406f1102d70aeac2dd9607ba013ce12b258996fbe77", "generation": 0, "birthWindow": 0},
-    {"id": 9, "name": "MOMENTUM_2", "address": "0xC026784d18d395E358645bE74fDabb7F6aAb54d3", "genomeHash": "0x512a6257fd4823b44d12f56183978593497909e03ab77428e7e7d92d914b15e5", "generation": 0, "birthWindow": 68},
-    {"id": 10, "name": "MOMENTUM_3", "address": "0xD6B464ab963b1aea86940f5513be01A8217b5a62", "genomeHash": "0x512a6257fd4823b44d12f56183978593497909e03ab77428e7e7d92d914b15e5", "generation": 0, "birthWindow": 70},
-    {"id": 11, "name": "REVERSION_2", "address": "0x4c09a86AAbe138ec5dDBaE54c45e45F3d172eC01", "genomeHash": "0x91ea2f7b59f32df17a576b5cb062e5fb83fe233901b78f2fc4ee26678dac81ac", "generation": 0, "birthWindow": 70},
-    {"id": 12, "name": "BULL", "address": "0xaD3b53cB1C3b4fc5034978c7D165968a6D535c05", "genomeHash": "0x70fbdf099a88247970d7cf4b68ffa3475179e0bcb485783acbc1d23ceafe5e51", "generation": 0, "birthWindow": 71}
+    {
+      "id": 1,
+      "name": "MOMENTUM",
+      "address": "0x22fC3Ab08F20391300fC1Fe194FdB5577a6DD4f8",
+      "genomeHash": "0x8ae06d7c2f4c4f11fc9ec12f89b8675a6ccea3fdaf3ecc8de41a10e6aeb1cad2",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 2,
+      "name": "REVERSION",
+      "address": "0x5a9Cb1Dc3982BBCA44B7A870031bA1202B53eC4C",
+      "genomeHash": "0x91ea2f7b59f32df17a576b5cb062e5fb83fe233901b78f2fc4ee26678dac81ac",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 3,
+      "name": "BREAKOUT",
+      "address": "0xdaDF4c57a9c56D0a9722201CFb07a0A9FAA92cb8",
+      "genomeHash": "0xbb71751b2044dadc8236ad60f9a77b963c577ac74359daf0d34fabe8d93888ed",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 4,
+      "name": "PINNED",
+      "address": "0x4fA4a8c05255178b4CD5Cf9255f032519B61fd95",
+      "genomeHash": "0x8e22e831fae7aae81e49d4f57790aabb269f3d7e0dabc15b59f28ead5016cd00",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 5,
+      "name": "SKEPTIC",
+      "address": "0xc700b2D090D7C2C764c54f017A30F543fE5917B4",
+      "genomeHash": "0xf52ed49ea2db7f86192b4adc6b9a6a194ac9d4e746f938b890206d66e8c219e6",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 6,
+      "name": "GAMBLER",
+      "address": "0x66Ce14B73532bDBa52caD8cE84B6484910CF83b6",
+      "genomeHash": "0xf25695da6c9e27a3de10294618b5150f8b168cbba6ddc2d67e86c3855f791221",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 7,
+      "name": "PATIENT",
+      "address": "0x8F3a3DD0315Ea30Ca7eFa1dC142146d907f68B1c",
+      "genomeHash": "0x89f2667b5a185170aaab52a6e14aacdcd70f905034ef81c62b5409bbfcdd08ed",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 8,
+      "name": "SCALPER",
+      "address": "0x0e64b2a06829aaB56Bc443837b1d4ac53FBf2CEa",
+      "genomeHash": "0x089e89fbdca5cbf16215c406f1102d70aeac2dd9607ba013ce12b258996fbe77",
+      "generation": 0,
+      "birthWindow": 0
+    },
+    {
+      "id": 9,
+      "name": "MOMENTUM_2",
+      "address": "0xC026784d18d395E358645bE74fDabb7F6aAb54d3",
+      "genomeHash": "0x512a6257fd4823b44d12f56183978593497909e03ab77428e7e7d92d914b15e5",
+      "generation": 0,
+      "birthWindow": 68
+    },
+    {
+      "id": 10,
+      "name": "MOMENTUM_3",
+      "address": "0xD6B464ab963b1aea86940f5513be01A8217b5a62",
+      "genomeHash": "0x512a6257fd4823b44d12f56183978593497909e03ab77428e7e7d92d914b15e5",
+      "generation": 0,
+      "birthWindow": 70
+    },
+    {
+      "id": 11,
+      "name": "REVERSION_2",
+      "address": "0x4c09a86AAbe138ec5dDBaE54c45e45F3d172eC01",
+      "genomeHash": "0x91ea2f7b59f32df17a576b5cb062e5fb83fe233901b78f2fc4ee26678dac81ac",
+      "generation": 0,
+      "birthWindow": 70
+    },
+    {
+      "id": 12,
+      "name": "BULL",
+      "address": "0xaD3b53cB1C3b4fc5034978c7D165968a6D535c05",
+      "genomeHash": "0x70fbdf099a88247970d7cf4b68ffa3475179e0bcb485783acbc1d23ceafe5e51",
+      "generation": 0,
+      "birthWindow": 71
+    },
+    {
+      "id": 13,
+      "name": "MOMENTUM_4",
+      "address": "0x0d14FbF394e576Cb40dCA6614f302C0c769de3Ce",
+      "genomeHash": "0x512a6257fd4823b44d12f56183978593497909e03ab77428e7e7d92d914b15e5",
+      "generation": 0,
+      "birthWindow": 72
+    },
+    {
+      "id": 14,
+      "name": "MOMENTUM_5",
+      "address": "0xAD93A545BFd89E8a8A557a950c9F73DC92E6F4DE",
+      "genomeHash": "0x512a6257fd4823b44d12f56183978593497909e03ab77428e7e7d92d914b15e5",
+      "generation": 0,
+      "birthWindow": 72
+    },
+    {
+      "id": 15,
+      "name": "REVERSION_3",
+      "address": "0xcf3B9849C52d19C485f02411C853228F6c9c080d",
+      "genomeHash": "0x91ea2f7b59f32df17a576b5cb062e5fb83fe233901b78f2fc4ee26678dac81ac",
+      "generation": 0,
+      "birthWindow": 84
+    },
+    {
+      "id": 16,
+      "name": "PINNED_2",
+      "address": "0x562fd16e4F40Ee6C2bB41C3E2166C2Bfee0fBCBD",
+      "genomeHash": "0x8e22e831fae7aae81e49d4f57790aabb269f3d7e0dabc15b59f28ead5016cd00",
+      "generation": 0,
+      "birthWindow": 84
+    }
   ]
 }

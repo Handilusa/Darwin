@@ -65,11 +65,33 @@ const app = {
   genomes: new Map(),
   userWallet: (typeof localStorage !== "undefined" && localStorage.getItem("darwin_user_wallet")) || null,
   filterOnlyMine: false,
+  activeTab: "arena",
 
   // Derived per paint and handed to the renderer through `ctx()`.
   depth: null,
   fx: null,
 };
+
+function selectTab(tabId) {
+  if (tabId !== "arena" && tabId !== "standings" && tabId !== "feed") return;
+  app.activeTab = tabId;
+  try {
+    history.replaceState(null, "", `#${tabId}`);
+  } catch {}
+  paint();
+}
+
+function selectLeader() {
+  const rows = app.state?.organisms || [];
+  const living = rows.filter((o) => !o.dead);
+  const sorted = [...living].sort((a, b) => {
+    const t = BigInt(b.treasury ?? 0n) - BigInt(a.treasury ?? 0n);
+    return t > 0n ? 1 : t < 0n ? -1 : Number(a.id) - Number(b.id);
+  });
+  const id = sorted[0] ? Number(sorted[0].id) : 1;
+  app.activeTab = "arena";
+  select(id);
+}
 
 /*//////////////////////////////////////////////////////////////
                              PAINT
@@ -80,6 +102,9 @@ function ctx() {
     labels: app.labels,
     selected: app.selected,
     onSelect: select,
+    activeTab: app.activeTab,
+    onSelectTab: selectTab,
+    onSelectLeader: selectLeader,
     stamps: app.stamps,
     priceDecimals: app.state?.window?.priceDecimals ?? 6,
     sourceLabel: app.sourceLabel,
@@ -325,29 +350,56 @@ function paint() {
   // so the screen led with a caveat about selection instead of with the thing being selected. It
   // reads better beside the feed anyway — the `Reacted` rows immediately under it are the evidence
   // it is hedging about. Read errors stay at the top, because a stale frame has to say so first.
+  const tabsNav = ui.arenaTabs(app.activeTab || "arena", selectTab, {
+    living: state.aliveCount,
+    ranked: rows.length,
+    events: app.logs?.length,
+  });
+
+  const tabContent = el("div", { class: "tab-content-pane" });
+
+  if (app.activeTab === "standings") {
+    mount(
+      tabContent,
+      ui.standingsPanel(rows, state.prizePool, app.cfg, c),
+      ui.tree(tree, app.cfg, c),
+      ui.censusPanel(lineage.census(tree), app.depth),
+      ui.operationsPanel(rows, app.cfg, c),
+    );
+  } else if (app.activeTab === "feed") {
+    mount(
+      tabContent,
+      ui.claimPanel(state, app.logs),
+      ui.feed(app.logs, app.cfg, { ...c, range: app.feedRange ? String(app.feedRange.scanned) : null }),
+      ui.wiringPanel(app.cfg),
+      ui.primer(true),
+      ui.setupCard(
+        {
+          population: s.population,
+          rpc: s.rpc,
+          defaultRpc: DEFAULT_RPC,
+          chainId: CHAIN_ID,
+          badQuery: s.badQuery,
+          noContract: null,
+        },
+        { onConnect },
+      ),
+    );
+  } else {
+    // Default: "arena"
+    mount(
+      tabContent,
+      ui.judgeGuide(c),
+      ui.featuredDuel(app.logs, rows, app.cfg, c),
+      split,
+    );
+  }
+
   mount(
     $("#body"),
     ui.readErrors({ ...(app.cfg.failures || {}), ...(state.errors || {}) }),
-    split,
-    ui.operationsPanel(rows, app.cfg, c),
-    ui.standingsPanel(rows, state.prizePool, app.cfg, c),
-    ui.tree(tree, app.cfg, c),
-    ui.censusPanel(lineage.census(tree), app.depth),
-    ui.claimPanel(state, app.logs),
-    ui.feed(app.logs, app.cfg, { ...c, range: app.feedRange ? String(app.feedRange.scanned) : null }),
-    ui.wiringPanel(app.cfg),
-    ui.primer(true),
-    ui.setupCard(
-      {
-        population: s.population,
-        rpc: s.rpc,
-        defaultRpc: DEFAULT_RPC,
-        chainId: CHAIN_ID,
-        badQuery: s.badQuery,
-        noContract: null,
-      },
-      { onConnect },
-    ),
+    tabsNav,
+    tabContent,
   );
 
   // Animation runs after mount, because the nodes it moves do not exist until then. The first frame
@@ -381,9 +433,12 @@ function tick() {
  */
 function select(id) {
   app.selected = id == null ? null : Number(id);
+  if (app.selected != null) app.activeTab = "arena";
   const base = globalThis.location.pathname + globalThis.location.search;
   const want = app.selected == null ? base : `#organism/${app.selected}`;
-  history.replaceState(null, "", want);
+  try {
+    history.replaceState(null, "", want);
+  } catch {}
   paint();
   if (app.selected != null) loadDetail(app.selected);
 }
@@ -735,9 +790,16 @@ function stampMap(logs) {
 //////////////////////////////////////////////////////////////*/
 
 globalThis.addEventListener("hashchange", () => {
+  const hash = (globalThis.location.hash || "").replace("#", "").toLowerCase();
+  if (hash === "standings" || hash === "feed" || hash === "arena") {
+    app.activeTab = hash;
+    paint();
+    return;
+  }
   const id = selectionFromHash();
   if (id !== app.selected) {
     app.selected = id;
+    if (id != null) app.activeTab = "arena";
     paint();
     if (id != null) loadDetail(id);
   }
