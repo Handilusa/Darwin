@@ -534,7 +534,7 @@ assert("detail(#1) names both shortfalls", t("detail1").includes("needs 1 more c
 assert("the grid prints a streak against its bar", t("grid").includes("4/4"), "no 4/4 badge for #9");
 assert(
   "an undiscovered bar leaves the bare count",
-  !t("gridNoBars").includes("4/4") && t("gridNoBars").includes("4🔥"),
+  !t("gridNoBars").includes("4/4") && cls("gridNoBars").includes("icon-fire"),
   "the fraction survived the constants being removed, so it is not read from them",
 );
 assert("a corpse is not shown progress toward breeding", !t("detail3").includes("breeding"), t("detail3"));

@@ -18,6 +18,7 @@
 import { FEED_ROWS, addressUrl, blockUrl, txUrl } from "../config.js";
 import { $, el, field, frag, link, mount, svg } from "./dom.js";
 import { addr, ago, bps, dur, hash, money, moneyFixed, movePct, plural, stt, units, winRate } from "./format.js";
+import { iconCrown, iconFire, iconSeedling, iconSkull, iconTrophy, iconLightning, iconBrain, iconFlask, iconSwords, iconAntenna, iconScale, iconWarning, iconLabel } from "./icons.js";
 import {
   BELIEF_GLOSS,
   BELIEF_HUMAN,
@@ -952,8 +953,7 @@ function card(o, cfg, ctx) {
         ? el("span", {
             class: "card-gen card-rank-1",
             title: "Rank #1 living organism by balance and survival",
-            text: "👑 #1 LEADER",
-          })
+          }, iconLabel(iconCrown, "#1 LEADER"))
         : null,
       isMine
         ? el("span", {
@@ -1001,8 +1001,7 @@ function card(o, cfg, ctx) {
               title: breed
                 ? `${o.streak} of ${breed.needStreak} consecutive correct calls — streak bar for breeding a child organism`
                 : "consecutive correct calls",
-              text: breed ? `${o.streak}/${breed.needStreak}🔥` : `${o.streak}🔥`,
-            }),
+            }, breed ? `${o.streak}/${breed.needStreak}` : `${o.streak}`, iconFire()),
           )
         : null,
     ),
@@ -1521,13 +1520,24 @@ export function tree(t, cfg, ctx = {}) {
     if (!n.dead && Number(n.streak) > 0) {
       const fullLabel = `#${n.id}${name ? ` ${name}` : ""}`;
       const textW = Math.round(fullLabel.length * 6.5);
-      g.appendChild(
+      const tagX = x(n) + R + 7 + textW + 6;
+      const streakG = svg("g", { class: "tree-streak-tag" });
+      streakG.appendChild(
+        svg("path", {
+          d: "M5 13.5c-2.4 0-4-1.8-4-4 0-1.5 1-3.2 2.1-4.3L5 3.5l1.9 1.7C8 6.3 9 8 9 9.5c0 2.2-1.6 4-4 4z",
+          fill: "#ff9d42",
+          transform: `translate(${tagX}, ${y(n) - 8}) scale(0.85)`,
+          opacity: "0.85",
+        }),
+      );
+      streakG.appendChild(
         svg(
           "text",
-          { class: "tree-streak-tag", x: x(n) + R + 7 + textW + 6, y: y(n) + 4 },
-          `🔥 ${n.streak}/4`,
+          { x: tagX + 11, y: y(n) + 4 },
+          `${n.streak}/4`,
         ),
       );
+      g.appendChild(streakG);
     }
     canvas.appendChild(g);
   }
@@ -1566,11 +1576,22 @@ export function tree(t, cfg, ctx = {}) {
         r: R,
       }),
     );
+    const ghostLabelX = targetX + R + 7;
+    ghostG.appendChild(
+      svg("path", {
+        d: "M6 12V6M6 6C6 3.5 3.5 1 1 1c0 2.5 2.5 5 5 5zm0 0c0-2.5 2.5-5 5-5 0 2.5-2.5 5-5 5z",
+        stroke: "var(--heat)",
+        "stroke-width": "1.5",
+        fill: "none",
+        transform: `translate(${ghostLabelX}, ${targetY - 8}) scale(0.9)`,
+        opacity: "0.9",
+      }),
+    );
     ghostG.appendChild(
       svg(
         "text",
-        { class: "tree-ghost-label", x: targetX + R + 7, y: targetY + 4 },
-        `🌱 G1 Incubation (${topBreeder.streak}/4 🔥 · #${topBreeder.id})`,
+        { class: "tree-ghost-label", x: ghostLabelX + 14, y: targetY + 4 },
+        `G1 Incubation (${topBreeder.streak}/4 · #${topBreeder.id})`,
       ),
     );
     canvas.appendChild(ghostG);
@@ -1601,7 +1622,8 @@ export function tree(t, cfg, ctx = {}) {
           ? el(
               "span",
               { class: "incubator-pct" },
-              `🔥 ${topBreeder.streak} / 4 consecutive wins (${Math.round((topBreeder.streak / 4) * 100)}% to G1 birth)`,
+              iconFire(),
+              ` ${topBreeder.streak} / 4 consecutive wins (${Math.round((topBreeder.streak / 4) * 100)}% to G1 birth)`,
             )
           : el("span", { class: "incubator-pct", text: "Awaiting first win streak" }),
       ),
@@ -2789,24 +2811,24 @@ export function operationsPanel(rows, cfg, ctx = {}) {
     const isWorst = !isTop && (wrong > correct || o.dead);
 
     // Strategy Diagnosis
-    let diagIcon = "⚖️";
+    let diagIcon = iconScale;
     let diagText = "Neutral / Preserving: Organism has abstained or had no paired counterparty yet.";
     let diagClass = "diag-neutral";
 
     if (o.dead) {
-      diagIcon = "💀";
+      diagIcon = iconSkull;
       diagText = "Insolvent: Collateral was exhausted by metabolic rent or wrong bets. Irreversibly terminal.";
       diagClass = "diag-dead";
     } else if (correct > 0 && wrong === 0) {
-      diagIcon = "🏆";
+      diagIcon = iconTrophy;
       diagText = "High Edge: Undefeated in live market windows. Capital expanding toward breeding threshold (streak ≥ 4).";
       diagClass = "diag-good";
     } else if (wrong > correct) {
-      diagIcon = "⚠️";
+      diagIcon = iconWarning;
       diagText = "Drawdown / Ineffective: Strategy took opposing bets that failed. Candidate for thesis mutation.";
       diagClass = "diag-warn";
     } else if (correct > 0 && correct === wrong) {
-      diagIcon = "⚡";
+      diagIcon = iconLightning;
       diagText = "Coin-flipper territory: Strategy accuracy is around 50%. In zero-fee markets, metabolic drag will slowly erode treasury.";
       diagClass = "diag-neutral";
     }
@@ -2851,7 +2873,7 @@ export function operationsPanel(rows, cfg, ctx = {}) {
       el(
         "div",
         { class: ["op-diag-bar", diagClass] },
-        el("span", { class: "op-diag-icon", text: diagIcon }),
+        el("span", { class: "op-diag-icon" }, diagIcon()),
         el("span", { class: "op-diag-text", text: diagText }),
         el(
           "button",
@@ -2931,7 +2953,7 @@ export function judgeGuide(ctx = {}) {
               else if (ctx.onSelect) ctx.onSelect(1);
             },
           },
-          "👑 Inspect Leader (#1)",
+          iconLabel(iconCrown, "Inspect Leader (#1)"),
         ),
         el(
           "a",
@@ -2940,7 +2962,7 @@ export function judgeGuide(ctx = {}) {
             href: "?demo=1",
             title: "Switch to offline synthetic demo fixture to see populated battles",
           },
-          "🧪 Launch Demo Mode",
+          iconLabel(iconFlask, "Launch Demo Mode"),
         ),
       ),
     ),
@@ -2950,7 +2972,7 @@ export function judgeGuide(ctx = {}) {
       el(
         "div",
         { class: "judge-step" },
-        el("div", { class: "judge-step-icon", text: "🧠" }),
+        el("div", { class: "judge-step-icon" }, iconBrain()),
         el(
           "div",
           { class: "judge-step-content" },
@@ -2963,7 +2985,7 @@ export function judgeGuide(ctx = {}) {
       el(
         "div",
         { class: "judge-step" },
-        el("div", { class: "judge-step-icon", text: "⚡" }),
+        el("div", { class: "judge-step-icon" }, iconLightning()),
         el(
           "div",
           { class: "judge-step-content" },
@@ -2976,7 +2998,7 @@ export function judgeGuide(ctx = {}) {
       el(
         "div",
         { class: "judge-step" },
-        el("div", { class: "judge-step-icon", text: "💀" }),
+        el("div", { class: "judge-step-icon" }, iconSkull()),
         el(
           "div",
           { class: "judge-step-content" },
@@ -3090,9 +3112,9 @@ export function featuredDuel(logs = [], rows = [], cfg = {}, ctx = {}) {
  */
 export function arenaTabs(activeTab, onSelectTab, counts = {}) {
   const tabs = [
-    { id: "arena", label: "⚔️ Live Arena", badge: counts.living != null ? `${counts.living} alive` : null },
-    { id: "standings", label: "🏆 Standings & Evolution", badge: counts.ranked != null ? `${counts.ranked} ranked` : null },
-    { id: "feed", label: "📡 Chain Feed & System", badge: counts.events != null ? `${counts.events} events` : null },
+    { id: "arena", icon: iconSwords, label: "Live Arena", badge: counts.living != null ? `${counts.living} alive` : null },
+    { id: "standings", icon: iconTrophy, label: "Standings & Evolution", badge: counts.ranked != null ? `${counts.ranked} ranked` : null },
+    { id: "feed", icon: iconAntenna, label: "Chain Feed & System", badge: counts.events != null ? `${counts.events} events` : null },
   ];
 
   return el(
@@ -3106,7 +3128,7 @@ export function arenaTabs(activeTab, onSelectTab, counts = {}) {
           type: "button",
           click: () => onSelectTab(t.id),
         },
-        el("span", { class: "arena-tab-label", text: t.label }),
+        el("span", { class: "arena-tab-label" }, t.icon ? t.icon() : null, ` ${t.label}`),
         t.badge ? el("span", { class: "arena-tab-badge", text: t.badge }) : null,
       ),
     ),

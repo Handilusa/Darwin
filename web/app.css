@@ -3245,4 +3245,79 @@ code {
   margin-bottom: 4px;
 }
 
+/* ── Transparent SVG Icons ─────────────────────────────────── */
+.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: -0.15em;
+  line-height: 1;
+}
+
+.icon svg {
+  width: 1em;
+  height: 1em;
+  opacity: 0.85;
+  transition: opacity var(--d-fast) var(--e-out);
+}
+
+.icon:hover svg {
+  opacity: 1;
+}
+
+.icon-crown {
+  color: var(--heat, #f59e0b);
+}
+
+.icon-fire {
+  color: #ff9d42;
+}
+
+.icon-seedling {
+  color: var(--life, #5fe3c0);
+}
+
+.icon-skull {
+  color: var(--ash-dim, #7a7082);
+}
+
+.icon-trophy {
+  color: #fbbf24;
+}
+
+.icon-lightning {
+  color: #fbbf24;
+}
+
+.icon-swords {
+  color: var(--life, #5fe3c0);
+}
+
+.icon-antenna {
+  color: var(--text-2, #a3b8b0);
+}
+
+.icon-warning {
+  color: var(--heat, #f59e0b);
+}
+
+.icon-scale {
+  color: var(--text-3, #6b7f77);
+}
+
+.judge-step-icon .icon svg {
+  width: 1.4em;
+  height: 1.4em;
+}
+
+.op-diag-icon .icon svg {
+  width: 1.2em;
+  height: 1.2em;
+}
+
+.arena-tab-label .icon {
+  margin-right: 2px;
+}
+
+
 
